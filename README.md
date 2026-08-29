@@ -77,7 +77,7 @@ The GUI provides a visual editor and mission monitor. It allows the operator to 
 
 The top view shows the front-left and front-right digital IR sensors together with the two side-facing Sharp IR distance sensors.
 
-![RoboMaster sensor layout from the top](docs/images/robot/robomaster-sensors-top-view.png)
+![RoboMaster sensor layout from the top](docs/images/robot/robomaster-sensors-top-view-corrected.png)
 
 ### Front ToF View
 
