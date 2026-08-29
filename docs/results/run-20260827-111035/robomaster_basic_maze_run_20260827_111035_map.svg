@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="434" height="574" viewBox="0 0 434 574">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Arial,sans-serif}.grid{stroke:#cbd5e1;stroke-width:1}.wall{stroke:#111827;stroke-width:7;stroke-linecap:round}.seen{stroke:#dc2626;stroke-width:7;stroke-linecap:round}.route{stroke:#2563eb;stroke-width:4;fill:none;stroke-linejoin:round;stroke-linecap:round}</style>
+<line class="grid" x1="42" y1="42" x2="392" y2="42"/>
+<line class="grid" x1="42" y1="112" x2="392" y2="112"/>
+<line class="grid" x1="42" y1="182" x2="392" y2="182"/>
+<line class="grid" x1="42" y1="252" x2="392" y2="252"/>
+<line class="grid" x1="42" y1="322" x2="392" y2="322"/>
+<line class="grid" x1="42" y1="392" x2="392" y2="392"/>
+<line class="grid" x1="42" y1="462" x2="392" y2="462"/>
+<line class="grid" x1="42" y1="532" x2="392" y2="532"/>
+<line class="grid" x1="42" y1="42" x2="42" y2="532"/>
+<line class="grid" x1="112" y1="42" x2="112" y2="532"/>
+<line class="grid" x1="182" y1="42" x2="182" y2="532"/>
+<line class="grid" x1="252" y1="42" x2="252" y2="532"/>
+<line class="grid" x1="322" y1="42" x2="322" y2="532"/>
+<line class="grid" x1="392" y1="42" x2="392" y2="532"/>
+<polyline class="route" points="77.0,497.0 77.0,427.0 77.0,357.0 77.0,287.0 147.0,287.0 217.0,287.0 217.0,217.0 217.0,147.0 217.0,77.0 287.0,77.0 357.0,77.0 357.0,147.0 287.0,147.0 357.0,147.0 357.0,77.0 287.0,77.0 217.0,77.0 217.0,147.0 217.0,217.0 217.0,287.0 287.0,287.0 357.0,287.0"/>
+<line class="wall" x1="112" y1="112" x2="182" y2="112"/>
+<line class="seen" x1="182" y1="112" x2="182" y2="182"/>
+<line class="seen" x1="252" y1="112" x2="322" y2="112"/>
+<line class="seen" x1="252" y1="112" x2="252" y2="182"/>
+<line class="seen" x1="42" y1="252" x2="112" y2="252"/>
+<line class="seen" x1="112" y1="252" x2="182" y2="252"/>
+<line class="seen" x1="182" y1="182" x2="182" y2="252"/>
+<line class="seen" x1="252" y1="252" x2="322" y2="252"/>
+<line class="seen" x1="252" y1="182" x2="252" y2="252"/>
+<line class="seen" x1="322" y1="252" x2="392" y2="252"/>
+<line class="seen" x1="112" y1="322" x2="182" y2="322"/>
+<line class="seen" x1="112" y1="322" x2="112" y2="392"/>
+<line class="seen" x1="182" y1="322" x2="252" y2="322"/>
+<line class="wall" x1="252" y1="322" x2="252" y2="392"/>
+<line class="wall" x1="322" y1="322" x2="322" y2="392"/>
+<line class="seen" x1="112" y1="392" x2="112" y2="462"/>
+<line class="wall" x1="112" y1="462" x2="182" y2="462"/>
+<line class="wall" x1="252" y1="462" x2="322" y2="462"/>
+<line class="wall" x1="322" y1="462" x2="392" y2="462"/>
+<line class="wall" x1="322" y1="392" x2="322" y2="462"/>
+<line class="seen" x1="112" y1="462" x2="112" y2="532"/>
+<line class="wall" x1="182" y1="462" x2="252" y2="462"/>
+<line class="seen" x1="182" y1="42" x2="252" y2="42"/>
+<line class="seen" x1="252" y1="42" x2="322" y2="42"/>
+<line class="seen" x1="322" y1="42" x2="392" y2="42"/>
+<line class="seen" x1="392" y1="42" x2="392" y2="112"/>
+<line class="seen" x1="392" y1="112" x2="392" y2="182"/>
+<line class="seen" x1="42" y1="252" x2="42" y2="322"/>
+<line class="seen" x1="42" y1="322" x2="42" y2="392"/>
+<line class="seen" x1="42" y1="392" x2="42" y2="462"/>
+<circle cx="77.0" cy="497.0" r="16" fill="#16a34a"/>
+<text x="77.0" y="503.0" font-size="17" text-anchor="middle" fill="white" font-weight="bold">S</text>
+<circle cx="287.0" cy="147.0" r="16" fill="#f59e0b"/>
+<text x="287.0" y="153.0" font-size="17" text-anchor="middle" fill="white" font-weight="bold">D</text>
+<circle cx="357.0" cy="287.0" r="16" fill="#7c3aed"/>
+<text x="357.0" y="293.0" font-size="17" text-anchor="middle" fill="white" font-weight="bold">E</text>
+<text x="42" y="26" font-size="16" fill="#0f172a">Status: MISSION COMPLETE: pickup, drop, and exit finished</text>
+</svg>

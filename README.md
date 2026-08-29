@@ -203,6 +203,22 @@ After a simulation or real mission, the program generates:
 
 Generated run files are excluded by `.gitignore`. Selected results can be added to the repository later for documentation and portfolio presentation.
 
+## Sample Mission Result
+
+The following artifacts were generated from a completed mission run on August 27, 2026.
+
+### Final Maze and Robot Trajectory
+
+![Final maze and robot trajectory](docs/results/run-20260827-111035/robomaster_basic_maze_run_20260827_111035_map.svg)
+
+### Sensor Distance History
+
+![Front ToF and Sharp IR sensor history](docs/results/run-20260827-111035/robomaster_basic_maze_run_20260827_111035_sensor_graph.svg)
+
+### Raw Mission Data
+
+[Download the JSON mission report](docs/results/run-20260827-111035/robomaster_basic_maze_run_20260827_111035.json)
+
 ## Tests
 
 Run the hardware-independent unit tests from the project root:
