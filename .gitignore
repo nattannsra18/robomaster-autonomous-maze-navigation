@@ -27,3 +27,9 @@ logs/
 # Local configuration
 .env
 config/local_config.json
+
+!docs/results/**/*.json
+!docs/results/**/*.svg
+!docs/results/**/*.png
+!docs/results/**/*.jpg
+!docs/results/**/*.jpeg
