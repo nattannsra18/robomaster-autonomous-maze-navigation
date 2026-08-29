@@ -8,9 +8,9 @@ An autonomous fixed-grid maze navigation and object-delivery system for the DJI 
 
 The following video demonstrates a complete real-world mission, including object pickup, autonomous maze navigation, drop-position alignment, object release, and navigation to the exit.
 
-[![Watch the RoboMaster autonomous maze mission](https://img.youtube.com/vi/N6wTUV7ljIg/hqdefault.jpg)](https://youtu.be/N6wTUV7ljIg)
+[![Watch the RoboMaster autonomous maze mission](https://img.youtube.com/vi/44vI4HtLeyQ/hqdefault.jpg)](https://youtu.be/44vI4HtLeyQ)
 
-**Video:** [RoboMaster EP Autonomous Maze Navigation | A* Pickup & Drop Mission](https://youtu.be/N6wTUV7ljIg)
+**Video:** [RoboMaster EP Autonomous Maze Navigation | A* Pickup & Drop Mission](https://youtu.be/44vI4HtLeyQ)
 
 ## Project Overview
 
@@ -77,7 +77,7 @@ The GUI provides a visual editor and mission monitor. It allows the operator to 
 
 The top view shows the front-left and front-right digital IR sensors together with the two side-facing Sharp IR distance sensors.
 
-![RoboMaster sensor layout from the top](docs/images/robot/robomaster-sensors-top-view-corrected.png)
+![RoboMaster sensor layout from the top](docs/images/robot/robomaster-sensors-top-view.png)
 
 ### Front ToF View
 
@@ -162,19 +162,17 @@ robomaster-autonomous-maze-navigation/
 ├── tests/
 │   └── test_wall_evidence.py
 └── docs/
-    ├── SETUP.md
-    ├── ARCHITECTURE.md
-    ├── ALGORITHMS.md
-    ├── EXPERIMENTS.md
-    ├── HARDWARE.md
-    ├── TROUBLESHOOTING.md
-    ├── MEDIA.md
     ├── images/
-    │   ├── robot/
-    │   ├── field/
-    │   └── gui/
-    ├── videos/
+    │   ├── gui/
+    │   │   └── mission-control-gui.png
+    │   └── robot/
+    │       ├── robomaster-front-tof-view.png
+    │       └── robomaster-sensors-top-view.png
     └── results/
+        └── run-20260827-111035/
+            ├── robomaster_basic_maze_run_20260827_111035.json
+            ├── robomaster_basic_maze_run_20260827_111035_map.svg
+            └── robomaster_basic_maze_run_20260827_111035_sensor_graph.svg
 ```
 
 ## Requirements
@@ -331,16 +329,6 @@ The current tests verify that:
 - A blocked reading resets the open-reading streak.
 - A physically traversed edge is treated as strong open-space evidence.
 - Mission artifacts include a sensor graph.
-
-## Documentation
-
-- [Installation and Setup](docs/SETUP.md)
-- [System Architecture](docs/ARCHITECTURE.md)
-- [Algorithms](docs/ALGORITHMS.md)
-- [Hardware and Sensor Calibration](docs/HARDWARE.md)
-- [Experimental Results](docs/EXPERIMENTS.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Images, Videos, and Result Files](docs/MEDIA.md)
 
 ## Current Limitations
 
