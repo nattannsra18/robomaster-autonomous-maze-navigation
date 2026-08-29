@@ -8,9 +8,9 @@ An autonomous fixed-grid maze navigation and object-delivery system for the DJI 
 
 The following video demonstrates a complete real-world mission, including object pickup, autonomous maze navigation, drop-position alignment, object release, and navigation to the exit.
 
-[![Watch the RoboMaster autonomous maze mission](https://img.youtube.com/vi/44vI4HtLeyQ/hqdefault.jpg)](https://youtu.be/44vI4HtLeyQ)
+[![Watch the RoboMaster autonomous maze mission](https://img.youtube.com/vi/N6wTUV7ljIg/hqdefault.jpg)](https://youtu.be/N6wTUV7ljIg)
 
-**Video:** [RoboMaster EP Autonomous Maze Navigation | A* Pickup & Drop Mission](https://youtu.be/44vI4HtLeyQ)
+**Video:** [RoboMaster EP Autonomous Maze Navigation | A* Pickup & Drop Mission](https://youtu.be/N6wTUV7ljIg)
 
 ## Project Overview
 
@@ -77,7 +77,7 @@ The GUI provides a visual editor and mission monitor. It allows the operator to 
 
 The top view shows the front-left and front-right digital IR sensors together with the two side-facing Sharp IR distance sensors.
 
-![RoboMaster sensor layout from the top](docs/images/robot/robomaster-sensors-top-view.png)
+![RoboMaster sensor layout from the top](docs/images/robot/robomaster-sensors-top-view-corrected.png)
 
 ### Front ToF View
 
