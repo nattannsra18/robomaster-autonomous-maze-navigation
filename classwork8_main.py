@@ -1,5 +1,10 @@
-"""Standalone entry point for ToF-only Classwork 8."""
+"""Standalone entry point for Classwork 8.
 
+Default: realtime Tkinter GUI.
+Optional: --no-gui for terminal-only execution.
+"""
+
+import argparse
 import sys
 import types
 
@@ -28,7 +33,27 @@ def _prepare_optional_media_codec():
 
 _prepare_optional_media_codec()
 
-from classwork8.tof_only import run as main
+from classwork8.config import Classwork8Config
+from classwork8.tof_only import run
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Classwork 8 ToF exploration")
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="run in terminal without the realtime Tkinter map",
+    )
+    args = parser.parse_args()
+
+    config = Classwork8Config()
+
+    if args.no_gui:
+        run(config=config)
+        return
+
+    from classwork8.gui import run_with_gui
+    run_with_gui(run, config)
 
 
 if __name__ == "__main__":
