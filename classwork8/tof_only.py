@@ -262,9 +262,14 @@ def _scan_four_directions(
     current_cell: Tuple[int, int],
     moves: int,
 ) -> Optional[Tuple[Dict[int, Optional[float]], Set[int]]]:
-    # Sweep monotonically from left -> front -> right -> back.
-    # The chassis itself does not rotate.
-    order = [3, 0, 1, 2]
+    # Sweep in the direction that is closest to the current gimbal endpoint.
+    # This avoids a large BACK(+180) -> LEFT(-90) wrap across the +250 deg
+    # mechanical limit.  Each sweep segment is then about 90 degrees.
+    current_gimbal_yaw = gimbal_tracker.get_yaw()
+    if current_gimbal_yaw is not None and float(current_gimbal_yaw) > 45.0:
+        order = [2, 1, 0, 3]  # BACK -> RIGHT -> FRONT -> LEFT
+    else:
+        order = [3, 0, 1, 2]  # LEFT -> FRONT -> RIGHT -> BACK
     ranges: Dict[int, Optional[float]] = {}
     open_dirs: Set[int] = set()
 
