@@ -47,13 +47,17 @@ class RealtimeMapGUI:
     ):
         import tkinter as tk
         from tkinter import ttk
+        from PIL import Image, ImageTk
 
         self.tk = tk
         self.ttk = ttk
+        self.Image = Image
+        self.ImageTk = ImageTk
         self.stop_event = stop_event
         self.refresh_ms = int(refresh_ms)
         self._queue = queue.Queue()
         self._latest = None
+        self._vision_photo = None
 
         self.root = tk.Tk()
         self.root.title("Classwork 8 - Unknown World Grid Mapping")
@@ -69,7 +73,7 @@ class RealtimeMapGUI:
         left = ttk.Frame(outer)
         left.pack(side="left", fill="both", expand=True)
 
-        right = ttk.Frame(outer, width=300)
+        right = ttk.Frame(outer, width=340)
         right.pack(side="right", fill="y", padx=(14, 0))
         right.pack_propagate(False)
 
@@ -100,6 +104,7 @@ class RealtimeMapGUI:
         self.cell_var = tk.StringVar(value="Cell: --")
         self.tof_var = tk.StringVar(value="ToF: --")
         self.gimbal_var = tk.StringVar(value="Gimbal: --")
+        self.vision_var = tk.StringVar(value="Vision: starting...")
         self.moves_var = tk.StringVar(value="Moves: 0")
         self.discovered_var = tk.StringVar(value="Discovered cells: 1")
         self.coverage_var = tk.StringVar(value="Occupancy coverage: 0.00%")
@@ -111,6 +116,7 @@ class RealtimeMapGUI:
             self.cell_var,
             self.tof_var,
             self.gimbal_var,
+            self.vision_var,
             self.moves_var,
             self.discovered_var,
             self.coverage_var,
@@ -120,6 +126,21 @@ class RealtimeMapGUI:
                 textvariable=variable,
                 wraplength=280,
             ).pack(anchor="w", pady=3)
+
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=12)
+
+        ttk.Label(
+            right,
+            text="Camera corridor detection",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 5))
+
+        self.vision_preview = ttk.Label(
+            right,
+            text="Waiting for camera...",
+            anchor="center",
+        )
+        self.vision_preview.pack(fill="x", pady=(0, 8))
 
         ttk.Separator(right, orient="horizontal").pack(fill="x", pady=12)
 
@@ -263,6 +284,21 @@ class RealtimeMapGUI:
                 )
             )
 
+        vision_active = bool(snapshot.get("vision_active"))
+        vision_error = snapshot.get("vision_error")
+        vision_confidence = float(snapshot.get("vision_confidence", 0.0))
+        if vision_active:
+            self.vision_var.set(
+                "Vision: ACTIVE  err={}  conf={:.2f}".format(
+                    "--" if vision_error is None else "{:+.3f}".format(float(vision_error)),
+                    vision_confidence,
+                )
+            )
+        else:
+            self.vision_var.set("Vision: fallback ToF + odometry")
+
+        self._render_vision_preview(snapshot.get("vision_frame"), vision_active)
+
         self.moves_var.set("Moves: {}".format(snapshot.get("moves", 0)))
         self.discovered_var.set(
             "Discovered cells: {}".format(len(snapshot.get("known_cells") or []))
@@ -277,6 +313,34 @@ class RealtimeMapGUI:
 
         if snapshot.get("finished"):
             self.stop_button.state(["disabled"])
+
+    def _render_vision_preview(self, frame, active: bool) -> None:
+        if frame is None:
+            self._vision_photo = None
+            self.vision_preview.configure(
+                image="",
+                text="Camera unavailable" if not active else "Waiting for frame...",
+            )
+            return
+
+        try:
+            rgb = frame[:, :, ::-1]
+            image = self.Image.fromarray(rgb)
+            target_w = 310
+            target_h = 174
+
+            if hasattr(self.Image, "Resampling"):
+                resample = self.Image.Resampling.LANCZOS
+            else:
+                resample = self.Image.LANCZOS
+
+            image.thumbnail((target_w, target_h), resample)
+            photo = self.ImageTk.PhotoImage(image=image)
+            self._vision_photo = photo
+            self.vision_preview.configure(image=photo, text="")
+        except Exception:
+            self._vision_photo = None
+            self.vision_preview.configure(image="", text="Camera preview error")
 
     def _draw_grid_map(self, snapshot: dict) -> None:
         canvas = self.canvas
