@@ -121,7 +121,7 @@ def main():
             if estimate is not None and now - last_print >= 0.5:
                 correction, error, confidence = vision.correction_mps()
                 print(
-                    "error={:+.3f} confidence={:.2f} correction={:+.3f} m/s".format(
+                    "error={:+.3f} confidence={:.2f} suggested_correction={:+.3f} m/s (NOT APPLIED)".format(
                         error,
                         confidence,
                         correction,
