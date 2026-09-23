@@ -22,6 +22,7 @@ from robomaster_mission.mission import (
 from .config import Classwork8Config
 from .occupancy_grid import OccupancyGrid
 from .reporting import RunRecorder
+from .vision import CorridorVision
 
 
 # Logical map directions relative to the chassis heading at mission start.
@@ -39,6 +40,15 @@ DIR_VEC_DRIVE = {
     1: (0.0, 1.0),   # right strafe
     2: (-1.0, 0.0),  # reverse
     3: (0.0, -1.0),  # left strafe
+}
+
+# Positive camera correction means "move right relative to the current travel
+# direction". Convert that travel-frame vector into chassis x/y.
+DIR_RIGHT_VEC_DRIVE = {
+    0: (0.0, 1.0),    # facing front
+    1: (-1.0, 0.0),   # facing right
+    2: (0.0, -1.0),   # facing back
+    3: (1.0, 0.0),    # facing left
 }
 
 DIR_NAME = {
@@ -439,6 +449,7 @@ def _drive_one_cell(
     heading: HeadingManager,
     sensors: ToFOnlySensorManager,
     gimbal_tracker: GimbalTracker,
+    vision: Optional[CorridorVision],
     grid: OccupancyGrid,
     recorder: RunRecorder,
     config: Classwork8Config,
@@ -606,6 +617,23 @@ def _drive_one_cell(
             # Positive cross-track x means we drifted forward; correct backward.
             x_cmd -= correction
 
+        # Camera assistance is deliberately secondary to odometry. It only
+        # contributes when both corridor boundaries are visible with enough
+        # confidence. Positive correction means "move right" in camera/travel
+        # coordinates, then gets rotated into chassis x/y here.
+        vision_correction = 0.0
+        vision_error = 0.0
+        vision_confidence = 0.0
+        if vision is not None and vision.running:
+            (
+                vision_correction,
+                vision_error,
+                vision_confidence,
+            ) = vision.correction_mps()
+            right_x_unit, right_y_unit = DIR_RIGHT_VEC_DRIVE[direction]
+            x_cmd += right_x_unit * vision_correction
+            y_cmd += right_y_unit * vision_correction
+
         z_cmd = 0.0
         mode = "MOVE_{}".format(DIR_NAME[direction])
 
@@ -616,6 +644,16 @@ def _drive_one_cell(
                 yaw,
                 mode,
             )
+
+        # Keep combined odometry+vision lateral correction bounded.
+        component_limit = max(
+            config.travel_speed_mps,
+            config.travel_speed_mps
+            + config.cross_track_max_mps
+            + config.vision_max_correction_mps,
+        )
+        x_cmd = max(-component_limit, min(component_limit, x_cmd))
+        y_cmd = max(-component_limit, min(component_limit, y_cmd))
 
         chassis.drive_speed(
             x=x_cmd,
@@ -707,6 +745,7 @@ def run(
     pose = PoseTracker()
     sensors = ToFOnlySensorManager()
     gimbal_tracker = GimbalTracker()
+    vision: Optional[CorridorVision] = None
 
     raw_start_x = 0.0
     raw_start_y = 0.0
@@ -740,6 +779,12 @@ def run(
         rel_x, rel_y = _relative_xy(
             pose, raw_start_x, raw_start_y, raw_start_yaw
         )
+
+        vision_estimate = (
+            vision.latest()
+            if vision is not None and vision.running
+            else None
+        )
         publish({
             "status": status,
             "reason": reason,
@@ -768,6 +813,20 @@ def run(
             "tof_cm": tof_cm,
             "moves": int(moves),
             "coverage": grid.coverage_percent(),
+            "vision_active": bool(vision is not None and vision.running),
+            "vision_error": (
+                None if vision_estimate is None
+                else float(vision_estimate.error_norm)
+            ),
+            "vision_confidence": (
+                0.0 if vision_estimate is None
+                else float(vision_estimate.confidence)
+            ),
+            "vision_frame": (
+                None
+                if vision is None or not vision.running
+                else vision.latest_debug_frame()
+            ),
         })
 
     try:
@@ -890,6 +949,17 @@ def run(
         if not heading.initialize(raw_start_yaw):
             raise RuntimeError("yaw/attitude unavailable")
 
+        # Camera assistance is optional. Failure to open/decode the video stream
+        # must never prevent the ToF+odometry exploration from running.
+        vision = CorridorVision(ep_robot, config)
+        vision_ok = vision.start()
+        print(
+            "[VISION] Navigation assistance: {}".format(
+                "ACTIVE" if vision_ok else "FALLBACK (ToF + odometry only)"
+            ),
+            flush=True,
+        )
+
         print("============================================================")
         print(" Classwork 8 - ToF ONLY / 60 cm CELL / REALTIME GUI")
         print("============================================================")
@@ -899,6 +969,13 @@ def run(
         print("Scanning      : gimbal-only, 4 directions")
         print("Travel        : mecanum forward/right/back/left")
         print("Safety        : ToF points along travel direction continuously")
+        print(
+            "Vision        : {}".format(
+                "corridor centering active"
+                if vision is not None and vision.running
+                else "fallback disabled/unavailable"
+            )
+        )
         print("============================================================")
 
         recorder.event(
@@ -932,6 +1009,7 @@ def run(
                 pose,
                 sensors,
                 gimbal_tracker,
+                vision,
                 grid,
                 recorder,
                 config,
@@ -999,6 +1077,7 @@ def run(
                     heading,
                     sensors,
                     gimbal_tracker,
+                    vision,
                     grid,
                     recorder,
                     config,
@@ -1086,6 +1165,7 @@ def run(
                 heading,
                 sensors,
                 gimbal_tracker,
+                vision,
                 grid,
                 recorder,
                 config,
@@ -1136,6 +1216,12 @@ def run(
                 stop_chassis(chassis)
             except Exception:
                 pass
+
+        try:
+            if vision is not None:
+                vision.stop()
+        except Exception:
+            pass
 
         # Never wait on a gimbal action while shutting down. Just stop angular
         # motion; this keeps Ctrl+C / errors from hanging during cleanup.
