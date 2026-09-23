@@ -176,26 +176,49 @@ def _point_gimbal(
     config: Classwork8Config,
     stop_event: Optional[threading.Event],
 ) -> bool:
+    """Point ToF using closed-loop relative gimbal yaw feedback."""
     if stop_event is not None and stop_event.is_set():
         return False
 
-    target = config.gimbal_yaw_for_direction(direction)
-    action = gimbal.moveto(
-        pitch=0,
-        yaw=target,
-        pitch_speed=config.gimbal_yaw_speed_dps,
-        yaw_speed=config.gimbal_yaw_speed_dps,
-    )
-    action.wait_for_completed()
+    target = float(config.gimbal_yaw_for_direction(direction))
+    started = time.monotonic()
+    stable = 0
 
-    # Prevent readings captured during gimbal motion from entering the new ray.
-    sensors.reset_filters()
-    if not _sleep_interruptible(config.gimbal_settle_sec, stop_event):
-        return False
+    while time.monotonic() - started < config.gimbal_turn_timeout_sec:
+        if stop_event is not None and stop_event.is_set():
+            gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+            return False
 
-    # The tracker is for GUI/diagnostics; the logical direction is authoritative.
-    _ = tracker.get_yaw()
-    return True
+        current = tracker.get_yaw()
+        if current is None:
+            time.sleep(0.03)
+            continue
+
+        error = normalize_angle_deg(target - float(current))
+        if abs(error) <= config.gimbal_tolerance_deg:
+            stable += 1
+            gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+            if stable >= config.gimbal_stable_samples:
+                sensors.reset_filters()
+                return _sleep_interruptible(config.gimbal_settle_sec, stop_event)
+        else:
+            stable = 0
+            speed = max(
+                config.gimbal_min_yaw_speed_dps,
+                min(
+                    config.gimbal_yaw_speed_dps,
+                    abs(error) * config.gimbal_yaw_kp,
+                ),
+            )
+            gimbal.drive_speed(
+                pitch_speed=0.0,
+                yaw_speed=math.copysign(speed, error),
+            )
+
+        time.sleep(0.03)
+
+    gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+    return False
 
 
 def _sample_tof(
