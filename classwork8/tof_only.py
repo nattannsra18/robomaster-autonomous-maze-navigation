@@ -604,7 +604,14 @@ def run(
         )
 
         if not robot_was_preconnected:
-            ep_robot.initialize(conn_type=config.connection)
+            print("Connecting to RoboMaster (mode={})...".format(config.connection), flush=True)
+            ok = ep_robot.initialize(conn_type=config.connection)
+            print("RoboMaster initialize returned: {!r}".format(ok), flush=True)
+            if not ok:
+                raise RuntimeError(
+                    "RoboMaster connection failed. Check that the PC is connected "
+                    "to the RoboMaster Wi-Fi/AP network."
+                )
         chassis = ep_robot.chassis
         gimbal = ep_robot.gimbal
         tof_sensor = ep_robot.sensor
