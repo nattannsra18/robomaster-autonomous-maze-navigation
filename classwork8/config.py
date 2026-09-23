@@ -3,46 +3,22 @@ from dataclasses import dataclass, asdict
 
 @dataclass
 class Classwork8Config:
-    """Runtime configuration for Classwork 8 unknown-world exploration.
-
-    The sensor IDs/ports below match the physical wiring described for the
-    current RoboMaster:
-      - right CAN sensor hub: ID 1
-      - left CAN sensor hub: ID 2
-      - digital IR on port 1 of each hub
-      - Sharp analog distance sensor on port 2 of each hub
-      - ToF mounted on the gimbal and kept facing chassis-forward
-    """
+    """Runtime configuration for ToF-only unknown-world exploration."""
 
     connection: str = "ap"
 
-    # Sensor hubs / ports
-    right_hub_id: int = 1
-    left_hub_id: int = 2
-    ir_port: int = 1
-    sharp_port: int = 2
-    ir_blocked_level: int = 0
-    ir_confirm_samples: int = 2
-
-    # Mapping canvas. This is only an initially empty working area; it is NOT
-    # prior maze knowledge. Start is placed at the centre.
+    # Empty working canvas only; no maze layout is preloaded.
     map_width_m: float = 8.0
     map_height_m: float = 8.0
     resolution_m: float = 0.05
 
-    # Sensor mounting offsets from chassis centre. Measure lens-to-centre and
-    # update these before the final accuracy run. Defaults are conservative
-    # approximations for first integration tests.
+    # ToF is mounted on the gimbal. The robot runs CHASSIS_LEAD and keeps the
+    # gimbal recentered, so ToF always points chassis-forward.
     tof_forward_offset_m: float = 0.12
-    sharp_lateral_offset_m: float = 0.16
-
-    # Usable mapping range. A reading near/above max range marks free space but
-    # does not create an occupied endpoint.
-    tof_max_mapping_cm: float = 200.0
-    sharp_max_mapping_cm: float = 50.0
+    tof_max_mapping_cm: float = 300.0
     mapping_min_cm: float = 3.0
 
-    # Occupancy evidence scores
+    # Occupancy evidence
     free_delta: int = -2
     occupied_delta: int = 5
     min_score: int = -20
@@ -50,19 +26,27 @@ class Classwork8Config:
     occupied_threshold: int = 3
     free_threshold: int = -2
 
-    # Motion/safety values, mostly inherited from the working legacy explorer.
-    forward_speed_mps: float = 0.20
+    # ToF-only exploration. The robot stops every step, scans four cardinal
+    # directions by rotating the chassis, then uses DFS/backtracking.
+    exploration_step_m: float = 0.25
+    tof_open_cm: float = 50.0
+    scan_samples: int = 5
+    scan_sample_interval_sec: float = 0.06
+    scan_settle_sec: float = 0.18
+    max_moves: int = 500
+
+    # Conservative motion because there are no side/corner sensors.
+    forward_speed_mps: float = 0.12
+    stop_front_cm: float = 18.0
+    slow_front_cm: float = 35.0
     drive_timeout_sec: float = 0.15
-    loop_delay_sec: float = 0.05
-    stop_front_cm: float = 15.0
-    side_warning_cm: float = 11.0
-    ir_escape_y_mps: float = 0.15
+    loop_delay_sec: float = 0.04
 
-    # Avoid writing rays while the robot is substantially between cardinal
-    # headings. The legacy controller performs closed-loop 90-degree turns.
-    mapping_heading_tolerance_deg: float = 8.0
+    # Closed-loop cardinal heading control.
+    turn_tolerance_deg: float = 2.0
+    turn_stable_samples: int = 3
+    turn_timeout_sec: float = 5.0
 
-    stop_on_open_exit: bool = False
     output_dir: str = "classwork8_output"
 
     def validate(self) -> None:
@@ -74,8 +58,14 @@ class Classwork8Config:
             raise ValueError("map dimensions must be larger than one cell")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
             raise ValueError("ToF mapping range is invalid")
-        if self.sharp_max_mapping_cm <= self.mapping_min_cm:
-            raise ValueError("Sharp mapping range is invalid")
+        if self.exploration_step_m <= 0.0:
+            raise ValueError("exploration_step_m must be positive")
+        if self.tof_open_cm <= self.stop_front_cm:
+            raise ValueError("tof_open_cm must be greater than stop_front_cm")
+        if self.forward_speed_mps <= 0.0:
+            raise ValueError("forward_speed_mps must be positive")
+        if self.max_moves <= 0:
+            raise ValueError("max_moves must be positive")
 
     def to_dict(self) -> dict:
         return asdict(self)
