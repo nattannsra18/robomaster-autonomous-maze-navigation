@@ -676,39 +676,31 @@ def run(
         if raw_start_yaw is None:
             raise RuntimeError("attitude/yaw subscription did not produce data")
 
-        # Never block forever on an SDK action. If the action completion packet
-        # is lost, validate the real relative gimbal yaw from sub_angle().
-        print("[INIT] Recentering gimbal (5 s timeout)...", flush=True)
-        recenter_action = gimbal.recenter(
-            pitch_speed=config.gimbal_yaw_speed_dps,
-            yaw_speed=config.gimbal_yaw_speed_dps,
-        )
-        recenter_ok = recenter_action.wait_for_completed(timeout=5.0)
-
-        if not recenter_ok:
-            print(
-                "[INIT] Recenter action timed out; checking measured gimbal yaw...",
-                flush=True,
-            )
-            deadline = time.monotonic() + 2.0
+        # Do not use gimbal.recenter().wait_for_completed() here. On this
+        # RoboMaster the mechanical action can complete while its action-complete
+        # packet is not received, which previously caused an indefinite wait.
+        # Use the same closed-loop angle feedback as normal scanning instead.
+        print("[INIT] Pointing gimbal to FRONT (0 deg) with angle feedback...", flush=True)
+        if not _point_gimbal(
+            gimbal,
+            sensors,
+            gimbal_tracker,
+            0,
+            config,
+            stop_event,
+        ):
             measured_yaw = gimbal_tracker.get_yaw()
-            while measured_yaw is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-                measured_yaw = gimbal_tracker.get_yaw()
-
-            if measured_yaw is None or abs(normalize_angle_deg(float(measured_yaw))) > 5.0:
-                raise RuntimeError(
-                    "gimbal recenter failed/timed out and measured yaw is not near 0 deg"
+            raise RuntimeError(
+                "could not point gimbal to FRONT; measured yaw={}".format(
+                    "---" if measured_yaw is None else "{:+.1f}".format(float(measured_yaw))
                 )
-
-            print(
-                "[INIT] Measured gimbal yaw is {:+.1f} deg; continuing.".format(
-                    float(measured_yaw)
-                ),
-                flush=True,
             )
-        else:
-            print("[INIT] Gimbal recenter complete.", flush=True)
+        print(
+            "[INIT] Gimbal FRONT ready at yaw={:+.1f} deg.".format(
+                float(gimbal_tracker.get_yaw())
+            ),
+            flush=True,
+        )
 
         heading = HeadingManager()
         if not heading.initialize(raw_start_yaw):
@@ -939,12 +931,11 @@ def run(
             except Exception:
                 pass
 
+        # Never wait on a gimbal action while shutting down. Just stop angular
+        # motion; this keeps Ctrl+C / errors from hanging during cleanup.
         try:
             if gimbal is not None:
-                gimbal.recenter(
-                    pitch_speed=config.gimbal_yaw_speed_dps,
-                    yaw_speed=config.gimbal_yaw_speed_dps,
-                ).wait_for_completed()
+                gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
         except Exception:
             pass
 
