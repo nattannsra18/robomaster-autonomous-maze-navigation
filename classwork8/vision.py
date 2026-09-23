@@ -454,7 +454,13 @@ class CorridorVision:
             # Decay old steering information quickly when boundaries disappear.
             self._last_error *= 0.75
 
-        error_norm = float(self._last_error)
+        # An unreliable estimate must not display an apparently actionable
+        # steering error left over from a previous frame.
+        error_norm = (
+            float(self._last_error)
+            if confidence >= float(self.config.vision_min_confidence)
+            else 0.0
+        )
 
         cv2.rectangle(
             debug,
