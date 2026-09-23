@@ -1,4 +1,16 @@
-"""Realtime Tkinter GUI for Classwork 8 exploration."""
+"""Realtime discovered-grid GUI for Classwork 8.
+
+The visual map is intentionally local/unknown-world:
+- no field dimensions are known in advance
+- start is logical cell (0, 0)
+- FRONT at mission start is drawn upward
+- RIGHT is drawn to the right
+- cells/walls appear only as the robot discovers them
+
+The fine 5 cm occupancy grid still runs in the mapper/export pipeline, but this
+GUI presents the 60 cm logical maze cells in the same visual style as the main
+fixed-grid GUI.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +18,33 @@ import math
 import queue
 import threading
 import traceback
-from typing import Callable, Optional
+from typing import Callable
 
 
 class RealtimeMapGUI:
-    def __init__(self, stop_event: threading.Event, canvas_px: int = 720, refresh_ms: int = 150):
+    COLOURS = {
+        "background": "#f8fafc",
+        "panel": "#ffffff",
+        "canvas": "#eef2f7",
+        "cell": "#ffffff",
+        "grid": "#cbd5e1",
+        "wall": "#111827",
+        "travel": "#2563eb",
+        "route": "#93c5fd",
+        "start": "#16a34a",
+        "robot": "#dc2626",
+        "gimbal": "#f59e0b",
+        "unknown_text": "#94a3b8",
+        "text": "#0f172a",
+        "muted": "#64748b",
+    }
+
+    def __init__(
+        self,
+        stop_event: threading.Event,
+        canvas_px: int = 720,
+        refresh_ms: int = 150,
+    ):
         import tkinter as tk
         from tkinter import ttk
 
@@ -20,14 +54,14 @@ class RealtimeMapGUI:
         self.refresh_ms = int(refresh_ms)
         self._queue = queue.Queue()
         self._latest = None
-        self._photo = None
-        self._scaled_photo = None
 
         self.root = tk.Tk()
-        self.root.title("Classwork 8 - ToF Realtime Exploration")
-        self.root.geometry("1040x820")
-        self.root.minsize(900, 700)
+        self.root.title("Classwork 8 - Unknown World Grid Mapping")
+        self.root.geometry("1120x840")
+        self.root.minsize(920, 700)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.root.configure(background=self.COLOURS["background"])
 
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill="both", expand=True)
@@ -35,22 +69,31 @@ class RealtimeMapGUI:
         left = ttk.Frame(outer)
         left.pack(side="left", fill="both", expand=True)
 
-        right = ttk.Frame(outer, width=280)
-        right.pack(side="right", fill="y", padx=(12, 0))
+        right = ttk.Frame(outer, width=300)
+        right.pack(side="right", fill="y", padx=(14, 0))
+        right.pack_propagate(False)
 
         self.canvas_px = int(canvas_px)
         self.canvas = tk.Canvas(
             left,
             width=self.canvas_px,
             height=self.canvas_px,
-            bg="#b8b8b8",
+            bg=self.COLOURS["canvas"],
             highlightthickness=1,
-            highlightbackground="#666666",
+            highlightbackground="#94a3b8",
         )
         self.canvas.pack(fill="both", expand=True)
 
-        ttk.Label(right, text="Classwork 8", font=("Segoe UI", 16, "bold")).pack(anchor="w")
-        ttk.Label(right, text="ToF-only realtime mapping", font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 14))
+        ttk.Label(
+            right,
+            text="Classwork 8",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            right,
+            text="Unknown-world 60 cm grid mapping",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(0, 14))
 
         self.status_var = tk.StringVar(value="Starting...")
         self.pose_var = tk.StringVar(value="Pose: --")
@@ -58,7 +101,8 @@ class RealtimeMapGUI:
         self.tof_var = tk.StringVar(value="ToF: --")
         self.gimbal_var = tk.StringVar(value="Gimbal: --")
         self.moves_var = tk.StringVar(value="Moves: 0")
-        self.coverage_var = tk.StringVar(value="Coverage: 0.00%")
+        self.discovered_var = tk.StringVar(value="Discovered cells: 1")
+        self.coverage_var = tk.StringVar(value="Occupancy coverage: 0.00%")
         self.reason_var = tk.StringVar(value="")
 
         for variable in (
@@ -68,31 +112,65 @@ class RealtimeMapGUI:
             self.tof_var,
             self.gimbal_var,
             self.moves_var,
+            self.discovered_var,
             self.coverage_var,
         ):
-            ttk.Label(right, textvariable=variable, wraplength=260).pack(anchor="w", pady=3)
+            ttk.Label(
+                right,
+                textvariable=variable,
+                wraplength=280,
+            ).pack(anchor="w", pady=3)
 
         ttk.Separator(right, orient="horizontal").pack(fill="x", pady=12)
+
         ttk.Label(
             right,
-            text="Map legend\nGray = unknown\nWhite = free\nBlack = wall\nBlue = trajectory\nRed = robot",
+            text=(
+                "Map legend\n"
+                "Thin gray = discovered 60 cm cell\n"
+                "Thick black = wall detected by ToF\n"
+                "Blue = realtime odometry trajectory\n"
+                "Light blue = logical cell-to-cell path\n"
+                "Green S = mission start\n"
+                "Red R = robot\n"
+                "Orange arrow = current ToF/Gimbal direction"
+            ),
             justify="left",
+            wraplength=280,
+        ).pack(anchor="w")
+
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=12)
+
+        ttk.Label(
+            right,
+            text=(
+                "Map frame\n"
+                "FRONT at mission start = ↑\n"
+                "RIGHT at mission start = →\n"
+                "No field size/start corner is preloaded."
+            ),
+            justify="left",
+            wraplength=280,
         ).pack(anchor="w")
 
         ttk.Label(
             right,
             textvariable=self.reason_var,
-            wraplength=260,
+            wraplength=280,
             foreground="#8b0000",
         ).pack(anchor="w", pady=(14, 8))
 
-        self.stop_button = ttk.Button(right, text="STOP & SAVE", command=self._request_stop)
+        self.stop_button = ttk.Button(
+            right,
+            text="STOP & SAVE",
+            command=self._request_stop,
+        )
         self.stop_button.pack(fill="x", pady=(12, 6))
 
         ttk.Label(
             right,
-            text="Closing the window also requests a safe stop and export.",
-            wraplength=260,
+            text="Closing this window requests a safe stop and result export.",
+            wraplength=280,
             justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
@@ -108,7 +186,7 @@ class RealtimeMapGUI:
 
     def _request_stop(self) -> None:
         self.stop_event.set()
-        self.status_var.set("Stopping safely and saving results...")
+        self.status_var.set("Status: Stopping safely and saving results...")
         self.stop_button.state(["disabled"])
 
     def _on_close(self) -> None:
@@ -136,141 +214,325 @@ class RealtimeMapGUI:
 
         self.root.after(self.refresh_ms, self._poll)
 
-    def _render(self, snapshot: dict) -> None:
-        matrix = snapshot.get("matrix")
-        if matrix:
-            self._draw_map(snapshot)
+    @staticmethod
+    def _display_cell(cell):
+        """Logical +X FRONT/+Y LEFT -> screen row/column."""
+        x, y = int(cell[0]), int(cell[1])
+        return -x, -y
 
-        status = snapshot.get("status", "")
-        self.status_var.set("Status: " + status)
+    def _render(self, snapshot: dict) -> None:
+        if snapshot.get("known_cells"):
+            self._draw_grid_map(snapshot)
+
+        self.status_var.set("Status: " + str(snapshot.get("status", "")))
 
         robot_xy = snapshot.get("robot_xy")
         if robot_xy is None:
             self.pose_var.set("Pose: --")
         else:
-            self.pose_var.set("Pose: x={:+.2f} m  y={:+.2f} m".format(robot_xy[0], robot_xy[1]))
+            self.pose_var.set(
+                "Pose: x={:+.2f} m  y={:+.2f} m".format(
+                    float(robot_xy[0]),
+                    float(robot_xy[1]),
+                )
+            )
 
         cell = snapshot.get("logical_cell")
-        self.cell_var.set("Cell: --" if cell is None else "Cell: ({}, {})".format(cell[0], cell[1]))
+        self.cell_var.set(
+            "Cell: --"
+            if cell is None
+            else "Cell: ({}, {})".format(cell[0], cell[1])
+        )
 
         tof_cm = snapshot.get("tof_cm")
-        self.tof_var.set("ToF: --" if tof_cm is None else "ToF: {:.1f} cm".format(tof_cm))
+        self.tof_var.set(
+            "ToF: --"
+            if tof_cm is None
+            else "ToF: {:.1f} cm".format(float(tof_cm))
+        )
 
         direction_name = snapshot.get("gimbal_direction_name", "--")
         gimbal_yaw = snapshot.get("gimbal_yaw_deg")
         if gimbal_yaw is None:
             self.gimbal_var.set("Gimbal: {}".format(direction_name))
         else:
-            self.gimbal_var.set("Gimbal: {} ({:+.1f}°)".format(direction_name, gimbal_yaw))
+            self.gimbal_var.set(
+                "Gimbal: {} ({:+.1f}°)".format(
+                    direction_name,
+                    float(gimbal_yaw),
+                )
+            )
 
         self.moves_var.set("Moves: {}".format(snapshot.get("moves", 0)))
-        self.coverage_var.set("Coverage: {:.2f}%".format(float(snapshot.get("coverage", 0.0))))
+        self.discovered_var.set(
+            "Discovered cells: {}".format(len(snapshot.get("known_cells") or []))
+        )
+        self.coverage_var.set(
+            "Occupancy coverage: {:.2f}%".format(
+                float(snapshot.get("coverage", 0.0))
+            )
+        )
 
-        reason = snapshot.get("reason") or ""
-        self.reason_var.set(reason)
+        self.reason_var.set(snapshot.get("reason") or "")
 
         if snapshot.get("finished"):
             self.stop_button.state(["disabled"])
 
-    def _draw_map(self, snapshot: dict) -> None:
-        matrix = snapshot["matrix"]
-        rows = len(matrix)
-        cols = len(matrix[0]) if rows else 0
-        if rows == 0 or cols == 0:
-            return
+    def _draw_grid_map(self, snapshot: dict) -> None:
+        canvas = self.canvas
+        colours = self.COLOURS
+        canvas.delete("all")
 
-        canvas_w = max(1, int(self.canvas.winfo_width()))
-        canvas_h = max(1, int(self.canvas.winfo_height()))
-        scale = max(1, min(canvas_w // cols, canvas_h // rows))
-        image_w = cols * scale
-        image_h = rows * scale
-        left = (canvas_w - image_w) / 2.0
-        top = (canvas_h - image_h) / 2.0
+        known_cells = {
+            (int(cell[0]), int(cell[1]))
+            for cell in (snapshot.get("known_cells") or [(0, 0)])
+        }
+        current_cell = snapshot.get("logical_cell")
+        if current_cell is not None:
+            known_cells.add((int(current_cell[0]), int(current_cell[1])))
+        known_cells.add((0, 0))
 
-        base = self.tk.PhotoImage(width=cols, height=rows)
-        color = {-1: "#b8b8b8", 0: "#ffffff", 100: "#111111"}
-        # Matrix row 0 is the minimum world-y row, so reverse for screen top-down.
-        for display_row, source_row in enumerate(reversed(matrix)):
-            row_colors = " ".join(color.get(int(v), "#b8b8b8") for v in source_row)
-            base.put("{" + row_colors + "}", to=(0, display_row))
+        display_cells = [self._display_cell(cell) for cell in known_cells]
+        min_row = min(r for r, _ in display_cells)
+        max_row = max(r for r, _ in display_cells)
+        min_col = min(c for _, c in display_cells)
+        max_col = max(c for _, c in display_cells)
 
-        scaled = base.zoom(scale, scale)
-        self._photo = base
-        self._scaled_photo = scaled
+        # One-cell visual padding around the discovered map. It is only display
+        # space; it does not imply known field extent.
+        pad_cells = 1
+        min_row -= pad_cells
+        max_row += pad_cells
+        min_col -= pad_cells
+        max_col += pad_cells
 
-        self.canvas.delete("all")
-        self.canvas.create_image(left, top, anchor="nw", image=scaled)
+        rows = max_row - min_row + 1
+        cols = max_col - min_col + 1
 
-        resolution = float(snapshot.get("resolution_m", 0.05))
-        origin_x = float(snapshot.get("origin_x_m", -cols * resolution / 2.0))
-        origin_y = float(snapshot.get("origin_y_m", -rows * resolution / 2.0))
-        width_m = cols * resolution
-        height_m = rows * resolution
-        cell_size_m = float(snapshot.get("cell_size_m", 0.60))
+        canvas_w = max(100, int(canvas.winfo_width()))
+        canvas_h = max(100, int(canvas.winfo_height()))
+        outer_pad = 42
 
-        def world_to_canvas(x_m: float, y_m: float):
-            col = (x_m - origin_x) / resolution
-            row = (y_m - origin_y) / resolution
-            px = left + col * scale
-            py = top + (rows - row) * scale
+        size = min(
+            (canvas_w - 2 * outer_pad) / max(1, cols),
+            (canvas_h - 2 * outer_pad) / max(1, rows),
+        )
+        size = max(28.0, min(110.0, size))
+
+        map_w = cols * size
+        map_h = rows * size
+        ox = (canvas_w - map_w) / 2.0
+        oy = (canvas_h - map_h) / 2.0
+
+        def logical_center(cell):
+            row, col = self._display_cell(cell)
+            return (
+                ox + (col - min_col + 0.5) * size,
+                oy + (row - min_row + 0.5) * size,
+            )
+
+        def logical_rect(cell):
+            row, col = self._display_cell(cell)
+            x0 = ox + (col - min_col) * size
+            y0 = oy + (row - min_row) * size
+            return x0, y0, x0 + size, y0 + size
+
+        def metric_to_canvas(x_m, y_m):
+            # 1 logical cell = cell_size_m. +X is FRONT/up, +Y is LEFT.
+            cell_size_m = float(snapshot.get("cell_size_m", 0.60))
+            display_row = -float(x_m) / cell_size_m
+            display_col = -float(y_m) / cell_size_m
+            px = ox + (display_col - min_col + 0.5) * size
+            py = oy + (display_row - min_row + 0.5) * size
             return px, py
 
-        # Physical 60 cm cell boundaries, centered around the start cell.
-        k_min = int(math.floor((-width_m / 2.0 - cell_size_m / 2.0) / cell_size_m)) - 1
-        k_max = int(math.ceil((width_m / 2.0 - cell_size_m / 2.0) / cell_size_m)) + 1
-        for k in range(k_min, k_max + 1):
-            x = (k + 0.5) * cell_size_m
-            if origin_x <= x <= origin_x + width_m:
-                px, _ = world_to_canvas(x, 0.0)
-                self.canvas.create_line(px, top, px, top + image_h, fill="#d0d0d0", dash=(3, 5))
-            y = (k + 0.5) * cell_size_m
-            if origin_y <= y <= origin_y + height_m:
-                _, py = world_to_canvas(0.0, y)
-                self.canvas.create_line(left, py, left + image_w, py, fill="#d0d0d0", dash=(3, 5))
+        # Draw discovered cells only. Unknown field outside this set stays gray.
+        for cell in sorted(known_cells):
+            x0, y0, x1, y1 = logical_rect(cell)
+            canvas.create_rectangle(
+                x0,
+                y0,
+                x1,
+                y1,
+                fill=colours["cell"],
+                outline=colours["grid"],
+                width=1,
+            )
+            canvas.create_text(
+                x0 + 5,
+                y0 + 4,
+                text="{:+d},{:+d}".format(cell[0], cell[1]),
+                anchor="nw",
+                fill=colours["unknown_text"],
+                font=("Segoe UI", max(7, int(size * 0.10))),
+            )
 
+        # Logical cell-centre path: useful for seeing DFS/backtracking decisions.
+        logical_path = [
+            (int(cell[0]), int(cell[1]))
+            for cell in (snapshot.get("logical_path") or [])
+        ]
+        if len(logical_path) >= 2:
+            coords = []
+            for cell in logical_path:
+                coords.extend(logical_center(cell))
+            canvas.create_line(
+                *coords,
+                fill=colours["route"],
+                width=max(2, int(size * 0.055)),
+                dash=(7, 5),
+                joinstyle="round",
+                capstyle="round",
+            )
+
+        # Actual odometry path grows continuously while the robot is moving.
         trajectory = snapshot.get("trajectory") or []
         if len(trajectory) >= 2:
             coords = []
             for x_m, y_m in trajectory:
-                px, py = world_to_canvas(float(x_m), float(y_m))
-                coords.extend((px, py))
-            self.canvas.create_line(*coords, fill="#2563eb", width=3, smooth=False)
+                coords.extend(metric_to_canvas(float(x_m), float(y_m)))
+            canvas.create_line(
+                *coords,
+                fill=colours["travel"],
+                width=max(3, int(size * 0.075)),
+                joinstyle="round",
+                capstyle="round",
+            )
 
+        # Sensor-confirmed walls overlay the thin cell grid.
+        wall_edges = snapshot.get("wall_edges") or []
+        drawn_lines = set()
+        for x, y, direction in wall_edges:
+            cell = (int(x), int(y))
+            if cell not in known_cells:
+                # A mirrored wall entry can belong to an undiscovered neighbour.
+                # The same physical edge will be drawn from the discovered side.
+                continue
+
+            x0, y0, x1, y1 = logical_rect(cell)
+            direction = int(direction) % 4
+            if direction == 0:      # FRONT = screen top
+                line = (x0, y0, x1, y0)
+            elif direction == 1:    # RIGHT
+                line = (x1, y0, x1, y1)
+            elif direction == 2:    # BACK
+                line = (x0, y1, x1, y1)
+            else:                   # LEFT
+                line = (x0, y0, x0, y1)
+
+            key = tuple(round(v, 3) for v in line)
+            reverse_key = (key[2], key[3], key[0], key[1])
+            if key in drawn_lines or reverse_key in drawn_lines:
+                continue
+            drawn_lines.add(key)
+
+            canvas.create_line(
+                *line,
+                fill=colours["wall"],
+                width=max(4, int(size * 0.075)),
+                capstyle="round",
+            )
+
+        # Start marker.
+        sx, sy = logical_center((0, 0))
+        start_radius = max(9, size * 0.16)
+        canvas.create_oval(
+            sx - start_radius,
+            sy - start_radius,
+            sx + start_radius,
+            sy + start_radius,
+            fill=colours["start"],
+            outline="white",
+            width=2,
+        )
+        canvas.create_text(
+            sx,
+            sy,
+            text="S",
+            fill="white",
+            font=("Segoe UI", max(9, int(size * 0.18)), "bold"),
+        )
+
+        # Robot marker follows continuous odometry, not only logical-cell jumps.
         robot_xy = snapshot.get("robot_xy")
-        if robot_xy is not None:
-            px, py = world_to_canvas(float(robot_xy[0]), float(robot_xy[1]))
-            radius = max(5, int(0.12 / resolution * scale))
-            self.canvas.create_oval(
-                px - radius,
-                py - radius,
-                px + radius,
-                py + radius,
-                fill="#dc2626",
-                outline="#7f1d1d",
-                width=2,
+        if robot_xy is None:
+            if current_cell is None:
+                robot_px, robot_py = sx, sy
+            else:
+                robot_px, robot_py = logical_center(
+                    (int(current_cell[0]), int(current_cell[1]))
+                )
+        else:
+            robot_px, robot_py = metric_to_canvas(
+                float(robot_xy[0]),
+                float(robot_xy[1]),
             )
 
-            direction = int(snapshot.get("gimbal_direction", 0)) % 4
-            dx, dy = {
-                0: (1.0, 0.0),
-                1: (0.0, -1.0),
-                2: (-1.0, 0.0),
-                3: (0.0, 1.0),
-            }[direction]
-            length = max(28, radius * 2)
-            self.canvas.create_line(
-                px,
-                py,
-                px + dx * length,
-                py - dy * length,
-                fill="#f59e0b",
-                width=4,
-                arrow="last",
-            )
+        robot_radius = max(10, size * 0.18)
+        canvas.create_oval(
+            robot_px - robot_radius,
+            robot_py - robot_radius,
+            robot_px + robot_radius,
+            robot_py + robot_radius,
+            fill=colours["robot"],
+            outline="white",
+            width=2,
+        )
+        canvas.create_text(
+            robot_px,
+            robot_py,
+            text="R",
+            fill="white",
+            font=("Segoe UI", max(9, int(size * 0.17)), "bold"),
+        )
 
-        # Mark map origin/start.
-        sx, sy = world_to_canvas(0.0, 0.0)
-        self.canvas.create_oval(sx - 5, sy - 5, sx + 5, sy + 5, fill="#16a34a", outline="")
+        # ToF/gimbal direction arrow.
+        direction = int(snapshot.get("gimbal_direction", 0)) % 4
+        dx, dy = {
+            0: (0.0, -1.0),   # FRONT/up
+            1: (1.0, 0.0),    # RIGHT
+            2: (0.0, 1.0),    # BACK/down
+            3: (-1.0, 0.0),   # LEFT
+        }[direction]
+        arrow_len = max(24.0, size * 0.42)
+        canvas.create_line(
+            robot_px,
+            robot_py,
+            robot_px + dx * arrow_len,
+            robot_py + dy * arrow_len,
+            fill=colours["gimbal"],
+            width=max(3, int(size * 0.055)),
+            arrow="last",
+        )
+
+        # Local orientation labels. These are relative, not global compass data.
+        canvas.create_text(
+            ox,
+            max(14, oy - 24),
+            text="FRONT ↑",
+            anchor="w",
+            fill=colours["text"],
+            font=("Segoe UI", 11, "bold"),
+        )
+        canvas.create_text(
+            ox + map_w,
+            max(14, oy - 24),
+            text="RIGHT →",
+            anchor="e",
+            fill=colours["text"],
+            font=("Segoe UI", 11, "bold"),
+        )
+
+        # Small note prevents the auto-fit display from being mistaken for a
+        # preloaded field boundary.
+        canvas.create_text(
+            ox,
+            min(canvas_h - 8, oy + map_h + 18),
+            text="Auto-fit discovered area — outer gray space is still unknown.",
+            anchor="w",
+            fill=colours["muted"],
+            font=("Segoe UI", 9),
+        )
 
     def run(self) -> None:
         self.root.mainloop()
@@ -299,10 +561,17 @@ def run_with_gui(
         except Exception as exc:
             gui.publish({
                 "status": "ERROR",
-                "reason": "{}\n{}".format(exc, traceback.format_exc(limit=4)),
+                "reason": "{}\n{}".format(
+                    exc,
+                    traceback.format_exc(limit=4),
+                ),
                 "finished": True,
             })
 
-    thread = threading.Thread(target=worker, name="classwork8-explorer", daemon=True)
+    thread = threading.Thread(
+        target=worker,
+        name="classwork8-explorer",
+        daemon=True,
+    )
     thread.start()
     gui.run()
