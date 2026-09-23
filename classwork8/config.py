@@ -26,9 +26,9 @@ class Classwork8Config:
     # Gimbal absolute yaw positions relative to the chassis.
     # DJI moveto yaw accepts approximately -250..250 degrees.
     gimbal_front_yaw_deg: float = 0.0
-    gimbal_right_yaw_deg: float = -90.0
+    gimbal_right_yaw_deg: float = 90.0
     gimbal_back_yaw_deg: float = 180.0
-    gimbal_left_yaw_deg: float = 90.0
+    gimbal_left_yaw_deg: float = -90.0
     gimbal_yaw_speed_dps: float = 100.0
     gimbal_settle_sec: float = 0.20
 
