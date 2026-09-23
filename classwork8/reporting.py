@@ -41,6 +41,9 @@ class RunRecorder:
         ir_left: Optional[bool],
         ir_right: Optional[bool],
         mode: str,
+        vision_error: Optional[float] = None,
+        vision_confidence: Optional[float] = None,
+        vision_correction_mps: Optional[float] = None,
     ) -> None:
         self.samples.append({
             "t_sec": round(self._elapsed(now), 4),
@@ -54,6 +57,9 @@ class RunRecorder:
             "ir_left_blocked": ir_left,
             "ir_right_blocked": ir_right,
             "mode": mode,
+            "vision_error": vision_error,
+            "vision_confidence": vision_confidence,
+            "vision_correction_mps": vision_correction_mps,
         })
 
     def event(self, now: float, event_type: str, detail: str, **extra) -> None:
