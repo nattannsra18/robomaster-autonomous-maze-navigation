@@ -617,19 +617,23 @@ def run(
         tof_sensor = ep_robot.sensor
 
         # FREE mode decouples chassis yaw from gimbal yaw. The chassis therefore
-        # never rotates because of scanning.
-        ep_robot.set_robot_mode(mode=robot.FREE)
-        gimbal.recenter(
-            pitch_speed=config.gimbal_yaw_speed_dps,
-            yaw_speed=config.gimbal_yaw_speed_dps,
-        ).wait_for_completed()
+        # never performs 90-degree scan turns.
+        print("[INIT] Setting robot mode to FREE...", flush=True)
+        mode_ok = ep_robot.set_robot_mode(mode=robot.FREE)
+        print("[INIT] FREE mode result: {!r}".format(mode_ok), flush=True)
 
+        # Subscribe BEFORE recentering so we can verify the actual gimbal angle
+        # even if the DJI action-completion packet is delayed/lost.
+        print("[INIT] Subscribing ToF...", flush=True)
         tof_subscribed = bool(
             tof_sensor.sub_distance(
                 freq=20,
                 callback=sensors.tof_callback,
             )
         )
+        print("[INIT] ToF subscription: {!r}".format(tof_subscribed), flush=True)
+
+        print("[INIT] Subscribing odometry...", flush=True)
         pose_subscribed = bool(
             chassis.sub_position(
                 cs=1,
@@ -637,21 +641,74 @@ def run(
                 callback=pose.position_callback,
             )
         )
+        print("[INIT] Position subscription: {!r}".format(pose_subscribed), flush=True)
+
+        print("[INIT] Subscribing attitude...", flush=True)
         attitude_subscribed = bool(
             chassis.sub_attitude(
                 freq=20,
                 callback=pose.attitude_callback,
             )
         )
+        print("[INIT] Attitude subscription: {!r}".format(attitude_subscribed), flush=True)
+
+        print("[INIT] Subscribing gimbal angle...", flush=True)
         gimbal_subscribed = bool(
             gimbal.sub_angle(
                 freq=20,
                 callback=gimbal_tracker.callback,
             )
         )
+        print("[INIT] Gimbal subscription: {!r}".format(gimbal_subscribed), flush=True)
 
+        print("[INIT] Waiting for initial position/yaw...", flush=True)
         raw_start_x, raw_start_y = wait_for_position(pose)
         raw_start_yaw = wait_for_yaw(pose)
+        print(
+            "[INIT] Pose ready: x={:+.3f} y={:+.3f} yaw={}".format(
+                float(raw_start_x),
+                float(raw_start_y),
+                "---" if raw_start_yaw is None else "{:+.1f}".format(float(raw_start_yaw)),
+            ),
+            flush=True,
+        )
+
+        if raw_start_yaw is None:
+            raise RuntimeError("attitude/yaw subscription did not produce data")
+
+        # Never block forever on an SDK action. If the action completion packet
+        # is lost, validate the real relative gimbal yaw from sub_angle().
+        print("[INIT] Recentering gimbal (5 s timeout)...", flush=True)
+        recenter_action = gimbal.recenter(
+            pitch_speed=config.gimbal_yaw_speed_dps,
+            yaw_speed=config.gimbal_yaw_speed_dps,
+        )
+        recenter_ok = recenter_action.wait_for_completed(timeout=5.0)
+
+        if not recenter_ok:
+            print(
+                "[INIT] Recenter action timed out; checking measured gimbal yaw...",
+                flush=True,
+            )
+            deadline = time.monotonic() + 2.0
+            measured_yaw = gimbal_tracker.get_yaw()
+            while measured_yaw is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+                measured_yaw = gimbal_tracker.get_yaw()
+
+            if measured_yaw is None or abs(normalize_angle_deg(float(measured_yaw))) > 5.0:
+                raise RuntimeError(
+                    "gimbal recenter failed/timed out and measured yaw is not near 0 deg"
+                )
+
+            print(
+                "[INIT] Measured gimbal yaw is {:+.1f} deg; continuing.".format(
+                    float(measured_yaw)
+                ),
+                flush=True,
+            )
+        else:
+            print("[INIT] Gimbal recenter complete.", flush=True)
 
         heading = HeadingManager()
         if not heading.initialize(raw_start_yaw):
