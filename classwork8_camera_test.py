@@ -10,6 +10,8 @@ Press Q or ESC to stop.
 import sys
 import time
 import types
+from datetime import datetime
+from pathlib import Path
 
 
 def _prepare_optional_media_codec():
@@ -106,6 +108,7 @@ def main():
         print(" CAMERA CORRIDOR TEST - CHASSIS WILL NOT MOVE")
         print(" Blue/orange lines = detected side-boundary candidates")
         print(" Green vertical line = estimated corridor centre")
+        print(" S = save raw and annotated camera frames as PNG")
         print(" Q / ESC = stop")
         print("============================================================")
 
@@ -130,6 +133,24 @@ def main():
             if frame is not None:
                 cv2.imshow("Classwork 8 - Camera Corridor Test", frame)
                 key = cv2.waitKey(1) & 0xFF
+                if key == ord("s"):
+                    raw = vision.latest_raw_frame()
+                    if raw is not None:
+                        out = Path("classwork8_output") / "camera_samples"
+                        out.mkdir(parents=True, exist_ok=True)
+                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                        raw_path = out / ("camera_raw_" + stamp + ".png")
+                        debug_path = out / ("camera_debug_" + stamp + ".png")
+                        raw_ok = cv2.imwrite(str(raw_path), raw)
+                        debug_ok = cv2.imwrite(str(debug_path), frame)
+                        print(
+                            "[VISION] Saved raw={} debug={} success={}".format(
+                                raw_path, debug_path, bool(raw_ok and debug_ok)
+                            ),
+                            flush=True,
+                        )
+                    else:
+                        print("[VISION] No fresh camera frame to save.", flush=True)
                 if key in (ord("q"), 27):
                     break
             else:
