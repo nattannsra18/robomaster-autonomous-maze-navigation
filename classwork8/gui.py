@@ -279,6 +279,7 @@ class RealtimeMapGUI:
 def run_with_gui(
     run_function: Callable,
     config,
+    ep_robot,
 ) -> None:
     stop_event = threading.Event()
     gui = RealtimeMapGUI(
@@ -293,6 +294,7 @@ def run_with_gui(
                 config=config,
                 publish=gui.publish,
                 stop_event=stop_event,
+                ep_robot=ep_robot,
             )
         except Exception as exc:
             gui.publish({
