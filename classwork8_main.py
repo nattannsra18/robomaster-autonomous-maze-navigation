@@ -1,11 +1,4 @@
-"""Standalone entry point for Classwork 8.
-
-Classwork 8 does not use the RoboMaster camera or audio stream. The upstream
-DJI SDK imports its optional native media codec while importing robot.py,
-though, so provide a minimal in-memory compatibility module when that codec is
-not installed. Chassis, gimbal, ToF, sensor adaptor, odometry and attitude still
-use the real RoboMaster SDK.
-"""
+"""Standalone entry point for ToF-only Classwork 8."""
 
 import sys
 import types
@@ -35,7 +28,7 @@ def _prepare_optional_media_codec():
 
 _prepare_optional_media_codec()
 
-from classwork8.run import main
+from classwork8.tof_only import run as main
 
 
 if __name__ == "__main__":
