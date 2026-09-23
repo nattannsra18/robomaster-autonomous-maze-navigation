@@ -152,6 +152,20 @@ def _neighbor(node: Tuple[int, int], direction: int) -> Tuple[int, int]:
     return node[0] + dx, node[1] + dy
 
 
+def _set_edge_state(
+    edge_states: Dict[Tuple[int, int, int], str],
+    cell: Tuple[int, int],
+    direction: int,
+    state: str,
+) -> None:
+    """Record a WALL/OPEN edge on both adjacent logical cells."""
+    direction %= 4
+    state = str(state).upper()
+    edge_states[(int(cell[0]), int(cell[1]), direction)] = state
+    other = _neighbor(cell, direction)
+    edge_states[(int(other[0]), int(other[1]), (direction + 2) % 4)] = state
+
+
 def _direction_to(
     current: Tuple[int, int],
     target: Tuple[int, int],
@@ -296,6 +310,8 @@ def _scan_four_directions(
     publish_state: Callable[..., None],
     current_cell: Tuple[int, int],
     moves: int,
+    known_cells: Set[Tuple[int, int]],
+    edge_states: Dict[Tuple[int, int, int], str],
 ) -> Optional[Tuple[Dict[int, Optional[float]], Set[int]]]:
     # Sweep in the direction that is closest to the current gimbal endpoint.
     # This avoids a large BACK(+180) -> LEFT(-90) wrap across the +250 deg
@@ -382,8 +398,13 @@ def _scan_four_directions(
                 distance_cm,
             )
 
-        if distance_cm is not None and distance_cm >= config.tof_open_cm:
-            open_dirs.add(direction)
+        if distance_cm is not None:
+            if distance_cm >= config.tof_open_cm:
+                open_dirs.add(direction)
+                _set_edge_state(edge_states, current_cell, direction, "OPEN")
+                known_cells.add(_neighbor(current_cell, direction))
+            else:
+                _set_edge_state(edge_states, current_cell, direction, "WALL")
 
         recorder.record_sample(
             time.monotonic(),
@@ -678,6 +699,11 @@ def run(
     current_tof = None
     last_publish = [0.0]
 
+    # Unknown-world topological map used by the realtime GUI.
+    known_cells: Set[Tuple[int, int]] = {(0, 0)}
+    edge_states: Dict[Tuple[int, int, int], str] = {}
+    logical_path: List[Tuple[int, int]] = [(0, 0)]
+
     pose = PoseTracker()
     sensors = ToFOnlySensorManager()
     gimbal_tracker = GimbalTracker()
@@ -728,6 +754,14 @@ def run(
             "trajectory": recorder.trajectory_xy(),
             "robot_xy": None if rel_x is None or rel_y is None else (rel_x, rel_y),
             "logical_cell": logical_cell,
+            "known_cells": sorted(known_cells),
+            "wall_edges": sorted(
+                key for key, state in edge_states.items() if state == "WALL"
+            ),
+            "open_edges": sorted(
+                key for key, state in edge_states.items() if state == "OPEN"
+            ),
+            "logical_path": list(logical_path),
             "gimbal_direction": current_gimbal_direction,
             "gimbal_direction_name": DIR_NAME[current_gimbal_direction],
             "gimbal_yaw_deg": gimbal_tracker.get_yaw(),
@@ -908,6 +942,8 @@ def run(
                 publish_state,
                 current_cell,
                 moves,
+                known_cells,
+                edge_states,
             )
             if scan is None:
                 finish_reason = "USER_STOP" if stop_event.is_set() else "GIMBAL_SCAN_FAILED"
@@ -981,12 +1017,21 @@ def run(
                     parent_stack.append(current_cell)
                     current_cell = nxt
                     visited.add(current_cell)
+                    known_cells.add(current_cell)
+                    logical_path.append(current_cell)
+                    _set_edge_state(
+                        edge_states,
+                        parent_stack[-1],
+                        chosen,
+                        "OPEN",
+                    )
                     last_move_direction = chosen
                     moves += 1
                     continue
 
                 if reason == "FRONT_BLOCKED":
                     blocked_edges.add((current_cell, chosen))
+                    _set_edge_state(edge_states, current_cell, chosen, "WALL")
                     recorder.event(
                         time.monotonic(),
                         "BLOCKED_EDGE",
@@ -1059,6 +1104,14 @@ def run(
                 break
 
             current_cell = parent
+            known_cells.add(current_cell)
+            logical_path.append(current_cell)
+            _set_edge_state(
+                edge_states,
+                current_cell,
+                (back_direction + 2) % 4,
+                "OPEN",
+            )
             last_move_direction = back_direction
             moves += 1
 
