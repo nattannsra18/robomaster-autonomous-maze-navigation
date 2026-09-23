@@ -36,7 +36,7 @@ class Classwork8Config:
     gimbal_yaw_kp: float = 1.6
     gimbal_tolerance_deg: float = 2.0
     gimbal_stable_samples: int = 3
-    gimbal_turn_timeout_sec: float = 5.0
+    gimbal_turn_timeout_sec: float = 7.0
     gimbal_settle_sec: float = 0.20
 
     # Occupancy evidence
