@@ -68,6 +68,27 @@ class Classwork8Config:
     # its original orientation. Set False if absolutely no z correction is wanted.
     heading_hold_enabled: bool = True
 
+    # Camera-assisted corridor centering. ToF remains authoritative for walls
+    # and stopping; vision only adds a small lateral correction when reliable.
+    vision_enabled: bool = True
+    vision_resolution: str = "360p"
+    vision_start_timeout_sec: float = 4.0
+    vision_max_age_sec: float = 0.40
+    vision_min_confidence: float = 0.35
+    vision_kp_mps: float = 0.035
+    vision_max_correction_mps: float = 0.025
+    vision_error_ema_alpha: float = 0.35
+    vision_roi_top_ratio: float = 0.42
+    vision_blur_kernel: int = 5
+    vision_canny_low: int = 45
+    vision_canny_high: int = 130
+    vision_hough_threshold: int = 32
+    vision_min_line_length_px: int = 35
+    vision_max_line_gap_px: int = 24
+    vision_min_side_angle_deg: float = 24.0
+    vision_min_corridor_width_ratio: float = 0.20
+    vision_max_corridor_width_ratio: float = 1.40
+
     # GUI
     gui_refresh_ms: int = 150
     gui_canvas_px: int = 720
@@ -93,6 +114,12 @@ class Classwork8Config:
             raise ValueError("travel_speed_mps must be positive")
         if self.max_moves <= 0:
             raise ValueError("max_moves must be positive")
+        if self.vision_resolution not in ("360p", "540p", "720p"):
+            raise ValueError("vision_resolution must be 360p, 540p, or 720p")
+        if self.vision_blur_kernel < 3 or self.vision_blur_kernel % 2 == 0:
+            raise ValueError("vision_blur_kernel must be an odd integer >= 3")
+        if not 0.0 <= self.vision_min_confidence <= 1.0:
+            raise ValueError("vision_min_confidence must be between 0 and 1")
 
     def gimbal_yaw_for_direction(self, direction: int) -> float:
         return {
