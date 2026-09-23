@@ -91,17 +91,51 @@ def _sleep_interruptible(seconds: float, stop_event: Optional[threading.Event]) 
     return True
 
 
+def _map_xy_from_raw(
+    raw_x: float,
+    raw_y: float,
+    start_x: float,
+    start_y: float,
+    start_yaw_deg: float,
+) -> Tuple[float, float]:
+    """Rotate DJI power-on odometry into the chassis frame at mission start.
+
+    DJI sub_position(cs=1) keeps the coordinate axes from robot power-on.
+    The mission may begin after the robot has already been moved/rotated, so
+    subtracting only x/y is not enough.  We rotate by the initial chassis yaw
+    so map +X is the robot FRONT at mission start and map +Y is robot LEFT.
+    """
+    dx = float(raw_x) - float(start_x)
+    dy = float(raw_y) - float(start_y)
+
+    theta = math.radians(float(start_yaw_deg))
+    c = math.cos(theta)
+    sn = math.sin(theta)
+
+    # World(power-on frame) -> body frame at mission start.
+    body_x = c * dx + sn * dy
+    body_y_right = -sn * dx + c * dy
+
+    # Conventional map frame: +X front, +Y left/up.
+    return body_x, -body_y_right
+
+
 def _relative_xy(
     pose: PoseTracker,
     start_x: float,
     start_y: float,
+    start_yaw_deg: float,
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Convert RoboMaster body-start coordinates to a conventional map frame."""
     x, y = pose.get_xy()
     if x is None or y is None:
         return None, None
-    # RoboMaster +Y is right. Map +Y is left/up.
-    return float(x) - start_x, -(float(y) - start_y)
+    return _map_xy_from_raw(
+        float(x),
+        float(y),
+        start_x,
+        start_y,
+        start_yaw_deg,
+    )
 
 
 def _direction_angle_rad(direction: int) -> float:
@@ -257,6 +291,7 @@ def _scan_four_directions(
     config: Classwork8Config,
     start_x: float,
     start_y: float,
+    start_yaw_deg: float,
     stop_event: Optional[threading.Event],
     publish_state: Callable[..., None],
     current_cell: Tuple[int, int],
@@ -332,7 +367,9 @@ def _scan_four_directions(
             flush=True,
         )
 
-        rel_x, rel_y = _relative_xy(pose, start_x, start_y)
+        rel_x, rel_y = _relative_xy(
+            pose, start_x, start_y, start_yaw_deg
+        )
         yaw = pose.get_yaw()
 
         if rel_x is not None and rel_y is not None:
@@ -386,6 +423,7 @@ def _drive_one_cell(
     config: Classwork8Config,
     start_x: float,
     start_y: float,
+    start_yaw_deg: float,
     direction: int,
     current_cell: Tuple[int, int],
     target_cell: Tuple[int, int],
@@ -410,6 +448,14 @@ def _drive_one_cell(
     if x0 is None or y0 is None:
         return False, "ODOMETRY_UNAVAILABLE", 0.0
 
+    start_map_x, start_map_y = _map_xy_from_raw(
+        float(x0),
+        float(y0),
+        start_x,
+        start_y,
+        start_yaw_deg,
+    )
+
     deadline = time.monotonic() + max(
         7.0,
         (config.exploration_step_m / config.travel_speed_mps) * 3.5,
@@ -430,8 +476,31 @@ def _drive_one_cell(
             stop_chassis(chassis)
             return False, "ODOMETRY_LOST", 0.0
 
-        moved = math.hypot(float(raw_x) - float(x0), float(raw_y) - float(y0))
-        rel_x, rel_y = _relative_xy(pose, start_x, start_y)
+        rel_x, rel_y = _map_xy_from_raw(
+            float(raw_x),
+            float(raw_y),
+            start_x,
+            start_y,
+            start_yaw_deg,
+        )
+
+        delta_map_x = rel_x - start_map_x
+        delta_map_y = rel_y - start_map_y
+
+        if direction == 0:      # FRONT
+            progress = delta_map_x
+            cross_track = delta_map_y
+        elif direction == 1:    # RIGHT
+            progress = -delta_map_y
+            cross_track = delta_map_x
+        elif direction == 2:    # BACK
+            progress = -delta_map_x
+            cross_track = delta_map_y
+        else:                   # LEFT
+            progress = delta_map_y
+            cross_track = delta_map_x
+
+        moved = math.hypot(delta_map_x, delta_map_y)
 
         if rel_x is not None and rel_y is not None:
             _update_tof_ray(
@@ -443,7 +512,7 @@ def _drive_one_cell(
                 front_cm,
             )
 
-        if moved >= config.exploration_step_m - config.step_tolerance_m:
+        if progress >= config.exploration_step_m - config.step_tolerance_m:
             stop_chassis(chassis)
             recorder.record_sample(
                 time.monotonic(),
@@ -466,6 +535,14 @@ def _drive_one_cell(
                 moves=moves + 1,
                 force=True,
             )
+            print(
+                "[MOVE] Reached {}: progress={:.3f} m cross_track={:+.3f} m".format(
+                    target_cell,
+                    progress,
+                    cross_track,
+                ),
+                flush=True,
+            )
             return True, "CELL_COMPLETE", moved
 
         if front_cm is None:
@@ -485,6 +562,22 @@ def _drive_one_cell(
 
         x_cmd = drive_x_unit * speed
         y_cmd = drive_y_unit * speed
+
+        # Keep the robot near the centre-line of the current 60 cm cell.
+        correction = max(
+            -config.cross_track_max_mps,
+            min(
+                config.cross_track_max_mps,
+                config.cross_track_kp * cross_track,
+            ),
+        )
+        if direction in (0, 2):
+            # map +Y is LEFT, chassis +Y is RIGHT.
+            y_cmd += correction
+        else:
+            # Positive cross-track x means we drifted forward; correct backward.
+            x_cmd -= correction
+
         z_cmd = 0.0
         mode = "MOVE_{}".format(DIR_NAME[direction])
 
@@ -611,7 +704,9 @@ def run(
             return
         last_publish[0] = now
 
-        rel_x, rel_y = _relative_xy(pose, raw_start_x, raw_start_y)
+        rel_x, rel_y = _relative_xy(
+            pose, raw_start_x, raw_start_y, raw_start_yaw
+        )
         publish({
             "status": status,
             "reason": reason,
@@ -717,6 +812,13 @@ def run(
         if raw_start_yaw is None:
             raise RuntimeError("attitude/yaw subscription did not produce data")
 
+        print(
+            "[INIT] Local map frame locked to mission-start yaw {:+.1f} deg.".format(
+                float(raw_start_yaw)
+            ),
+            flush=True,
+        )
+
         # Do not use gimbal.recenter().wait_for_completed() here. On this
         # RoboMaster the mechanical action can complete while its action-complete
         # packet is not received, which previously caused an indefinite wait.
@@ -794,6 +896,7 @@ def run(
                 config,
                 float(raw_start_x),
                 float(raw_start_y),
+                float(raw_start_yaw),
                 stop_event,
                 publish_state,
                 current_cell,
@@ -858,6 +961,7 @@ def run(
                     config,
                     float(raw_start_x),
                     float(raw_start_y),
+                    float(raw_start_yaw),
                     chosen,
                     current_cell,
                     nxt,
@@ -935,6 +1039,7 @@ def run(
                 config,
                 float(raw_start_x),
                 float(raw_start_y),
+                float(raw_start_yaw),
                 back_direction,
                 current_cell,
                 parent,
@@ -982,7 +1087,12 @@ def run(
 
         end_pose = None
         try:
-            rel_x, rel_y = _relative_xy(pose, float(raw_start_x), float(raw_start_y))
+            rel_x, rel_y = _relative_xy(
+                pose,
+                float(raw_start_x),
+                float(raw_start_y),
+                float(raw_start_yaw),
+            )
             yaw = pose.get_yaw()
             if rel_x is not None and rel_y is not None and yaw is not None:
                 end_pose = (
