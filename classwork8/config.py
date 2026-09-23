@@ -16,6 +16,8 @@ class Classwork8Config:
     cell_size_m: float = 0.60
     exploration_step_m: float = 0.60
     step_tolerance_m: float = 0.03
+    cross_track_kp: float = 0.60
+    cross_track_max_mps: float = 0.04
 
     # ToF is mounted on the gimbal. The chassis stays at its initial heading
     # during scanning; the gimbal points ToF toward the scan/travel direction.
