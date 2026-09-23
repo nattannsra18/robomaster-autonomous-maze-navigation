@@ -288,8 +288,14 @@ class RealtimeMapGUI:
         vision_error = snapshot.get("vision_error")
         vision_confidence = float(snapshot.get("vision_confidence", 0.0))
         if vision_active:
+            mode = (
+                "STEERING ON"
+                if snapshot.get("vision_steering_enabled")
+                else "MONITOR ONLY (no steering)"
+            )
             self.vision_var.set(
-                "Vision: ACTIVE  err={}  conf={:.2f}".format(
+                "Vision: {}  err={}  conf={:.2f}".format(
+                    mode,
                     "--" if vision_error is None else "{:+.3f}".format(float(vision_error)),
                     vision_confidence,
                 )
