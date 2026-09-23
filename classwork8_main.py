@@ -46,9 +46,16 @@ def main():
         action="store_true",
         help="run in terminal without the realtime Tkinter map",
     )
+    parser.add_argument(
+        "--no-vision",
+        action="store_true",
+        help="disable camera centering and use ToF + odometry only",
+    )
     args = parser.parse_args()
 
     config = Classwork8Config()
+    if args.no_vision:
+        config.vision_enabled = False
 
     if args.no_gui:
         run(config=config)
