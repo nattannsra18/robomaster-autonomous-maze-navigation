@@ -1,39 +1,49 @@
-# Classwork 8 - SLAM / Explore the Unknown World
+# Classwork 8 - ToF-Only Explore the Unknown World
 
 This branch adds a standalone unknown-world exploration mode without changing the original fixed-grid pickup/drop mission.
 
-## Hardware wiring
+## Hardware used
 
-| Sensor | CAN hub | Port | Role |
-|---|---:|---:|---|
-| Front-left digital IR | 2 (left) | 1 | collision/safety guard |
-| Left Sharp | 2 (left) | 2 | left-wall range + mapping |
-| Front-right digital IR | 1 (right) | 1 | collision/safety guard |
-| Right Sharp | 1 (right) | 2 | right-wall range + mapping |
-| Front ToF | gimbal | RoboMaster distance sensor | front range + mapping |
+Only these signals are used by Classwork 8:
 
-The robot is switched to `CHASSIS_LEAD` mode so the gimbal follows the chassis, then the gimbal is recentered. This keeps the ToF aligned with chassis-forward while the chassis turns.
+| Source | Purpose |
+|---|---|
+| Front ToF on gimbal | obstacle distance + occupancy-grid mapping |
+| RoboMaster odometry (`sub_position`) | x/y position estimate |
+| RoboMaster attitude (`sub_attitude`) | yaw / cardinal heading control |
 
-## What it does
+IR, Sharp sensors and Sensor Adapter/CAN hubs are not used by the Classwork 8 runtime.
 
-- Starts with an empty occupancy grid; no maze walls are preloaded.
-- Uses `sub_position` for x/y odometry.
-- Uses `sub_attitude` plus the existing closed-loop 90-degree turn controller.
-- Reuses the existing junction/Trémaux-style explorer to visit unexplored exits.
-- Projects front ToF, left Sharp and right Sharp measurements into the map.
-- Uses the two front digital IR sensors as collision guards only.
-- Records start pose, end pose, sensor/pose log, exploration events and trajectory.
-- Exports a map for Ground Truth comparison.
+The robot is switched to `CHASSIS_LEAD`, then the gimbal is recentered. Therefore the ToF stays aligned with chassis-forward while the chassis rotates.
 
-This is odometry-assisted occupancy-grid mapping for the classwork. It does not claim scan-matching or probabilistic loop-closure SLAM.
+## Exploration method
+
+The robot has only one forward range sensor, so it actively scans the world:
+
+1. Stop.
+2. Rotate the chassis to four cardinal headings.
+3. Measure ToF in each direction.
+4. Project the four rays into an occupancy grid.
+5. Choose an open direction leading to an unvisited logical node.
+6. Move forward one short step using yaw hold.
+7. Repeat.
+8. When no new direction exists, backtrack using DFS.
+9. Finish when the reachable DFS search is exhausted or a safety limit is reached.
+
+Default exploration step is 0.25 m and default forward speed is intentionally low because there are no side/corner sensors.
+
+This is odometry-assisted occupancy-grid mapping with active ToF scanning. It does not claim scan matching or probabilistic loop-closure SLAM.
 
 ## Run
 
 ```powershell
+git pull origin classwork8-slam-exploration
 python classwork8_main.py
 ```
 
-Outputs:
+Press `Ctrl+C` at any time. The chassis is stopped and the run artifacts are exported.
+
+## Outputs
 
 ```text
 classwork8_output/run_YYYYMMDD_HHMMSS/
@@ -66,24 +76,26 @@ Map Accuracy = correct cells / total cells * 100
 Coverage = explored cells / total cells * 100
 ```
 
-The 8 m × 8 m software canvas is only an initially unknown workspace, not prior maze knowledge. Therefore its raw working-canvas coverage is not the final assignment Coverage unless the Ground Truth evaluation area is also exactly that canvas.
+The 8 m × 8 m software canvas is only an initially unknown workspace, not prior maze knowledge. Raw working-canvas coverage is therefore not the final assignment Coverage unless Ground Truth uses the same area.
 
 ## Before the final accuracy run
 
-Measure the physical lens offsets from the chassis centre and update `Classwork8Config`:
+Measure the physical ToF lens offset from the chassis centre and update:
 
-- `tof_forward_offset_m`
-- `sharp_lateral_offset_m`
+```python
+tof_forward_offset_m
+```
 
-The defaults are only integration-test approximations.
+The default value is only an integration-test approximation.
 
-Also verify the Sharp ADC-to-cm calibration against the actual wall surface.
+## Recommended physical test sequence
 
-## First physical test sequence
+1. Run the stationary ToF/pose test first.
+2. Confirm ToF changes at known distances such as 20, 50 and 100 cm.
+3. Confirm gimbal stays chassis-forward while the chassis turns.
+4. Run ToF-only exploration in a large clear area.
+5. Test a straight corridor.
+6. Test an L-shaped corridor.
+7. Only then test the full unknown maze.
 
-1. Lift the drive wheels or use a clear area and confirm all sensor values.
-2. Test left/right IR independently.
-3. Test each Sharp at 10, 20, 30, 40 and 50 cm.
-4. Confirm the gimbal follows chassis rotation and ToF remains forward.
-5. Test a simple straight corridor, then an L-shaped corridor.
-6. Only after those pass, test the full unknown maze.
+Because there are no side sensors, use low speed and keep enough corridor width for odometry drift.
