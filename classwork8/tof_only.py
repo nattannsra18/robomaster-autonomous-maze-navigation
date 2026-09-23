@@ -674,6 +674,9 @@ def _drive_one_cell(
             None,
             None,
             mode,
+            vision_error=vision_error,
+            vision_confidence=vision_confidence,
+            vision_correction_mps=vision_correction,
         )
 
         publish_state(
@@ -961,7 +964,7 @@ def run(
         )
 
         print("============================================================")
-        print(" Classwork 8 - ToF ONLY / 60 cm CELL / REALTIME GUI")
+        print(" Classwork 8 - ToF + CAMERA / 60 cm CELL / REALTIME GUI")
         print("============================================================")
         print("Cell size     : {:.2f} m".format(config.cell_size_m))
         print("Move per step : {:.2f} m (1 full cell)".format(config.exploration_step_m))
@@ -981,7 +984,7 @@ def run(
         recorder.event(
             time.monotonic(),
             "START",
-            "ToF-only 60 cm cell exploration with gimbal scanning",
+            "ToF + camera-assisted 60 cm cell exploration with gimbal scanning",
             logical_node=current_cell,
         )
 
