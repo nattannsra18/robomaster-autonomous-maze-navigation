@@ -456,6 +456,12 @@ def _drive_one_cell(
         start_yaw_deg,
     )
 
+    # Each logical node has a fixed metric centre.  Aim for that centre instead
+    # of merely travelling 0.60 m from wherever the previous move happened to
+    # finish.  This prevents mecanum slip from accumulating cell after cell.
+    target_map_x = float(target_cell[0]) * config.cell_size_m
+    target_map_y = float(target_cell[1]) * config.cell_size_m
+
     deadline = time.monotonic() + max(
         7.0,
         (config.exploration_step_m / config.travel_speed_mps) * 3.5,
@@ -486,21 +492,22 @@ def _drive_one_cell(
 
         delta_map_x = rel_x - start_map_x
         delta_map_y = rel_y - start_map_y
+        moved = math.hypot(delta_map_x, delta_map_y)
 
         if direction == 0:      # FRONT
-            progress = delta_map_x
-            cross_track = delta_map_y
+            remaining = target_map_x - rel_x
+            cross_track = rel_y - target_map_y
         elif direction == 1:    # RIGHT
-            progress = -delta_map_y
-            cross_track = delta_map_x
+            remaining = rel_y - target_map_y
+            cross_track = rel_x - target_map_x
         elif direction == 2:    # BACK
-            progress = -delta_map_x
-            cross_track = delta_map_y
+            remaining = rel_x - target_map_x
+            cross_track = rel_y - target_map_y
         else:                   # LEFT
-            progress = delta_map_y
-            cross_track = delta_map_x
+            remaining = target_map_y - rel_y
+            cross_track = rel_x - target_map_x
 
-        moved = math.hypot(delta_map_x, delta_map_y)
+        progress = config.cell_size_m - max(0.0, remaining)
 
         if rel_x is not None and rel_y is not None:
             _update_tof_ray(
@@ -512,7 +519,7 @@ def _drive_one_cell(
                 front_cm,
             )
 
-        if progress >= config.exploration_step_m - config.step_tolerance_m:
+        if remaining <= config.step_tolerance_m:
             stop_chassis(chassis)
             recorder.record_sample(
                 time.monotonic(),
@@ -538,7 +545,7 @@ def _drive_one_cell(
             print(
                 "[MOVE] Reached {}: progress={:.3f} m cross_track={:+.3f} m".format(
                     target_cell,
-                    progress,
+                    config.cell_size_m - remaining,
                     cross_track,
                 ),
                 flush=True,
