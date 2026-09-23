@@ -33,6 +33,8 @@ def _prepare_optional_media_codec():
 
 _prepare_optional_media_codec()
 
+from robomaster import robot
+
 from classwork8.config import Classwork8Config
 from classwork8.tof_only import run
 
@@ -52,8 +54,22 @@ def main():
         run(config=config)
         return
 
+    # Connect in the main thread before Tkinter starts. This matches the
+    # working non-GUI connection flow and avoids SDK/network initialization
+    # from a GUI worker thread.
+    print("Connecting to RoboMaster before opening GUI...")
+    ep_robot = robot.Robot()
+    try:
+        ep_robot.initialize(conn_type=config.connection)
+    except Exception:
+        try:
+            ep_robot.close()
+        except Exception:
+            pass
+        raise
+
     from classwork8.gui import run_with_gui
-    run_with_gui(run, config)
+    run_with_gui(run, config, ep_robot)
 
 
 if __name__ == "__main__":
