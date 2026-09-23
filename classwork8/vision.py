@@ -144,7 +144,15 @@ class CorridorVision:
             self._stop.clear()
             self._running = True
 
+            first_h, first_w = first_frame.shape[:2]
+            print(
+                "[VISION] First decoded camera frame: {}x{}; analyzing lines...".format(
+                    first_w, first_h
+                ),
+                flush=True,
+            )
             self._process_and_store(first_frame)
+            print("[VISION] First frame analysis OK.", flush=True)
 
             self._thread = threading.Thread(
                 target=self._capture_loop,
@@ -164,12 +172,17 @@ class CorridorVision:
             return True
 
         except Exception as exc:
+            # Analysis errors happen after frames have already decoded. Include
+            # the traceback so they cannot be mistaken for camera connection
+            # or H.264 decoder failures.
+            import traceback
             print(
-                "[VISION] Camera startup failed: {}. Falling back to ToF+odometry.".format(
+                "[VISION] Startup/analysis failed: {}. Falling back to ToF+odometry.".format(
                     exc
                 ),
                 flush=True,
             )
+            traceback.print_exc()
             self.stop()
             return False
 
