@@ -71,10 +71,13 @@ class Classwork8Config:
     # Camera-assisted corridor centering. ToF remains authoritative for walls
     # and stopping; vision only adds a small lateral correction when reliable.
     vision_enabled: bool = True
+    # Default to camera diagnostics only until the direction and wall/floor
+    # boundaries have been verified on the actual foam-wall maze.
+    vision_steering_enabled: bool = False
     vision_resolution: str = "360p"
     vision_start_timeout_sec: float = 4.0
     vision_max_age_sec: float = 0.40
-    vision_min_confidence: float = 0.35
+    vision_min_confidence: float = 0.70
     vision_kp_mps: float = 0.035
     vision_max_correction_mps: float = 0.025
     vision_error_ema_alpha: float = 0.35
@@ -86,8 +89,14 @@ class Classwork8Config:
     vision_min_line_length_px: int = 35
     vision_max_line_gap_px: int = 24
     vision_min_side_angle_deg: float = 24.0
-    vision_min_corridor_width_ratio: float = 0.20
-    vision_max_corridor_width_ratio: float = 1.40
+    # Reject short distant segments and long extrapolations to image bottom.
+    # The previous image included a distant inner-wall edge as a left wall.
+    vision_min_side_vertical_ratio: float = 0.20
+    vision_max_bottom_gap_ratio: float = 0.13
+    vision_center_deadband_ratio: float = 0.10
+    vision_max_candidate_spread_ratio: float = 0.12
+    vision_min_corridor_width_ratio: float = 0.25
+    vision_max_corridor_width_ratio: float = 1.10
 
     # GUI
     gui_refresh_ms: int = 150
@@ -120,6 +129,14 @@ class Classwork8Config:
             raise ValueError("vision_blur_kernel must be an odd integer >= 3")
         if not 0.0 <= self.vision_min_confidence <= 1.0:
             raise ValueError("vision_min_confidence must be between 0 and 1")
+        if not 0.0 <= self.vision_min_side_vertical_ratio <= 1.0:
+            raise ValueError("vision_min_side_vertical_ratio must be between 0 and 1")
+        if not 0.0 <= self.vision_max_bottom_gap_ratio <= 1.0:
+            raise ValueError("vision_max_bottom_gap_ratio must be between 0 and 1")
+        if not 0.0 <= self.vision_center_deadband_ratio < 0.5:
+            raise ValueError("vision_center_deadband_ratio must be between 0 and 0.5")
+        if not 0.0 <= self.vision_max_candidate_spread_ratio <= 1.0:
+            raise ValueError("vision_max_candidate_spread_ratio must be between 0 and 1")
 
     def gimbal_yaw_for_direction(self, direction: int) -> float:
         return {
