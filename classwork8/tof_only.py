@@ -626,13 +626,15 @@ def _drive_one_cell(
         vision_confidence = 0.0
         if vision is not None and vision.running:
             (
-                vision_correction,
+                proposed_vision_correction,
                 vision_error,
                 vision_confidence,
             ) = vision.correction_mps()
-            right_x_unit, right_y_unit = DIR_RIGHT_VEC_DRIVE[direction]
-            x_cmd += right_x_unit * vision_correction
-            y_cmd += right_y_unit * vision_correction
+            if config.vision_steering_enabled:
+                vision_correction = proposed_vision_correction
+                right_x_unit, right_y_unit = DIR_RIGHT_VEC_DRIVE[direction]
+                x_cmd += right_x_unit * vision_correction
+                y_cmd += right_y_unit * vision_correction
 
         z_cmd = 0.0
         mode = "MOVE_{}".format(DIR_NAME[direction])
@@ -817,6 +819,10 @@ def run(
             "moves": int(moves),
             "coverage": grid.coverage_percent(),
             "vision_active": bool(vision is not None and vision.running),
+            "vision_steering_enabled": bool(
+                config.vision_steering_enabled
+                and vision is not None and vision.running
+            ),
             "vision_error": (
                 None if vision_estimate is None
                 else float(vision_estimate.error_norm)
@@ -974,9 +980,16 @@ def run(
         print("Safety        : ToF points along travel direction continuously")
         print(
             "Vision        : {}".format(
-                "corridor centering active"
-                if vision is not None and vision.running
-                else "fallback disabled/unavailable"
+                "camera steering ENABLED (calibrated mode)"
+                if (
+                    vision is not None and vision.running
+                    and config.vision_steering_enabled
+                )
+                else (
+                    "camera MONITOR ONLY; steering remains odometry + ToF"
+                    if vision is not None and vision.running
+                    else "fallback disabled/unavailable"
+                )
             )
         )
         print("============================================================")
@@ -1012,7 +1025,6 @@ def run(
                 pose,
                 sensors,
                 gimbal_tracker,
-                vision,
                 grid,
                 recorder,
                 config,
