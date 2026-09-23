@@ -350,10 +350,28 @@ class CorridorVision:
                 if angle_from_horizontal < float(self.config.vision_min_side_angle_deg):
                     continue
 
+                # A short distant inner-wall edge is not a reliable boundary
+                # for the robot's current lateral position. In the foam-maze
+                # sample this false left edge ended ~130 px above the bottom,
+                # but extrapolating it made the estimated centre land in the
+                # right-hand wall. Accept only side segments reaching the
+                # near-field portion of the picture.
+                if abs(dy) < h * float(self.config.vision_min_side_vertical_ratio):
+                    continue
+                bottom_gap = y_ref - max(float(y1), float(y2))
+                if bottom_gap > h * float(self.config.vision_max_bottom_gap_ratio):
+                    continue
+
                 x_bottom = self._line_x_at_y((x1, y1, x2, y2), y_ref)
                 if x_bottom is None:
                     continue
-                if x_bottom < -0.35 * w or x_bottom > 1.35 * w:
+                if x_bottom < -0.25 * w or x_bottom > 1.25 * w:
+                    continue
+
+                # Central foam blocks and short edges in the distance must
+                # not be mistaken for the corridor's left/right near edges.
+                center_margin = w * float(self.config.vision_center_deadband_ratio)
+                if abs(x_bottom - image_center) <= center_margin:
                     continue
 
                 if x_bottom < image_center:
@@ -384,13 +402,22 @@ class CorridorVision:
             corridor_width = right_x - left_x
             width_ratio = corridor_width / float(w)
 
+            # Multiple incompatible boundaries in a side's Hough candidates
+            # indicate floor seams, extra foam blocks or other ambiguity.
+            spread_limit = w * float(self.config.vision_max_candidate_spread_ratio)
+            left_spread = max(left_candidates) - min(left_candidates)
+            right_spread = max(right_candidates) - min(right_candidates)
+
             if (
                 float(self.config.vision_min_corridor_width_ratio)
                 <= width_ratio
                 <= float(self.config.vision_max_corridor_width_ratio)
+                and left_spread <= spread_limit
+                and right_spread <= spread_limit
             ):
-                center_x = (left_x + right_x) / 2.0
-                raw_error = (center_x - image_center) / max(1.0, image_center)
+                raw_error = (
+                    ((left_x + right_x) / 2.0) - image_center
+                ) / max(1.0, image_center)
 
                 count_score = min(
                     1.0,
@@ -401,6 +428,12 @@ class CorridorVision:
                     min(len(left_candidates), len(right_candidates)) / 3.0,
                 )
                 confidence = 0.55 * count_score + 0.45 * symmetry_score
+
+                # Only display a centreline when confidence is enough for a
+                # potentially useful estimate. A wrong green line on a foam
+                # wall in the previous test appeared actionable when it wasn't.
+                if confidence >= float(self.config.vision_min_confidence):
+                    center_x = (left_x + right_x) / 2.0
 
         alpha = float(self.config.vision_error_ema_alpha)
         if confidence >= float(self.config.vision_min_confidence):
@@ -444,7 +477,11 @@ class CorridorVision:
 
         cv2.putText(
             debug,
-            "vision err={:+.3f} conf={:.2f}".format(error_norm, confidence),
+            "VISION {} err={:+.3f} conf={:.2f}".format(
+                "MONITOR" if not self.config.vision_steering_enabled else "ASSIST",
+                error_norm,
+                confidence,
+            ),
             (10, 24),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
