@@ -310,7 +310,14 @@ class CorridorVision:
 
         if lines is not None:
             for packed in lines:
-                x1, y1r, x2, y2r = [int(v) for v in packed[0]]
+                # OpenCV versions differ here:
+                #   HoughLinesP -> (N, 1, 4) on some builds
+                #   HoughLinesP -> (N, 4)    on others
+                # Flatten one result so both layouts are accepted.
+                values = np.asarray(packed).reshape(-1)
+                if values.size < 4:
+                    continue
+                x1, y1r, x2, y2r = [int(v) for v in values[:4]]
                 y1 = y1r + roi_top
                 y2 = y2r + roi_top
                 dx = float(x2 - x1)
