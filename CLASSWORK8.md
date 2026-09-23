@@ -1,19 +1,25 @@
-# Classwork 8 - ToF-Only Explore the Unknown World
+# Classwork 8 - ToF + Camera Explore the Unknown World
 
 This branch provides an unknown-world exploration mode for the RoboMaster EP.
 
 ## Final hardware/runtime design
 
-Classwork 8 now uses only:
+Classwork 8 uses:
 
 | Source | Purpose |
 |---|---|
-| Front ToF on gimbal | obstacle distance + occupancy-grid mapping |
-| RoboMaster odometry (`sub_position`) | x/y localization |
-| RoboMaster attitude (`sub_attitude`) | chassis yaw monitoring |
-| Gimbal angle (`sub_angle`) | verify actual ToF scan direction |
+| Front ToF on gimbal | authoritative obstacle distance + occupancy-grid mapping |
+| RoboMaster camera on gimbal | visual corridor centering while moving |
+| RoboMaster odometry (`sub_position`) | x/y localization and metric cell targets |
+| RoboMaster attitude (`sub_attitude`) | chassis yaw hold |
+| Gimbal angle (`sub_angle`) | verify actual ToF/camera scan direction |
 
 IR, Sharp sensors and Sensor Adapter/CAN hubs are not used.
+
+The camera is **assistive**, not authoritative. A camera frame never declares a
+wall/open edge and never replaces the ToF emergency stop. When corridor lines
+cannot be detected reliably, camera correction becomes zero and navigation
+falls back to ToF + odometry.
 
 ## Physical maze cell
 
@@ -140,6 +146,18 @@ Terminal-only mode:
 python classwork8_main.py --no-gui
 ```
 
+Disable camera assistance at any time:
+
+```powershell
+python classwork8_main.py --no-vision
+```
+
+or:
+
+```powershell
+python classwork8_main.py --no-gui --no-vision
+```
+
 ## IMPORTANT: verify gimbal directions before the first moving test
 
 Run:
@@ -176,6 +194,57 @@ Use a wide open test area first.
 8. Test one forward cell first.
 9. Then test right/left strafe.
 10. Only then use the real maze.
+
+
+## Camera-assisted corridor centering
+
+RoboMaster's camera moves with the same gimbal as the ToF. During a cell move,
+the gimbal points along the travel direction, so the image is also looking in
+the direction of motion.
+
+The vision pipeline uses:
+
+```text
+360p H.264 camera stream
+  -> OpenCV/FFmpeg direct TCP decode
+  -> lower-image ROI
+  -> grayscale + blur
+  -> Canny edges
+  -> Hough line segments
+  -> left/right corridor boundary candidates
+  -> corridor centre error
+  -> confidence gate
+  -> small lateral velocity correction
+```
+
+Only frames with reliable left **and** right boundaries can steer the robot.
+The correction is limited to a small velocity so camera mistakes cannot
+override the base 60 cm odometry controller.
+
+The video backend intentionally avoids DJI's optional native
+`libmedia_codec` on Windows: the SDK sends the stream-control commands and
+OpenCV/FFmpeg directly decodes RoboMaster's TCP H.264 stream on port 40921.
+
+### Stationary camera test
+
+Before allowing camera steering, run:
+
+```powershell
+python classwork8_camera_test.py
+```
+
+The chassis will not move. A window shows the camera overlay:
+
+- blue/orange = side-boundary candidates
+- green vertical line = estimated corridor centre
+- `confidence` = reliability of the current correction
+
+Put the stationary robot in the real foam-wall corridor and move it manually
+left/right. The sign of the displayed error should change consistently and the
+green centre estimate should follow the visual corridor centre.
+
+If the stream cannot open or the room produces unreliable lines, keep the
+assignment operational with `--no-vision`.
 
 ## Outputs
 
