@@ -217,9 +217,17 @@ The vision pipeline uses:
   -> small lateral velocity correction
 ```
 
-Only frames with reliable left **and** right boundaries can steer the robot.
-The correction is limited to a small velocity so camera mistakes cannot
-override the base 60 cm odometry controller.
+Camera steering is **disabled by default** (`vision_steering_enabled=False`).
+The camera still runs in MONITOR ONLY mode, shows candidate boundaries and logs
+confidence. This is intentional: foam walls, distant inner-wall edges and floor
+tile seams have produced false corridor centres in real tests. Do not enable
+steering before calibrating on captured raw frames and verifying the correction
+sign in a controlled open test.
+
+The analyser rejects short distant segments, excessive extrapolation to the
+image bottom and incompatible left/right boundary candidates. Even after
+calibration, ToF remains the sole authority for obstacle distance and stops.
+Camera guidance is not a replacement for side-distance sensors.
 
 The video backend intentionally avoids DJI's optional native
 `libmedia_codec` on Windows: the SDK sends the stream-control commands and
@@ -237,7 +245,13 @@ The chassis will not move. A window shows the camera overlay:
 
 - blue/orange = side-boundary candidates
 - green vertical line = estimated corridor centre
-- `confidence` = reliability of the current correction
+- `confidence` = heuristic quality indicator, not a calibrated collision-risk probability
+- `MONITOR` = the visual estimate cannot command chassis motion
+- Press `S` to save raw and annotated PNG frames in
+  `classwork8_output/camera_samples/` (press `Q` or Esc to quit).
+
+Capture centre, left-offset and right-offset views before calibrating. A green
+line over a foam wall is an invalid centre estimate even if confidence is high.
 
 Put the stationary robot in the real foam-wall corridor and move it manually
 left/right. The sign of the displayed error should change consistently and the
