@@ -105,19 +105,34 @@ Normal run:
 python classwork8_main.py
 ```
 
-This opens a Tkinter GUI showing:
+The main GUI is an auto-fit **discovered 60 cm cell map**, visually matching
+the fixed-grid mission GUI style but without preloading field dimensions.
 
-- occupancy map in realtime
-- 60 cm physical-cell grid
-- robot position
-- trajectory
-- current logical cell
-- current Gimbal/ToF direction
-- current ToF distance
-- move count
-- map coverage
-- mission status
+It shows:
+
+- thin gray borders for discovered 60 cm cells
+- thick black lines for ToF-confirmed walls
+- a light-blue logical DFS cell-to-cell path
+- a solid blue odometry trajectory that grows continuously while the robot moves
+- green `S` at the unknown-world local origin `(0,0)`
+- red `R` at the robot's current continuous position
+- orange arrow for the live Gimbal/ToF direction
+- cell coordinates, ToF, Gimbal yaw, moves and occupancy coverage
 - STOP & SAVE button
+
+The display uses:
+
+```text
+mission-start FRONT = screen up
+mission-start RIGHT = screen right
+```
+
+It does **not** know the real field width/height or which physical corner the
+robot started from.  The displayed grid automatically expands and recentres as
+new neighboring cells are discovered.
+
+The separate 5 cm occupancy grid still runs in the background and is exported
+as `map.csv` / `map.svg` for accuracy and coverage analysis.
 
 Terminal-only mode:
 
