@@ -43,6 +43,7 @@ class CorridorVision:
 
         self._lock = threading.Lock()
         self._estimate: Optional[VisionEstimate] = None
+        self._raw_frame: Optional[np.ndarray] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._cap = None
@@ -256,6 +257,13 @@ class CorridorVision:
             return None
         return estimate.debug_frame.copy()
 
+    def latest_raw_frame(self) -> Optional[np.ndarray]:
+        """Get the last unannotated camera frame for offline calibration."""
+        if self.latest(max_age_sec=1.0) is None:
+            return None
+        with self._lock:
+            return None if self._raw_frame is None else self._raw_frame.copy()
+
     def _capture_loop(self) -> None:
         while not self._stop.is_set():
             cap = self._cap
@@ -288,6 +296,7 @@ class CorridorVision:
         estimate = self._analyse(frame)
         with self._lock:
             self._estimate = estimate
+            self._raw_frame = frame.copy()
 
     def _analyse(self, frame: np.ndarray) -> VisionEstimate:
         h, w = frame.shape[:2]
