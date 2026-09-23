@@ -12,6 +12,7 @@ from robomaster_mission.mission import (
     HeadingManager,
     PoseTracker,
     SensorManager,
+    feedback_turn,
     normalize_angle_deg,
     stop_chassis,
     wait_for_position,
@@ -57,6 +58,16 @@ def _relative_xy(
     if x is None or y is None:
         return None, None
     return float(x) - start_x, float(y) - start_y
+
+
+class ToFOnlySensorManager(SensorManager):
+    """Sensor manager that intentionally disables IR/Sharp access."""
+
+    def __init__(self):
+        super().__init__(None)
+
+    def read_front_corner_ir(self):
+        return None, None
 
 
 def _sample_tof(
@@ -105,43 +116,27 @@ def _turn_to_direction(
     chassis,
     pose: PoseTracker,
     heading: HeadingManager,
+    sensors: SensorManager,
     target_direction: int,
     config: Classwork8Config,
 ) -> bool:
     target_direction %= 4
+    current_direction = heading.heading_index % 4
+    diff = (target_direction - current_direction) % 4
+    relative = {
+        0: "FRONT",
+        1: "RIGHT",
+        2: "BACK",
+        3: "LEFT",
+    }[diff]
+
+    if relative != "FRONT":
+        if not feedback_turn(chassis, sensors, pose, relative):
+            return False
+
     heading.set_heading_index(target_direction)
-
-    stable = 0
-    deadline = time.monotonic() + config.turn_timeout_sec
-
-    while time.monotonic() < deadline:
-        yaw = pose.get_yaw()
-        error = heading.error(yaw)
-        if error is None:
-            stop_chassis(chassis)
-            time.sleep(config.loop_delay_sec)
-            continue
-
-        if abs(error) <= config.turn_tolerance_deg:
-            stable += 1
-            stop_chassis(chassis)
-            if stable >= config.turn_stable_samples:
-                time.sleep(config.scan_settle_sec)
-                return True
-        else:
-            stable = 0
-            z_cmd, _ = heading.correction_z(yaw, recover=True)
-            chassis.drive_speed(
-                x=0.0,
-                y=0.0,
-                z=z_cmd,
-                timeout=config.drive_timeout_sec,
-            )
-
-        time.sleep(config.loop_delay_sec)
-
-    stop_chassis(chassis)
-    return False
+    time.sleep(config.scan_settle_sec)
+    return True
 
 
 def _scan_four_directions(
@@ -168,7 +163,7 @@ def _scan_four_directions(
 
     for direction in order:
         if not _turn_to_direction(
-            chassis, pose, heading, direction, config
+            chassis, pose, heading, sensors, direction, config
         ):
             return None
 
@@ -223,7 +218,7 @@ def _move_one_step(
     direction: int,
 ) -> Tuple[bool, str]:
     if not _turn_to_direction(
-        chassis, pose, heading, direction, config
+        chassis, pose, heading, sensors, direction, config
     ):
         return False, "TURN_FAILED"
 
@@ -398,7 +393,7 @@ def run(config: Optional[Classwork8Config] = None) -> Path:
         ).wait_for_completed()
 
         pose = PoseTracker()
-        sensors = SensorManager(None)
+        sensors = ToFOnlySensorManager()
         heading = HeadingManager()
 
         tof_subscribed = bool(
