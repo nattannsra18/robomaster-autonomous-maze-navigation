@@ -18,18 +18,25 @@ class Classwork8Config:
     step_tolerance_m: float = 0.03
 
     # ToF is mounted on the gimbal. The chassis stays at its initial heading
-    # during the whole mission; the gimbal scans/matches the travel direction.
+    # during scanning; the gimbal points ToF toward the scan/travel direction.
     tof_forward_offset_m: float = 0.12
     tof_max_mapping_cm: float = 300.0
     mapping_min_cm: float = 3.0
 
-    # Gimbal absolute yaw positions relative to the chassis.
-    # DJI moveto yaw accepts approximately -250..250 degrees.
+    # Gimbal yaw positions relative to the chassis.
     gimbal_front_yaw_deg: float = 0.0
     gimbal_right_yaw_deg: float = 90.0
     gimbal_back_yaw_deg: float = 180.0
     gimbal_left_yaw_deg: float = -90.0
-    gimbal_yaw_speed_dps: float = 100.0
+
+    # Closed-loop gimbal scan tuning. The actual relative yaw is read from
+    # gimbal.sub_angle(), so the mapper does not assume the gimbal reached target.
+    gimbal_yaw_speed_dps: float = 90.0
+    gimbal_min_yaw_speed_dps: float = 20.0
+    gimbal_yaw_kp: float = 1.6
+    gimbal_tolerance_deg: float = 2.0
+    gimbal_stable_samples: int = 3
+    gimbal_turn_timeout_sec: float = 5.0
     gimbal_settle_sec: float = 0.20
 
     # Occupancy evidence
@@ -41,21 +48,22 @@ class Classwork8Config:
     free_threshold: int = -2
 
     # ToF-only exploration. A wall in the current cell is typically about
-    # 30 cm from chassis centre. The threshold below treats a direction as a
-    # candidate cell only when it looks substantially more open than that.
+    # 30 cm from chassis centre. This threshold only marks candidate directions;
+    # movement still continuously checks ToF and stops at stop_front_cm.
     tof_open_cm: float = 55.0
     scan_samples: int = 5
     scan_sample_interval_sec: float = 0.06
     max_moves: int = 500
 
-    # Conservative mecanum translation. No chassis rotation is used.
+    # Conservative mecanum translation. No 90-degree chassis scan turns.
     travel_speed_mps: float = 0.12
     stop_front_cm: float = 18.0
     slow_front_cm: float = 35.0
     drive_timeout_sec: float = 0.15
     loop_delay_sec: float = 0.04
 
-    # Keep chassis yaw close to its initial heading while translating.
+    # Tiny yaw corrections are allowed while translating so the chassis keeps
+    # its original orientation. Set False if absolutely no z correction is wanted.
     heading_hold_enabled: bool = True
 
     # GUI
