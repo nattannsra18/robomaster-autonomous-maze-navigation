@@ -498,6 +498,7 @@ def run(
     config: Optional[Classwork8Config] = None,
     publish: Optional[Callable[[dict], None]] = None,
     stop_event: Optional[threading.Event] = None,
+    ep_robot=None,
 ) -> Path:
     config = config or Classwork8Config()
     config.validate()
@@ -517,7 +518,9 @@ def run(
     recorder = RunRecorder(config)
     recorder.start(time.monotonic())
 
-    ep_robot = robot.Robot()
+    robot_was_preconnected = ep_robot is not None
+    if ep_robot is None:
+        ep_robot = robot.Robot()
     chassis = None
     gimbal = None
     tof_sensor = None
@@ -600,7 +603,8 @@ def run(
             force=True,
         )
 
-        ep_robot.initialize(conn_type=config.connection)
+        if not robot_was_preconnected:
+            ep_robot.initialize(conn_type=config.connection)
         chassis = ep_robot.chassis
         gimbal = ep_robot.gimbal
         tof_sensor = ep_robot.sensor
