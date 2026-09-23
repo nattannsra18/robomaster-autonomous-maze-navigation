@@ -194,7 +194,12 @@ def _point_gimbal(
             time.sleep(0.03)
             continue
 
-        error = normalize_angle_deg(target - float(current))
+        # Gimbal yaw is a mechanically limited absolute axis (about -250..250),
+        # not an unlimited circular heading.  Do NOT wrap the error here.
+        # Example: from BACK +180 deg to LEFT -90 deg, the safe move is -270 deg
+        # through 0. Wrapping would incorrectly command +90 deg toward +270,
+        # which hits the mechanical yaw limit and makes the scan time out.
+        error = target - float(current)
         if abs(error) <= config.gimbal_tolerance_deg:
             stable += 1
             gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
@@ -269,6 +274,14 @@ def _scan_four_directions(
         if stop_event is not None and stop_event.is_set():
             return None
 
+        print(
+            "[SCAN] Pointing Gimbal {} (target {:+.0f} deg)...".format(
+                DIR_NAME[direction],
+                config.gimbal_yaw_for_direction(direction),
+            ),
+            flush=True,
+        )
+
         publish_state(
             status="Scanning {}".format(DIR_NAME[direction]),
             logical_cell=current_cell,
@@ -286,10 +299,33 @@ def _scan_four_directions(
             config,
             stop_event,
         ):
+            print(
+                "[SCAN] Gimbal FAILED for {}. measured_yaw={}".format(
+                    DIR_NAME[direction],
+                    "---" if gimbal_tracker.get_yaw() is None
+                    else "{:+.1f}".format(float(gimbal_tracker.get_yaw())),
+                ),
+                flush=True,
+            )
             return None
+
+        print(
+            "[SCAN] Gimbal {} ready at {:+.1f} deg.".format(
+                DIR_NAME[direction],
+                float(gimbal_tracker.get_yaw()),
+            ),
+            flush=True,
+        )
 
         distance_cm = _sample_tof(sensors, config, stop_event)
         ranges[direction] = distance_cm
+        print(
+            "[SCAN] {} ToF = {} cm".format(
+                DIR_NAME[direction],
+                "---" if distance_cm is None else "{:.1f}".format(distance_cm),
+            ),
+            flush=True,
+        )
 
         rel_x, rel_y = _relative_xy(pose, start_x, start_y)
         yaw = pose.get_yaw()
