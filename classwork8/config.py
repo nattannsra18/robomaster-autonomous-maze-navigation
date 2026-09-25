@@ -149,6 +149,37 @@ class Classwork8Config:
     vision_min_corridor_width_ratio: float = 0.25
     vision_max_corridor_width_ratio: float = 1.10
 
+    # Final Assignment Round 1 - camera target survey.
+    target_detection_enabled: bool = True
+    target_camera_resolution: str = "360p"
+    target_camera_start_timeout_sec: float = 5.0
+    target_max_frame_age_sec: float = 0.60
+
+    # Lighting-robust OpenCV detector.
+    target_clahe_clip_limit: float = 2.0
+    target_clahe_grid: int = 8
+    target_morph_kernel: int = 3
+    target_min_contour_area_px: float = 100.0
+    target_min_contour_area_ratio: float = 0.00015
+    target_max_contour_area_ratio: float = 0.35
+    target_approx_epsilon_ratio: float = 0.030
+    target_rectangularity_min: float = 0.58
+    target_square_aspect_min: float = 0.72
+    target_square_aspect_max: float = 1.38
+    target_circle_circularity_min: float = 0.70
+    target_circle_min_vertices: int = 6
+
+    # Candidate confidence + temporal verification.
+    target_min_confidence: float = 0.58
+    target_save_confidence: float = 0.70
+    target_sample_frames: int = 5
+    target_verify_frames: int = 3
+    target_frame_interval_sec: float = 0.045
+    target_verify_max_jump_px: float = 80.0
+
+    # Same physical sign can be observed from nearby cells/directions.
+    target_merge_distance_m: float = 0.40
+
     # V04 closed-maze completion.
     #
     # The classwork arena is a closed rectangular maze.  A single ToF miss on
@@ -202,6 +233,24 @@ class Classwork8Config:
             raise ValueError("blocked_near_target_accept_ratio must be in (0, 1]")
         if self.max_moves <= 0:
             raise ValueError("max_moves must be positive")
+        if self.target_camera_resolution not in ("360p", "540p", "720p"):
+            raise ValueError("target_camera_resolution must be 360p, 540p, or 720p")
+        if self.target_clahe_clip_limit <= 0.0 or self.target_clahe_grid < 2:
+            raise ValueError("target CLAHE configuration is invalid")
+        if self.target_morph_kernel < 3:
+            raise ValueError("target_morph_kernel must be >= 3")
+        if not 0.0 <= self.target_min_confidence <= 1.0:
+            raise ValueError("target_min_confidence must be between 0 and 1")
+        if not 0.0 <= self.target_save_confidence <= 1.0:
+            raise ValueError("target_save_confidence must be between 0 and 1")
+        if self.target_save_confidence < self.target_min_confidence:
+            raise ValueError("target_save_confidence must be >= target_min_confidence")
+        if self.target_sample_frames < 1 or self.target_verify_frames < 1:
+            raise ValueError("target frame counts must be positive")
+        if self.target_verify_frames > self.target_sample_frames:
+            raise ValueError("target_verify_frames cannot exceed target_sample_frames")
+        if self.target_merge_distance_m <= 0.0:
+            raise ValueError("target_merge_distance_m must be positive")
         if not 0.0 <= self.closed_maze_perimeter_wall_ratio <= 1.0:
             raise ValueError("closed_maze_perimeter_wall_ratio must be between 0 and 1")
         if self.closed_maze_min_rows < 1 or self.closed_maze_min_cols < 1:
