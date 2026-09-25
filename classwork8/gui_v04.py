@@ -639,13 +639,13 @@ class RealtimeMapGUI:
 
         draw.text(
             (max(8, ox), max(header_h, oy - 20)),
-            "FRONT ↑",
+            "FRONT ^",
             fill=self.COLOURS["text"],
             font=font,
         )
         draw.text(
             (max(8, ox + map_w - 70), max(header_h, oy - 20)),
-            "RIGHT →",
+            "RIGHT >",
             fill=self.COLOURS["text"],
             font=font,
         )
