@@ -15,7 +15,7 @@ def configure_before_run(config) -> bool:
     from tkinter import messagebox, ttk
 
     root = tk.Tk()
-    root.title("Classwork 8 V04 - Mission Configuration")
+    root.title("Classwork 8 V05 - Mission Configuration")
     root.geometry("860x720")
     root.minsize(760, 620)
 
@@ -27,7 +27,7 @@ def configure_before_run(config) -> bool:
 
     ttk.Label(
         outer,
-        text="Classwork 8 V04 - Mission Configuration",
+        text="Classwork 8 V05 - Mission Configuration",
         font=("Segoe UI", 17, "bold"),
     ).pack(anchor="w")
 
@@ -61,7 +61,7 @@ def configure_before_run(config) -> bool:
             ("cell_center_tolerance_m", "Cell-centre tolerance (m)", "float", "Allowed perpendicular error at the end of a cell"),
             ("heading_kp_z", "Heading Kp", "float", "Yaw correction gain"),
             ("heading_deadband_deg", "Heading deadband (deg)", "float", "Ignore tiny yaw noise"),
-            ("heading_recover_release_deg", "Pause-translation yaw error (deg)", "float", "Above this, V04 corrects yaw before translating"),
+            ("heading_recover_release_deg", "Pause-translation yaw error (deg)", "float", "Above this, V05 corrects yaw before translating"),
             ("heading_recover_trigger_deg", "Hard yaw recovery trigger (deg)", "float", "Use stronger correction above this error"),
             ("heading_max_z_dps", "Max yaw correction speed", "float", "Normal heading correction limit"),
             ("heading_recover_max_z_dps", "Max hard-recovery yaw speed", "float", "Recovery limit"),
@@ -300,7 +300,7 @@ def configure_before_run(config) -> bool:
     ttk.Button(
         button_row,
         text="Reset V05 defaults",
-        command=set_v04_defaults,
+        command=set_v05_defaults,
     ).pack(side="left")
 
     ttk.Button(
