@@ -149,9 +149,23 @@ class Classwork8Config:
     vision_min_corridor_width_ratio: float = 0.25
     vision_max_corridor_width_ratio: float = 1.10
 
-    # GUI
+    # V04 closed-maze completion.
+    #
+    # The classwork arena is a closed rectangular maze.  A single ToF miss on
+    # a low foam boundary can leave a phantom OPEN frontier forever.  V04 may
+    # therefore finish when all cells inside the discovered bounding rectangle
+    # have been visited and each outer side is sufficiently wall-confirmed.
+    closed_maze_auto_stop: bool = True
+    closed_maze_perimeter_wall_ratio: float = 0.70
+    closed_maze_min_rows: int = 2
+    closed_maze_min_cols: int = 2
+
+    # GUI / export
     gui_refresh_ms: int = 150
     gui_canvas_px: int = 720
+    gui_auto_save_map: bool = True
+    gui_export_width_px: int = 1200
+    gui_export_height_px: int = 900
 
     output_dir: str = "classwork8_output"
 
@@ -188,6 +202,12 @@ class Classwork8Config:
             raise ValueError("blocked_near_target_accept_ratio must be in (0, 1]")
         if self.max_moves <= 0:
             raise ValueError("max_moves must be positive")
+        if not 0.0 <= self.closed_maze_perimeter_wall_ratio <= 1.0:
+            raise ValueError("closed_maze_perimeter_wall_ratio must be between 0 and 1")
+        if self.closed_maze_min_rows < 1 or self.closed_maze_min_cols < 1:
+            raise ValueError("closed_maze_min_rows/cols must be >= 1")
+        if self.gui_export_width_px < 320 or self.gui_export_height_px < 240:
+            raise ValueError("GUI export size is too small")
         if self.vision_resolution not in ("360p", "540p", "720p"):
             raise ValueError("vision_resolution must be 360p, 540p, or 720p")
         if self.vision_blur_kernel < 3 or self.vision_blur_kernel % 2 == 0:
