@@ -16,8 +16,50 @@ class Classwork8Config:
     cell_size_m: float = 0.60
     exploration_step_m: float = 0.60
     step_tolerance_m: float = 0.03
-    cross_track_kp: float = 0.60
-    cross_track_max_mps: float = 0.04
+    cross_track_kp: float = 0.70
+    cross_track_max_mps: float = 0.045
+
+    # V02 motion calibration.
+    #
+    # The 2026-09-25 field log showed that three nominal RIGHT cell moves
+    # changed the same forward-wall ToF range by about 215 cm while wheel
+    # odometry reported only about 172 cm.  Scale wheel odometry into the
+    # physical maze frame so one logical 60 cm cell does not overshoot.
+    # Tune these two values with a tape-measure test if the floor changes.
+    odom_scale_x: float = 1.25
+    odom_scale_y: float = 1.25
+
+    # V02 fixed-heading controller.  The chassis is supposed to keep the
+    # mission-start yaw while mecanum-translating; do not wait for an 8-degree
+    # error before pausing translation and recovering.
+    heading_kp_z: float = 2.4
+    heading_max_z_dps: float = 18.0
+    heading_deadband_deg: float = 0.35
+    heading_recover_trigger_deg: float = 4.0
+    heading_recover_release_deg: float = 1.0
+    heading_recover_max_z_dps: float = 24.0
+    heading_drive_sign: float = 1.0
+
+    # V02 ToF robustness.  Gimbal direction changes clear the ToF filter, so
+    # wait briefly for a genuinely fresh sample instead of aborting instantly.
+    tof_recovery_wait_sec: float = 0.90
+    front_block_confirm_samples: int = 4
+    front_block_confirm_interval_sec: float = 0.05
+    front_block_release_margin_cm: float = 3.0
+
+    # V02 scan-derived corridor guidance.  The single ToF cannot look forward
+    # and sideways simultaneously, so use the four-way scan made while stopped
+    # to add only a small lateral bias during the next 60 cm move.
+    scan_side_guidance_enabled: bool = True
+    scan_side_wall_max_cm: float = 45.0
+    scan_side_danger_cm: float = 22.0
+    scan_side_kp_mps_per_cm: float = 0.0020
+    scan_side_max_correction_mps: float = 0.030
+
+    # If a confirmed wall appears only after most of a cell has already been
+    # traversed, keep the logical DFS state synchronized with the physical
+    # robot instead of pretending it never left the previous cell.
+    blocked_near_target_accept_ratio: float = 0.82
 
     # ToF is mounted on the gimbal. The chassis stays at its initial heading
     # during scanning; the gimbal points ToF toward the scan/travel direction.
@@ -121,6 +163,16 @@ class Classwork8Config:
             raise ValueError("tof_open_cm must be greater than stop_front_cm")
         if self.travel_speed_mps <= 0.0:
             raise ValueError("travel_speed_mps must be positive")
+        if self.odom_scale_x <= 0.0 or self.odom_scale_y <= 0.0:
+            raise ValueError("odometry scale factors must be positive")
+        if self.heading_drive_sign == 0.0:
+            raise ValueError("heading_drive_sign must be non-zero")
+        if self.tof_recovery_wait_sec <= 0.0:
+            raise ValueError("tof_recovery_wait_sec must be positive")
+        if self.front_block_confirm_samples < 1:
+            raise ValueError("front_block_confirm_samples must be >= 1")
+        if not 0.0 < self.blocked_near_target_accept_ratio <= 1.0:
+            raise ValueError("blocked_near_target_accept_ratio must be in (0, 1]")
         if self.max_moves <= 0:
             raise ValueError("max_moves must be positive")
         if self.vision_resolution not in ("360p", "540p", "720p"):
