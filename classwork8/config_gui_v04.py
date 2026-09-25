@@ -61,7 +61,7 @@ def configure_before_run(config) -> bool:
             ("cell_center_tolerance_m", "Cell-centre tolerance (m)", "float", "Allowed perpendicular error at the end of a cell"),
             ("heading_kp_z", "Heading Kp", "float", "Yaw correction gain"),
             ("heading_deadband_deg", "Heading deadband (deg)", "float", "Ignore tiny yaw noise"),
-            ("heading_recover_release_deg", "Pause-translation yaw error (deg)", "float", "Above this, V03 corrects yaw before translating"),
+            ("heading_recover_release_deg", "Pause-translation yaw error (deg)", "float", "Above this, V04 corrects yaw before translating"),
             ("heading_recover_trigger_deg", "Hard yaw recovery trigger (deg)", "float", "Use stronger correction above this error"),
             ("heading_max_z_dps", "Max yaw correction speed", "float", "Normal heading correction limit"),
             ("heading_recover_max_z_dps", "Max hard-recovery yaw speed", "float", "Recovery limit"),
@@ -191,7 +191,7 @@ def configure_before_run(config) -> bool:
     button_row = ttk.Frame(outer)
     button_row.pack(fill="x", pady=(12, 0))
 
-    def set_v03_defaults():
+    def set_v04_defaults():
         defaults = {
             "cell_size_m": 0.60,
             "step_tolerance_m": 0.005,
@@ -281,8 +281,8 @@ def configure_before_run(config) -> bool:
 
     ttk.Button(
         button_row,
-        text="Reset V03 defaults",
-        command=set_v03_defaults,
+        text="Reset V04 defaults",
+        command=set_v04_defaults,
     ).pack(side="left")
 
     ttk.Button(
