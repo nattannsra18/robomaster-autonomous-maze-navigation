@@ -54,7 +54,7 @@ class Classwork8Config:
     scan_side_wall_max_cm: float = 45.0
     scan_side_danger_cm: float = 22.0
     scan_side_kp_mps_per_cm: float = 0.0020
-    scan_side_max_correction_mps: float = 0.030
+    scan_side_max_correction_mps: float = 0.015
 
     # If a confirmed wall appears only after most of a cell has already been
     # traversed, keep the logical DFS state synchronized with the physical
