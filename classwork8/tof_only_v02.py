@@ -402,11 +402,12 @@ def _fixed_heading_control_v02(
     if abs_error <= float(config.heading_deadband_deg):
         return x_cmd, y_cmd, 0.0, mode, error
 
-    recovering = abs_error >= float(config.heading_recover_trigger_deg)
+    hard_recover = abs_error >= float(config.heading_recover_trigger_deg)
+    hold_translation = abs_error >= float(config.heading_recover_release_deg)
 
     max_z = (
         float(config.heading_recover_max_z_dps)
-        if recovering
+        if hard_recover
         else float(config.heading_max_z_dps)
     )
 
@@ -417,7 +418,10 @@ def _fixed_heading_control_v02(
     )
     z_cmd = max(-max_z, min(max_z, z_cmd))
 
-    if recovering:
+    # Do not translate while the chassis is still visibly angled.  This is
+    # intentionally stricter than V01 because mecanum translation with a
+    # 2-4 degree yaw error accumulates real lateral displacement.
+    if hold_translation:
         return 0.0, 0.0, z_cmd, "HEADING_RECOVER_V02", error
 
     return x_cmd, y_cmd, z_cmd, mode, error
@@ -854,9 +858,15 @@ def _drive_one_cell(
         # centering bias. This is independent of wheel odometry, which can slip
         # on mecanum motion.
         if abs(scan_side_correction) > 1e-9:
+            # The stopped scan is a snapshot, not a continuous side sensor.
+            # Apply its bias strongly only at the beginning of the cell and
+            # fade it out after ~35 cm so it cannot push across the corridor.
+            fade_distance = max(0.10, min(config.cell_size_m, 0.35))
+            fade = max(0.0, min(1.0, 1.0 - progress / fade_distance))
+            applied_scan_side = scan_side_correction * fade
             right_x_unit, right_y_unit = DIR_RIGHT_VEC_DRIVE[direction]
-            x_cmd += right_x_unit * scan_side_correction
-            y_cmd += right_y_unit * scan_side_correction
+            x_cmd += right_x_unit * applied_scan_side
+            y_cmd += right_y_unit * applied_scan_side
 
         # Camera assistance is deliberately secondary to odometry. It only
         # contributes when both corridor boundaries are visible with enough
