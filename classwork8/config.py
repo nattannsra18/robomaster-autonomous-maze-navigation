@@ -43,6 +43,7 @@ class Classwork8Config:
     # V02 ToF robustness.  Gimbal direction changes clear the ToF filter, so
     # wait briefly for a genuinely fresh sample instead of aborting instantly.
     tof_recovery_wait_sec: float = 0.90
+    tof_recovery_retries: int = 2
     front_block_confirm_samples: int = 4
     front_block_confirm_interval_sec: float = 0.05
     front_block_release_margin_cm: float = 3.0
@@ -60,6 +61,7 @@ class Classwork8Config:
     # traversed, keep the logical DFS state synchronized with the physical
     # robot instead of pretending it never left the previous cell.
     blocked_near_target_accept_ratio: float = 0.82
+    cell_center_tolerance_m: float = 0.035
 
     # ToF is mounted on the gimbal. The chassis stays at its initial heading
     # during scanning; the gimbal points ToF toward the scan/travel direction.
@@ -176,6 +178,10 @@ class Classwork8Config:
             raise ValueError("heading_drive_sign must be non-zero")
         if self.tof_recovery_wait_sec <= 0.0:
             raise ValueError("tof_recovery_wait_sec must be positive")
+        if self.tof_recovery_retries < 0:
+            raise ValueError("tof_recovery_retries must be >= 0")
+        if self.cell_center_tolerance_m <= 0.0:
+            raise ValueError("cell_center_tolerance_m must be positive")
         if self.front_block_confirm_samples < 1:
             raise ValueError("front_block_confirm_samples must be >= 1")
         if not 0.0 < self.blocked_near_target_accept_ratio <= 1.0:
