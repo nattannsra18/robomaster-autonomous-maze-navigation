@@ -61,7 +61,7 @@ class RealtimeMapGUI:
         self._vision_photo = None
 
         self.root = tk.Tk()
-        self.root.title("Classwork 8 - Unknown World Grid Mapping")
+        self.root.title("Classwork 8 V03 - Frontier Exploration")
         self.root.geometry("1120x840")
         self.root.minsize(920, 700)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -91,12 +91,12 @@ class RealtimeMapGUI:
 
         ttk.Label(
             right,
-            text="Classwork 8",
+            text="Classwork 8 V03",
             font=("Segoe UI", 16, "bold"),
         ).pack(anchor="w")
         ttk.Label(
             right,
-            text="Unknown-world 60 cm grid mapping",
+            text="Nearest-frontier BFS + 60 cm grid mapping",
             font=("Segoe UI", 10),
         ).pack(anchor="w", pady=(0, 14))
 
