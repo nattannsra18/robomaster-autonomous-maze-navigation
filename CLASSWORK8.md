@@ -364,3 +364,57 @@ classwork8_output/run_<timestamp>/gui_map.png
 The original assignment outputs (\`map.csv\`, \`map.svg\`,
 \`sensor_and_pose_log.csv\`, \`exploration_log.csv\`, \`trajectory.csv\`, and
 \`summary.json\`) are still exported normally.
+
+
+## Final Assignment Round 1 V05 - ToF + camera baseline
+
+Entry point:
+
+\`\`\`powershell
+python -u final_round1_tof_camera_01.py
+\`\`\`
+
+This version intentionally starts with only the gimbal ToF, chassis odometry /
+attitude, and the RoboMaster camera.  It keeps the proven V04 nearest-frontier
+mapping/motion controller and adds camera target surveying during the same
+gimbal scan.
+
+The camera is opened exactly once by \`classwork8/camera_service.py\`.  The
+target detector consumes copies of the latest frame, so later vision modules
+must reuse this service rather than opening a second DJI video stream.
+
+Target processing is OpenCV-only:
+
+\`\`\`text
+BGR
+ -> Lab-L CLAHE lighting normalization
+ -> HSV broad candidate masks
+ -> morphology
+ -> contours
+ -> color + shape confidence
+ -> temporal verification
+ -> TargetRegistry
+\`\`\`
+
+Targets are surveyed only when the ToF direction is classified as a nearby
+wall.  This prevents a distant sign seen through an open corridor from being
+registered against the wrong approach cell and reduces camera-processing time.
+
+Round 1 adds two navigation-ready exports:
+
+\`\`\`text
+topology.json
+targets.json
+\`\`\`
+
+\`topology.json\` stores the logical visited cells, OPEN/WALL edges, traversed
+edges, start-cell scan signature and final cell.  \`targets.json\` stores every
+verified color/shape target, its confidence, observing cell, gimbal direction,
+ToF range and an estimated metric target position.
+
+The V05 GUI shows the shared camera target overlay and draws detected targets
+as colored Txx markers on the map.  The final \`gui_map.png\` includes those
+markers as well.
+
+The V05 baseline does not aim or fire the blaster.  It is the Round-1 mapping
+and target-database foundation for the later Round-2 route planner.
