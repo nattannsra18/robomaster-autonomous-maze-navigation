@@ -615,7 +615,13 @@ def _scan_four_directions(
             camera_service is not None
             and camera_service.running
             and target_detector is not None
+            and distance_cm is not None
+            and float(distance_cm) < float(config.tof_open_cm)
         ):
+            # Targets belong to wall faces.  Survey only wall-facing scans so
+            # a distant sign seen through an open corridor is not registered
+            # against the wrong approach cell.  This also saves camera
+            # processing time in the 15-minute final mission.
             verified_targets, target_debug = target_detector.verify_latest(
                 camera_service
             )
