@@ -54,6 +54,13 @@ def main():
     args = parser.parse_args()
 
     config = Classwork8Config()
+
+    # V02 field-safe defaults.
+    config.travel_speed_mps = 0.10
+    # Keep camera analysis visible in the GUI, but do not let the current
+    # uncalibrated corridor detector steer the chassis.
+    config.vision_steering_enabled = False
+
     if args.no_vision:
         config.vision_enabled = False
 
