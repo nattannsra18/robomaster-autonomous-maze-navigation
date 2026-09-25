@@ -790,7 +790,10 @@ def _drive_one_cell(
                 front_cm,
             )
 
-        if remaining <= config.step_tolerance_m:
+        if (
+            remaining <= config.step_tolerance_m
+            and abs(cross_track) <= config.cell_center_tolerance_m
+        ):
             stop_chassis(chassis)
             recorder.record_sample(
                 time.monotonic(),
@@ -878,8 +881,13 @@ def _drive_one_cell(
             ratio = max(0.0, min(1.0, ratio))
             speed = max(0.04, config.travel_speed_mps * ratio)
 
-        x_cmd = drive_x_unit * speed
-        y_cmd = drive_y_unit * speed
+        # Once the longitudinal 60 cm target is reached, do not keep pushing
+        # forward merely because the robot is a few centimetres off the cell
+        # centre-line.  Finish with a small perpendicular correction instead.
+        along_speed = 0.0 if remaining <= config.step_tolerance_m else speed
+
+        x_cmd = drive_x_unit * along_speed
+        y_cmd = drive_y_unit * along_speed
 
         # Keep the robot near the centre-line of the current 60 cm cell.
         correction = max(
