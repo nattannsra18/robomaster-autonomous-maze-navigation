@@ -294,3 +294,41 @@ Coverage = explored cells / total cells * 100
 ```
 
 The 8 m x 8 m software canvas is only an initially unknown working canvas; it is not prior maze knowledge.
+
+
+## V03: configurable GUI + nearest-frontier exploration
+
+Run the current field-tuning version with:
+
+\`\`\`powershell
+python -u classwork8_slam_03.py
+\`\`\`
+
+Before the robot connects, V03 opens a configuration window with tabs for
+motion, ToF/safety, mapping and vision. Important 60 cm calibration parameters
+(\`step_tolerance_m\`, \`odom_scale_x\`, \`odom_scale_y\`, travel speed and
+heading gains) can be changed without editing Python source.
+
+V03 uses **nearest-frontier BFS**, not the V01/V02 DFS parent stack. A frontier
+is a visited cell with a confirmed OPEN edge into an unvisited cell. The
+planner:
+
+1. enters an adjacent unvisited open cell immediately when one exists;
+2. otherwise searches confirmed-open visited cells with BFS;
+3. routes to the nearest reachable frontier;
+4. prefers frontiers with more unvisited open edges when path lengths tie;
+5. replans after a confirmed blocked edge.
+
+The realtime GUI shows the selected frontier and a purple dashed planned route.
+Returning toward the start is therefore only expected when the nearest/only
+remaining frontier is actually in that direction.
+
+V03 field defaults use a neutral odometry scale (1.00/1.00) and a 5 mm logical
+stop tolerance. Calibrate X and Y separately with a tape measure. If one
+commanded 60 cm move physically travels \`D\` cm, a useful next estimate is:
+
+\`\`\`text
+new_scale = old_scale * D / 60
+\`\`\`
+
+For example, if scale 1.00 moves only 54 cm, try about 0.90.
