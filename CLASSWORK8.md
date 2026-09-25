@@ -332,3 +332,35 @@ new_scale = old_scale * D / 60
 \`\`\`
 
 For example, if scale 1.00 moves only 54 cm, try about 0.90.
+
+
+## V04: closed-maze auto stop + GUI map export
+
+Run:
+
+\`\`\`powershell
+python -u classwork8_slam_04.py
+\`\`\`
+
+V04 keeps the V03 nearest-frontier BFS planner and adds a second completion
+criterion for the closed rectangular classwork arena.  A run may finish when:
+
+- every logical cell inside the currently discovered bounding rectangle has
+  actually been visited; and
+- each of the four outer sides has enough WALL evidence.
+
+The default perimeter ratio is 0.70.  This tolerates an occasional ToF miss on
+a low foam outer wall without chasing a phantom frontier outside the real
+arena.  Disable **Closed-maze auto stop** in the configuration GUI for a
+non-rectangular/open-ended environment.
+
+The realtime GUI now has **SAVE GUI MAP NOW**.  When automatic export is
+enabled, the final logical GUI map is also written to the run directory as:
+
+\`\`\`text
+classwork8_output/run_<timestamp>/gui_map.png
+\`\`\`
+
+The original assignment outputs (\`map.csv\`, \`map.svg\`,
+\`sensor_and_pose_log.csv\`, \`exploration_log.csv\`, \`trajectory.csv\`, and
+\`summary.json\`) are still exported normally.
