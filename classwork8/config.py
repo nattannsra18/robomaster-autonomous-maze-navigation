@@ -95,6 +95,13 @@ class Classwork8Config:
     # 30 cm from chassis centre. This threshold only marks candidate directions;
     # movement still continuously checks ToF and stops at stop_front_cm.
     tof_open_cm: float = 55.0
+    # V02 topology classification: a very close return is confidently a wall.
+    # Mid-range returns are re-sampled and biased toward OPEN because a false
+    # open is still protected by the continuous front-stop guard, whereas a
+    # false wall can permanently hide an unexplored branch.
+    scan_hard_wall_cm: float = 25.0
+    scan_ambiguous_retries: int = 1
+    scan_ambiguous_retry_settle_sec: float = 0.10
     scan_samples: int = 5
     scan_sample_interval_sec: float = 0.06
     max_moves: int = 500
