@@ -554,6 +554,40 @@ def _scan_four_directions(
         )
 
         distance_cm = _sample_tof(sensors, config, stop_event)
+
+        # V02: readings between a definite near wall and the normal OPEN
+        # threshold are ambiguous.  A foam edge / floor reflection can create
+        # one short median even when the branch is physically open.  Re-sample
+        # at the same gimbal angle and keep the larger robust median.  If this
+        # turns out to be a false-open, _drive_one_cell still has a continuous
+        # ToF stop guard before any topology is committed by movement.
+        if (
+            distance_cm is not None
+            and float(config.scan_hard_wall_cm) < float(distance_cm)
+            < float(config.tof_open_cm)
+            and int(config.scan_ambiguous_retries) > 0
+        ):
+            retry_values = [float(distance_cm)]
+            for _ in range(int(config.scan_ambiguous_retries)):
+                sensors.reset_filters()
+                if not _sleep_interruptible(
+                    config.scan_ambiguous_retry_settle_sec,
+                    stop_event,
+                ):
+                    return None
+                retry = _sample_tof(sensors, config, stop_event)
+                if retry is not None:
+                    retry_values.append(float(retry))
+            distance_cm = max(retry_values)
+            print(
+                "[SCAN] {} ambiguous -> retry candidates {} -> {:.1f} cm".format(
+                    DIR_NAME[direction],
+                    [round(v, 1) for v in retry_values],
+                    float(distance_cm),
+                ),
+                flush=True,
+            )
+
         ranges[direction] = distance_cm
         print(
             "[SCAN] {} ToF = {} cm".format(
