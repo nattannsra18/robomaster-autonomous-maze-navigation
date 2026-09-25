@@ -1,4 +1,26 @@
+import sys
+import types
 import unittest
+
+
+# Unit tests exercise planner/completion logic only.  RoboMaster SDK imports
+# media.py on Windows even though these tests never open a camera or connect
+# to a robot, so provide a tiny compatibility stub before importing classwork8.
+if "libmedia_codec" not in sys.modules:
+    media_codec = types.ModuleType("libmedia_codec")
+
+    class H264Decoder:
+        def decode(self, _data):
+            return []
+
+    class OpusDecoder:
+        def decode(self, _data):
+            return None
+
+    media_codec.H264Decoder = H264Decoder
+    media_codec.OpusDecoder = OpusDecoder
+    sys.modules["libmedia_codec"] = media_codec
+
 
 from classwork8.config import Classwork8Config
 from classwork8.tof_only_v03 import (
