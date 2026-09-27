@@ -263,6 +263,40 @@ def heading_alignment_preflight(
     return True, "HEADING_RECOVERY_SMALL_CORRECTION", correction
 
 
+
+def stationary_escape_heading_preflight(
+    yaw_errors_deg,
+    *,
+    trigger_deg: float,
+    max_stable_offset_deg: float,
+    max_spread_deg: float,
+) -> Tuple[bool, str, Optional[float]]:
+    """Validate THREE stopped heading readings before a no-turn wall escape.
+
+    A consistently offset chassis may make a short commanded motion directly
+    away from the wall (z=0); this never licenses chassis rotation or a normal
+    full-cell move. Any missing/nonfinite/inconsistent sample blocks motion.
+    """
+    import math
+    import statistics
+
+    if len(yaw_errors_deg) != 3 or any(value is None for value in yaw_errors_deg):
+        return False, "RECOVERY_HEADING_SAMPLES_MISSING", None
+    try:
+        errors = [float(value) for value in yaw_errors_deg]
+    except (TypeError, ValueError, OverflowError):
+        return False, "RECOVERY_HEADING_SAMPLES_INVALID", None
+    if not all(math.isfinite(value) for value in errors):
+        return False, "RECOVERY_HEADING_SAMPLES_INVALID", None
+    if max(errors) - min(errors) > float(max_spread_deg):
+        return False, "RECOVERY_HEADING_UNSTABLE", None
+    reference = float(statistics.median(errors))
+    if max(abs(value) for value in errors) > float(max_stable_offset_deg):
+        return False, "RECOVERY_HEADING_PRE_PULSE_UNSAFE", reference
+    if max(abs(value) for value in errors) <= float(trigger_deg):
+        return True, "RECOVERY_HEADING_STABLE_ALIGNED", reference
+    return True, "RECOVERY_STABLE_OFFSET_ESCAPE_ONLY", reference
+
 def supervised_recheck_pose_ok(
     paused_xy: Optional[Tuple[float, float]],
     current_xy: Optional[Tuple[float, float]],
