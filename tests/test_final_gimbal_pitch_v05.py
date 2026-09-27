@@ -115,8 +115,8 @@ class PitchHoldTests(unittest.TestCase):
             for pitch, yaw in self.gimbal.commands
         ))
 
-    def test_large_pitch_drift_under_yaw_only_aborts_without_mapping(self):
-        self.config.gimbal_turn_timeout_sec = 2.0
+    def test_transient_pitch_during_yaw_is_relevelled_before_tof(self):
+        self.config.gimbal_turn_timeout_sec = 10.0
         self.tracker.pitch = 0.0
         self.tracker.yaw = 0.0
 
@@ -134,12 +134,33 @@ class PitchHoldTests(unittest.TestCase):
         success = _point_gimbal(
             coupled, self.sensors, self.tracker, 1, self.config, None
         )
-        self.assertFalse(success)
-        self.assertEqual(self.sensors.resets, 0)
+        self.assertTrue(success)
+        self.assertEqual(self.sensors.resets, 1)
+        self.assertLessEqual(
+            abs(self.tracker.pitch - self.config.gimbal_scan_pitch_deg),
+            self.config.gimbal_pitch_tolerance_deg,
+        )
         self.assertTrue(all(
             abs(pitch) == 0.0 or abs(yaw) == 0.0
             for pitch, yaw in coupled.commands
         ))
+
+    def test_pitch_that_cannot_be_relevelled_still_blocks_tof(self):
+        self.config.gimbal_turn_timeout_sec = 0.18
+        self.tracker.pitch = 7.0
+        self.tracker.yaw = 90.0
+
+        class StuckPitchGimbal(FakeGimbal):
+            def drive_speed(self, pitch_speed=0.0, yaw_speed=0.0):
+                self.commands.append((float(pitch_speed), float(yaw_speed)))
+                return True
+
+        stuck = StuckPitchGimbal(self.tracker)
+        success = _point_gimbal(
+            stuck, self.sensors, self.tracker, 1, self.config, None
+        )
+        self.assertFalse(success)
+        self.assertEqual(self.sensors.resets, 0)
 
     def test_no_pitch_feedback_fails_safely(self):
         self.config.gimbal_turn_timeout_sec = 0.12
