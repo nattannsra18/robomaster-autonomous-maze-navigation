@@ -376,8 +376,8 @@ class RealtimeMapGUI:
                 "Blue = realtime odometry trajectory\n"
                 "Light blue = travelled logical path\n"
                 "Purple dashed = planned route to nearest frontier\n"
-                "Solid Txx = tentative near-wall estimate\n"
-                "Hollow Txx? LOS = sighting ray, NOT target position\n"
+                "Solid Txx = near-wall target position estimate\n"
+                "Distant / pending signs stay in saved records, not on map\n"
                 "Green S = mission start\n"
                 "Red R = robot\n"
                 "Orange arrow = current ToF/Gimbal direction"
@@ -684,10 +684,8 @@ class RealtimeMapGUI:
             self.vision_var.set("Camera: unavailable; ToF mapping continues")
 
         self.target_var.set(
-            "Confirmed signs: {} | distant sightings: {} | near-wall estimates: {}".format(
-                int(snapshot.get("target_count", 0)),
-                int(snapshot.get("target_sighting_count", 0)),
-                int(snapshot.get("target_position_candidate_count", 0)),
+            "Wall-position signs on map: {} | other sightings saved separately".format(
+                len(confirmed_map_targets(snapshot.get("targets"))),
             )
         )
 
@@ -958,7 +956,7 @@ class RealtimeMapGUI:
 
         target_colours = {
             "red": "#dc2626", "green": "#16a34a",
-            "blue": "#2563eb", "yellow": "#ca8a04",
+            "blue": "#2563eb", "yellow": "#facc15",
             "orange": "#ea580c",
         }
         targets = confirmed_map_targets(snapshot.get("targets"))
@@ -982,30 +980,16 @@ class RealtimeMapGUI:
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            if sighting:
-                if origin is not None:
-                    oxp, oyp = metric_to_image(*origin)
-                    draw.line(
-                        (oxp, oyp, anchor_x, anchor_y),
-                        fill=colour, width=max(2, int(size * 0.025)),
-                    )
-                draw.ellipse(
-                    (tx - radius, ty - radius, tx + radius, ty + radius),
-                    fill=self.COLOURS["background"],
-                    outline=colour, width=3,
-                )
-                label = str(target.get("target_id", "T")) + "? LOS"
-                draw.text((tx + radius + 2, ty - 5), label, fill=colour, font=font)
-            else:
-                draw.ellipse(
-                    (tx - radius, ty - radius, tx + radius, ty + radius),
-                    fill=colour, outline="white", width=2,
-                )
-                draw.text(
-                    (tx - radius * 0.6, ty - 5),
-                    str(target.get("target_id", "T")),
-                    fill="white", font=font,
-                )
+            draw.ellipse(
+                (tx - radius, ty - radius, tx + radius, ty + radius),
+                fill=colour, outline="white", width=2,
+            )
+            draw.text(
+                (tx - radius * 0.6, ty - 5),
+                str(target.get("target_id", "T")),
+                fill="#1f2937" if target.get("color") == "yellow" else "white",
+                font=font,
+            )
 
         sx, sy = logical_center((0, 0))
         r = max(9.0, size * 0.16)
@@ -1304,7 +1288,7 @@ class RealtimeMapGUI:
         # derived from the observing cell + gimbal direction + ToF distance.
         target_colours = {
             "red": "#dc2626", "green": "#16a34a",
-            "blue": "#2563eb", "yellow": "#ca8a04",
+            "blue": "#2563eb", "yellow": "#facc15",
             "orange": "#ea580c",
         }
         targets = confirmed_map_targets(snapshot.get("targets"))
@@ -1329,32 +1313,15 @@ class RealtimeMapGUI:
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            if sighting:
-                if origin is not None:
-                    oxp, oyp = metric_to_canvas(*origin)
-                    canvas.create_line(
-                        oxp, oyp, anchor_x, anchor_y, fill=colour, width=2,
-                        dash=(4, 4),
-                    )
-                canvas.create_oval(
-                    tx - radius, ty - radius, tx + radius, ty + radius,
-                    fill=colours["background"], outline=colour, width=3,
-                )
-                canvas.create_text(
-                    tx + radius + 4, ty, anchor="w",
-                    text=str(target.get("target_id", "T")) + "? LOS",
-                    fill=colour, font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
-                )
-            else:
-                canvas.create_oval(
-                    tx - radius, ty - radius, tx + radius, ty + radius,
-                    fill=colour, outline="white", width=2,
-                )
-                canvas.create_text(
-                    tx, ty, text=str(target.get("target_id", "T")),
-                    fill="white",
-                    font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
-                )
+            canvas.create_oval(
+                tx - radius, ty - radius, tx + radius, ty + radius,
+                fill=colour, outline="white", width=2,
+            )
+            canvas.create_text(
+                tx, ty, text=str(target.get("target_id", "T")),
+                fill="#1f2937" if target.get("color") == "yellow" else "white",
+                font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
+            )
 
         # Start marker.
         sx, sy = logical_center((0, 0))
