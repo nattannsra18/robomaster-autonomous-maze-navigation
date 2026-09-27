@@ -1647,8 +1647,9 @@ def _drive_one_cell(
 
     # The initial four-way scan can report an anomalously short side range.
     # Never blindly bypass it: stop and obtain TWO independent fresh returns
-    # at the side angle. A sustained 6.5 cm still blocks movement until the
-    # operator has physically checked the chassis/wall clearance.
+    # at the side angle. If persistent, optionally attempt measured, tiny
+    # moves AWAY from that wall after a fresh opposite-ray safety check.
+    # A failed or unsafe recovery still stops the robot.
     move_side_baselines = dict(scan_ranges or {})
     recovered_start_side = False
     for side in sorted(wall_sides):
@@ -1810,9 +1811,8 @@ def _drive_one_cell(
         for side in wall_sides
     )
     if preserve_wall_offset:
-        # A recovery nudge has moved the robot away from an actual nearby
-        # wall. Do not let the ordinary centreline controller immediately
-        # undo that safe offset by steering BACK into the same wall.
+        # A verified side distance is already short, or recovery has nudged
+        # us away. Do not let centreline control push BACK into that wall.
         if direction in (0, 2):
             target_map_y = float(start_map_y)
         else:
