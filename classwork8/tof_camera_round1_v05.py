@@ -707,12 +707,16 @@ def _scan_side_guidance_v02(
         correction = max(-max_corr, min(max_corr, correction))
         return correction, "CENTER_BETWEEN_SCAN_WALLS"
 
-    # One wall is dangerously close: bias away from it.
-    if left_valid and float(left_cm) <= float(config.scan_side_danger_cm):
-        return +max_corr, "AVOID_SCAN_LEFT"
-
-    if right_valid and float(right_cm) <= float(config.scan_side_danger_cm):
-        return -max_corr, "AVOID_SCAN_RIGHT"
+    # A single side ToF reading cannot define where the centre of a 60 cm
+    # passage lies. Older code pushed sideways at a normal 14-15 cm sensor
+    # reading, even when that range was unchanged through the cell. Use the
+    # first reading only as the baseline for the stopped mid-cell check.
+    # Critical starting ranges are handled explicitly before moving.
+    if (
+        (left_valid and float(left_cm) <= float(config.scan_side_wall_max_cm))
+        or (right_valid and float(right_cm) <= float(config.scan_side_wall_max_cm))
+    ):
+        return 0.0, "SINGLE_WALL_BASELINE_ONLY"
 
     return 0.0, "NO_SCAN_SIDE_GUIDANCE"
 
@@ -1357,6 +1361,26 @@ def _drive_one_cell(
     )
     if initial_front_cm is None:
         return False, "TOF_STALE", 0.0
+
+    # A known wall already inside the calibrated critical sensor range
+    # should prevent *starting* this leg, not be treated as a steering cue.
+    # An uncalibrated range above the threshold is a baseline, not evidence
+    # that a particular chassis-side clearance is safe.
+    for side in wall_sides:
+        baseline = (scan_ranges or {}).get(side)
+        if baseline is not None and 0.0 < float(baseline) <= float(
+            config.midcell_side_hard_stop_cm
+        ):
+            stop_chassis(chassis)
+            print(
+                "[MOVE] SIDE_CRITICAL_AT_START {}: {:.1f} cm <= {:.1f} cm.".format(
+                    DIR_NAME[side],
+                    float(baseline),
+                    float(config.midcell_side_hard_stop_cm),
+                ),
+                flush=True,
+            )
+            return False, "SIDE_CRITICAL_AT_START_{}".format(DIR_NAME[side]), 0.0
 
     x0, y0 = pose.get_xy()
     if x0 is None or y0 is None:
