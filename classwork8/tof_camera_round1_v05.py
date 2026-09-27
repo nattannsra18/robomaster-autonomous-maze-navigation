@@ -1127,6 +1127,7 @@ def _scan_four_directions(
         if (
             checkpoint_enabled
             and not checkpoint_done
+            and remaining > float(config.step_tolerance_m)
             and progress >= (
                 float(config.cell_size_m) * float(config.midcell_side_check_ratio)
             )
@@ -1604,7 +1605,10 @@ def _drive_one_cell(
             span = max(1.0, config.slow_front_cm - config.stop_front_cm)
             ratio = (front_cm - config.stop_front_cm) / span
             ratio = max(0.0, min(1.0, ratio))
-            speed = max(0.04, config.travel_speed_mps * ratio)
+            speed = min(
+                speed,
+                max(0.04, float(config.travel_speed_mps) * ratio),
+            )
 
         # Once the longitudinal 60 cm target is reached, do not keep pushing
         # forward merely because the robot is a few centimetres off the cell
