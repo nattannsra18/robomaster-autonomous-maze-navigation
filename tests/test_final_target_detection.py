@@ -125,6 +125,39 @@ class FinalTargetDetectionTests(unittest.TestCase):
         verified, _debug = self.detector.verify_latest(FrozenCamera())
         self.assertEqual(verified, [])
 
+    def test_verified_target_survives_last_frame_glare(self):
+        # A floor sign visible for four distinct frames must remain valid
+        # even if the last camera frames are lost under changing lighting.
+        clear = np.full((360, 640, 3), 110, dtype=np.uint8)
+        cv2.rectangle(clear, (250, 208), (300, 257), (0, 180, 0), -1)
+        glare = np.full((360, 640, 3), 110, dtype=np.uint8)
+
+        class SequenceCamera:
+            def __init__(self):
+                self.frames = [clear] * 4 + [glare] * 4
+                self.index = 0
+
+            def latest_with_timestamp(self, max_age_sec=0.6):
+                if self.index >= len(self.frames):
+                    return None
+                result = (
+                    self.frames[self.index],
+                    float(100 + self.index),
+                )
+                self.index += 1
+                return result
+
+        self.config.target_sample_frames = 8
+        self.config.target_verify_frames = 4
+        self.config.target_frame_interval_sec = 0.005
+        verified, _debug = self.detector.verify_latest(SequenceCamera())
+        self.assertTrue(any(
+            item.detection.color == "green"
+            and item.detection.shape == "square"
+            and item.verified_frames >= 4
+            for item in verified
+        ))
+
     def test_ground_level_sign_roi_can_be_adjusted_live(self):
         # A sign near the image bottom was invisible in the 0.82 wall ROI.
         frame = np.full((360, 640, 3), 110, dtype=np.uint8)
