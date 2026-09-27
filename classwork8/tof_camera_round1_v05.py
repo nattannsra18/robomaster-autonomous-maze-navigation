@@ -1315,6 +1315,16 @@ def _scan_four_directions(
                 # not from an echo that may have looked over a foam wall.
             else:
                 _set_edge_state(edge_states, current_cell, direction, "WALL")
+        elif edge_states.get((current_cell[0], current_cell[1], direction)) == "OPEN":
+            # An earlier speculative OPEN is contradicted by a fresh uncertain
+            # reading. Retract it until another scan or actual chassis passage
+            # confirms an opening; otherwise the planner could follow a ghost.
+            _set_edge_state(edge_states, current_cell, direction, "UNKNOWN")
+            print(
+                "[SCAN_UNCERTAIN] Retracted untraversed OPEN at {} {}.".format(
+                    current_cell, DIR_NAME[direction]
+                ), flush=True,
+            )
 
         recorder.record_sample(
             time.monotonic(),
