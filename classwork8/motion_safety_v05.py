@@ -44,6 +44,8 @@ def side_checkpoint_decision(
     baseline_cm: Optional[Dict[int, Optional[float]]] = None,
     max_baseline_drop_cm: float = 4.0,
     recenter_deadband_cm: float = 1.5,
+    allow_soft_recovery: bool = False,
+    opposite_clearance_cm: Optional[float] = None,
 ) -> Tuple[bool, str, float]:
     """Evaluate a stationary side scan: (may_continue, label, right_bias).
 
@@ -61,6 +63,7 @@ def side_checkpoint_decision(
     baseline_cm = baseline_cm or {}
     valid = {}
     reference = {}
+    approaching_side = None
 
     for side in wall_sides:
         value = readings_cm.get(side)
@@ -81,7 +84,28 @@ def side_checkpoint_decision(
             baseline = float(baseline)
             reference[side] = baseline
             if baseline - distance >= float(max_baseline_drop_cm):
-                return False, "SIDE_RANGE_DROP_{}".format(name), 0.0
+                if approaching_side is not None:
+                    return False, "SIDE_RANGE_DROP_BOTH", 0.0
+                approaching_side = side
+
+    # A stationary scan of the OPPOSITE direction is essential. Never recover
+    # from a short side return using cached data or only the approaching wall.
+    if approaching_side is not None:
+        name = "LEFT" if approaching_side == left_dir else "RIGHT"
+        clearance = opposite_clearance_cm
+        if (
+            not allow_soft_recovery or clearance is None
+            or float(clearance) <= float(soft_margin_cm)
+        ):
+            return False, "SIDE_RANGE_DROP_{}".format(name), 0.0
+        # Hard stop above was checked first; recovery is deliberately a slow
+        # bias while advancing, not a blind lateral strafe into another wall.
+        away_sign = 1.0 if approaching_side == left_dir else -1.0
+        return (
+            True,
+            "MIDCELL_SOFT_WALL_RECOVERY_AWAY_{}".format(name),
+            away_sign * max(0.0, float(max_bias_mps)),
+        )
 
     if not valid:
         return True, "SIDE_WALL_NOT_VISIBLE_NO_AUTO_STEER", 0.0
