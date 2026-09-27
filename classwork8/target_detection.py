@@ -590,6 +590,8 @@ class TargetRegistry:
         approach_cell: Tuple[int, int],
         direction: int,
         tof_cm: Optional[float],
+        range_confirmed_wall: bool = True,
+        camera_pitch_deg: Optional[float] = None,
     ) -> dict:
         detection = verified.detection
         target_x, target_y = self._estimate_target_xy(
@@ -606,6 +608,10 @@ class TargetRegistry:
             "view_direction": int(direction) % 4,
             "view_direction_name": DIR_NAME[int(direction) % 4],
             "tof_cm": None if tof_cm is None else float(tof_cm),
+            "range_confirmed_wall": bool(range_confirmed_wall),
+            "camera_pitch_deg": (
+                None if camera_pitch_deg is None else float(camera_pitch_deg)
+            ),
             "estimated_target_xy_m": [target_x, target_y],
             "centroid_px": [
                 int(detection.centroid[0]),
@@ -667,7 +673,10 @@ class TargetRegistry:
                 }],
                 "observations": 1,
                 "confidence": float(verified.confidence),
-                "status": "DETECTED",
+                "range_confirmed_wall": bool(range_confirmed_wall),
+                "status": (
+                    "DETECTED" if range_confirmed_wall else "NEEDS_RANGE_REVIEW"
+                ),
             }
             self._next_id += 1
             self.targets.append(match)
@@ -680,6 +689,9 @@ class TargetRegistry:
                 (old_y * count + target_y) / float(count + 1),
             ]
             match["observations"] = count + 1
+            if range_confirmed_wall:
+                match["range_confirmed_wall"] = True
+                match["status"] = "DETECTED"
             match["confidence"] = max(
                 float(match["confidence"]),
                 float(verified.confidence),
