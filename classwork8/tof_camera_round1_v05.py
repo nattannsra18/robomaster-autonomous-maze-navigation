@@ -1882,6 +1882,7 @@ def run(
             "gimbal_yaw_deg": gimbal_tracker.get_yaw(),
             "gimbal_pitch_deg": gimbal_tracker.get_pitch(),
             "gimbal_scan_pitch_target_deg": float(config.gimbal_scan_pitch_deg),
+            "gimbal_pitch_tolerance_deg": float(config.gimbal_pitch_tolerance_deg),
             "tof_cm": tof_cm,
             "moves": int(moves),
             "coverage": grid.coverage_percent(),
