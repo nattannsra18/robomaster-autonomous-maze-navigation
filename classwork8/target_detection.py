@@ -438,6 +438,9 @@ class TargetDetector:
         and one-to-one associations so nearby identical signs stay separate.
         """
         tracks: List[dict] = []
+        # A sign that passes consecutive verification at frame 4 must not be
+        # discarded merely because a later frame is glared or blurred.
+        verified_tracks: List[dict] = []
         last_debug = None
 
         sample_count = max(
@@ -538,13 +541,37 @@ class TargetDetector:
                         "last_detection": detection,
                     })
 
-            # Dropping unmatched tracks enforces consecutive observations.
+            # Dropping unmatched tracks enforces consecutive observations
+            # for NEW confirmations; previous valid 4-frame confirmations
+            # remain available despite a later intermittent lighting dropout.
             tracks = next_tracks
+            for track in tracks:
+                if int(track["count"]) < int(self.config.target_verify_frames):
+                    continue
+                score = float(track["confidence_sum"]) / float(track["count"])
+                if score < float(self.config.target_save_confidence):
+                    continue
+                duplicate = None
+                for index, saved in enumerate(verified_tracks):
+                    if saved["color"] != track["color"] or saved["shape"] != track["shape"]:
+                        continue
+                    px, py = saved["last_centroid"]
+                    tx, ty = track["last_centroid"]
+                    if math.hypot(px - tx, py - ty) <= float(
+                        self.config.target_merge_centroid_px
+                    ):
+                        duplicate = index
+                        break
+                if duplicate is None:
+                    verified_tracks.append(dict(track))
+                elif int(track["count"]) > int(verified_tracks[duplicate]["count"]):
+                    verified_tracks[duplicate] = dict(track)
+
             time.sleep(max(0.005, interval_sec))
 
         verified: List[VerifiedTarget] = []
 
-        for track in tracks:
+        for track in verified_tracks:
             if track["count"] < int(self.config.target_verify_frames):
                 continue
 
