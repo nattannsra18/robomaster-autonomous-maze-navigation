@@ -357,6 +357,7 @@ class RealtimeMapGUI:
         gimbal_yaw = snapshot.get("gimbal_yaw_deg")
         gimbal_pitch = snapshot.get("gimbal_pitch_deg")
         scan_pitch = float(snapshot.get("gimbal_scan_pitch_target_deg", 0.0))
+        pitch_tolerance = float(snapshot.get("gimbal_pitch_tolerance_deg", 0.8))
         yaw_label = (
             "--" if gimbal_yaw is None else "{:+.1f}".format(float(gimbal_yaw))
         )
@@ -365,7 +366,10 @@ class RealtimeMapGUI:
             else "{:+.1f}".format(float(gimbal_pitch))
         )
         warning = ""
-        if gimbal_pitch is not None and abs(float(gimbal_pitch) - scan_pitch) > 2.0:
+        if (
+            gimbal_pitch is not None
+            and abs(float(gimbal_pitch) - scan_pitch) > pitch_tolerance
+        ):
             warning = " (PITCH NOT LEVEL)"
         self.gimbal_var.set(
             "Gimbal: {}  yaw={}°  pitch={}°  target={}°{}".format(
