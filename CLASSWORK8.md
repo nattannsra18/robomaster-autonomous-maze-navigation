@@ -900,3 +900,44 @@ git pull origin classwork8-slam-exploration
 python -m py_compile classwork8\config.py classwork8\config_gui_v05.py classwork8\gui_v05.py classwork8\target_detection.py classwork8\tof_camera_round1_v05.py
 python -m unittest tests.test_final_motion_safety_v05 tests.test_final_target_detection tests.test_final_gimbal_pitch_v05 tests.test_final_scan_reuse tests.test_final_live_survey -v
 \`\`\`
+
+
+### V05 21:02 mid-cell side false stop: compare with the start-side baseline
+
+The real run scanned the RIGHT wall at **14.5 cm** while still at (0,0).
+At ~0.29 m into the first forward cell, it read **14.7 cm** on that same
+side. The old hard-stop default of 22 cm incorrectly treated a nearly
+unchanged reading as dangerous and ended the mission after exporting three
+target records. The stop did not indicate mapping completion or a Python
+exception.
+
+The baseline-aware correction now:
+- uses 10 cm as an **uncalibrated starting critical ToF-to-wall limit**;
+- checks for a 4 cm-or-greater REDUCTION from the side reading measured in
+  that cell's four-way stationary scan;
+- ignores side changes up to 1.5 cm for lateral centering;
+- does not try to achieve a fabricated 28 cm clearance from a single wall;
+- does not apply automatic side bias without a valid fresh start-of-leg
+  baseline (for example when the revisit scan was intentionally skipped);
+- requires a full chassis stop for the mid-cell side scan, then returns ToF
+  to travel direction and waits for a fresh forward reading before resuming;
+- logs the baseline, mid-cell range, and explicit \`[SIDE_CHECK] STOP\` reason
+  whenever motion is blocked. Every run prints \`[MISSION] Finish reason:\`.
+
+These are **sensor readings, not physical chassis-side clearance**. Measure
+the actual sensor-to-body offset and side gap before relying on any 10 cm
+absolute threshold. A foam edge can be missed or reflect badly. Recheck a
+single wall-adjacent cell at 0.08-0.10 m/s with someone ready to STOP, then
+adjust the independent calibrated critical range and maximum drop in the
+ToF / Safety tab. Never simply disable ToF front-stop or lateral-drift safety
+to make the run continue.
+
+The new offline regression includes the exact 14.5 -> 14.7 cm RIGHT-wall
+case (must continue with zero bias), a 14.5 -> 10.4 cm reduction (must stop),
+absolute critical range, missing baseline and one-wall no-blind-strafe tests.
+
+\`\`\`powershell
+git pull origin classwork8-slam-exploration
+python -m py_compile classwork8\motion_safety_v05.py classwork8\tof_camera_round1_v05.py classwork8\config.py classwork8\config_gui_v05.py
+python -m unittest tests.test_final_motion_safety_v05 -v
+\`\`\`
