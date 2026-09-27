@@ -7,6 +7,7 @@ import numpy as np
 
 from classwork8.config import Classwork8Config
 from classwork8.target_detection import (
+    COLOR_RANGES,
     TargetDetector,
     TargetRegistry,
     VerifiedTarget,
@@ -34,6 +35,49 @@ class FinalTargetDetectionTests(unittest.TestCase):
                 if item.color == "green" and item.shape == "square"
             ]
             self.assertTrue(matches)
+
+    def test_yellow_orange_candidate_hue_bands_do_not_overlap(self):
+        yellow_low = COLOR_RANGES["yellow"][0][0][0]
+        orange_high = COLOR_RANGES["orange"][0][1][0]
+        self.assertGreater(yellow_low, orange_high)
+
+    def test_warm_yellow_is_not_saved_as_orange(self):
+        # Synthetic, controlled illumination: warm yellow ~H22 and clear
+        # yellow ~H29 must retain YELLOW after CLAHE and contour scoring.
+        for hue in (22, 29):
+            frame = np.full((360, 640, 3), 120, dtype=np.uint8)
+            hsv = np.uint8([[[hue, 220, 240]]])
+            bgr = tuple(int(v) for v in cv2.cvtColor(
+                hsv, cv2.COLOR_HSV2BGR
+            )[0, 0])
+            cv2.rectangle(frame, (250, 145), (380, 215), bgr, -1)
+            detections, _debug = self.detector.detect(frame)
+            hits = [
+                item for item in detections
+                if 250 <= item.centroid[0] <= 380
+                and 145 <= item.centroid[1] <= 215
+            ]
+            self.assertTrue(hits, "No warm-yellow detection at H={}".format(hue))
+            self.assertTrue(
+                all(item.color == "yellow" for item in hits),
+                "Warm yellow classified as {}".format([item.color for item in hits]),
+            )
+
+    def test_true_orange_remains_orange(self):
+        frame = np.full((360, 640, 3), 120, dtype=np.uint8)
+        hsv = np.uint8([[[13, 225, 240]]])
+        bgr = tuple(int(v) for v in cv2.cvtColor(
+            hsv, cv2.COLOR_HSV2BGR
+        )[0, 0])
+        cv2.rectangle(frame, (250, 145), (380, 215), bgr, -1)
+        detections, _debug = self.detector.detect(frame)
+        hits = [
+            item for item in detections
+            if 250 <= item.centroid[0] <= 380
+            and 145 <= item.centroid[1] <= 215
+        ]
+        self.assertTrue(hits)
+        self.assertTrue(all(item.color == "orange" for item in hits))
 
     def test_red_circle_detected(self):
         frame = np.full((360, 640, 3), 120, dtype=np.uint8)
