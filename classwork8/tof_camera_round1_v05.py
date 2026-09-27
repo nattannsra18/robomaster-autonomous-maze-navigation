@@ -1975,6 +1975,11 @@ def run(
         Tuple[Tuple[int, int], Tuple[int, int]]
     ] = set()
     last_move_direction = 0
+    # A cached scan may be reused only for a FULLY scanned visited cell.
+    # Never reuse readings as physical side-distance corrections after moving:
+    # the cached wall topology is for planning; movement always samples fresh
+    # travel-direction ToF before and throughout every cell.
+    scanned_cells: Set[Tuple[int, int]] = set()
 
     raw_start_x = 0.0
     raw_start_y = 0.0
@@ -2260,51 +2265,97 @@ def run(
                 finish_reason = "USER_STOP"
                 break
 
-            scan = _scan_four_directions(
-                gimbal,
-                pose,
-                sensors,
-                gimbal_tracker,
-                grid,
-                recorder,
-                config,
-                float(raw_start_x),
-                float(raw_start_y),
-                float(raw_start_yaw),
-                stop_event,
-                publish_state,
-                current_cell,
-                moves,
-                known_cells,
-                edge_states,
-                traversed_edges,
-                camera_service,
-                target_detector,
-                target_registry,
-                target_debug_holder,
-                survey_bridge,
-            )
-            if scan is None:
-                finish_reason = (
-                    "USER_STOP"
-                    if stop_event.is_set()
-                    else "GIMBAL_SCAN_FAILED"
+            cache_valid = (
+                bool(config.skip_scanned_visited_cells)
+                and current_cell in scanned_cells
+                and not survey_bridge.rescan_requested()
+                and all(
+                    edge_states.get((current_cell[0], current_cell[1], direction))
+                    in ("OPEN", "WALL")
+                    for direction in range(4)
                 )
-                break
-
-            ranges, open_dirs = scan
-
-            if start_scan_ranges is None and current_cell == (0, 0) and moves == 0:
-                start_scan_ranges = dict(ranges)
-
-            recorder.event(
-                time.monotonic(),
-                "SCAN",
-                "gimbal-only four-direction ToF scan",
-                logical_node=current_cell,
-                open_directions=sorted(open_dirs),
-                ranges_cm={str(k): v for k, v in sorted(ranges.items())},
             )
+
+            if cache_valid:
+                # Cache contains only confirmed topology, not a fresh ToF
+                # distance. Never feed old side distances to centering.
+                ranges = {}
+                open_dirs = {
+                    direction for direction in range(4)
+                    if edge_states.get(
+                        (current_cell[0], current_cell[1], direction)
+                    ) == "OPEN"
+                    and (current_cell, direction) not in blocked_edges
+                }
+                recorder.event(
+                    time.monotonic(),
+                    "SCAN_REUSED",
+                    "Visited cell: confirmed topology reused; live motion ToF remains enabled",
+                    logical_node=current_cell,
+                    open_directions=sorted(open_dirs),
+                )
+                print(
+                    "[SCAN_REUSED] {} already scanned; skip 4-way sweep. "
+                    "Fresh travel-direction ToF remains required.".format(current_cell),
+                    flush=True,
+                )
+                publish_state(
+                    status="Visited cell {}: reusing map; no repeat 4-way scan".format(
+                        current_cell
+                    ),
+                    logical_cell=current_cell,
+                    gimbal_direction=current_gimbal_direction,
+                    tof_cm=sensors.get_front_cm(),
+                    moves=moves,
+                    force=True,
+                )
+            else:
+                scan = _scan_four_directions(
+                    gimbal,
+                    pose,
+                    sensors,
+                    gimbal_tracker,
+                    grid,
+                    recorder,
+                    config,
+                    float(raw_start_x),
+                    float(raw_start_y),
+                    float(raw_start_yaw),
+                    stop_event,
+                    publish_state,
+                    current_cell,
+                    moves,
+                    known_cells,
+                    edge_states,
+                    traversed_edges,
+                    camera_service,
+                    target_detector,
+                    target_registry,
+                    target_debug_holder,
+                    survey_bridge,
+                )
+                if scan is None:
+                    finish_reason = (
+                        "USER_STOP"
+                        if stop_event.is_set()
+                        else "GIMBAL_SCAN_FAILED"
+                    )
+                    break
+
+                ranges, open_dirs = scan
+                scanned_cells.add(current_cell)
+
+                if start_scan_ranges is None and current_cell == (0, 0) and moves == 0:
+                    start_scan_ranges = dict(ranges)
+
+                recorder.event(
+                    time.monotonic(),
+                    "SCAN",
+                    "gimbal-only four-direction ToF scan",
+                    logical_node=current_cell,
+                    open_directions=sorted(open_dirs),
+                    ranges_cm={str(k): v for k, v in sorted(ranges.items())},
+                )
 
             # The operator can adjust the camera observation pitch from Tk
             # while exploration is running. At a safe stationary checkpoint,
