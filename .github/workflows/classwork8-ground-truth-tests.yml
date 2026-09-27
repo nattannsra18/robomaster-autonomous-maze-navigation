@@ -17,9 +17,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Check Python syntax
-        run: python -m compileall -q classwork8/ground_truth_editor.py classwork8/config_gui_v04.py classwork8/config.py classwork8/evaluate.py classwork8/reporting.py classwork8/gui_v04.py classwork8/tof_only_v04.py
+        run: python -m compileall -q classwork8_slam_04.py classwork8_slam_04_ground_truth.py classwork8/ground_truth_editor.py classwork8/config_gui_v04.py classwork8/config.py classwork8/evaluate.py classwork8/reporting.py classwork8/gui_v04.py classwork8/tof_only_v04.py
       - name: Run offline map and Ground Truth regression tests
         run: |
           python -m unittest discover -s tests -p 'test_classwork8_mapping.py' -v
           python -m unittest discover -s tests -p 'test_classwork8_evaluation.py' -v
           python -m unittest discover -s tests -p 'test_classwork8_ground_truth.py' -v
+          python -m unittest discover -s tests -p 'test_classwork8_v04_modes.py' -v

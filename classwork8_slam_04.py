@@ -67,7 +67,7 @@ def _v04_defaults(config: Classwork8Config) -> None:
     config.vision_steering_enabled = False
 
 
-def main():
+def main(*, with_ground_truth=False):
     parser = argparse.ArgumentParser(
         description="Classwork 8 V04 nearest-frontier SLAM exploration"
     )
@@ -85,6 +85,9 @@ def main():
 
     config = Classwork8Config()
     _v04_defaults(config)
+    # The original V04 command runs unknown-world SLAM without a reference map.
+    # The separate Ground Truth entry point opts into evaluation explicitly.
+    config.auto_evaluate_on_save = with_ground_truth
 
     if args.no_gui:
         if args.no_vision:
@@ -95,9 +98,12 @@ def main():
 
     from classwork8.config_gui_v04 import configure_before_run
 
-    if not configure_before_run(config):
+    if not configure_before_run(config, with_ground_truth=with_ground_truth):
         print("Mission cancelled before connection.")
         return
+
+    if not with_ground_truth:
+        config.auto_evaluate_on_save = False
 
     if args.no_vision:
         config.vision_enabled = False

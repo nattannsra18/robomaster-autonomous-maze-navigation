@@ -278,9 +278,20 @@ Map encoding:
 - `0` = FREE
 - `100` = OCCUPIED/WALL
 
+## V04 SLAM only (without Ground Truth)
+
+Run `python -u classwork8_slam_04.py`. The configuration window goes straight
+to motion, sensors and mapping settings. Click **Apply & Connect** to start
+unknown-world exploration. **STOP & SAVE** exports map, trajectory, logs and
+summary under `classwork8_output/run_.../` without running a Ground Truth
+evaluation. The working-canvas coverage in `summary.json` is diagnostic only.
+
+The Ground Truth workflow remains available through the separate command
+`python -u classwork8_slam_04_ground_truth.py`.
+
 ## Draw physical Ground Truth in the V04 GUI (before SLAM)
 
-Open `python -u classwork8_slam_04.py`. The first screen has a prominent
+Open `python -u classwork8_slam_04_ground_truth.py`. The first screen has a prominent
 **STEP 1 - DRAW / LOAD PHYSICAL GROUND TRUTH MAP** button. It opens an editor
 similar to the fixed-grid `main.py` map creator, but this physical reference
 is stored *only* for evaluation; the unknown-world robot planner never reads
@@ -327,7 +338,7 @@ accuracy measurement.
 
 ## Automatic evaluation on V04 SAVE (no extra command)
 
-V04 enables **Automatically evaluate on SAVE** by default under
+The separate Ground Truth workflow enables **Automatically evaluate on SAVE** by default under
 **Completion / Export**. The physical Ground Truth editor supplies the
 CSV path and exact evaluation crop automatically when you save its layout;
 you do not need to enter a path or crop coordinates manually in that flow.
@@ -361,7 +372,7 @@ To use on another PC:
 
 ```powershell
 git pull origin classwork8-slam-exploration
-python -u classwork8_slam_04.py
+python -u classwork8_slam_04_ground_truth.py
 ```
 
 ## Accuracy and Coverage (assignment item 4)
