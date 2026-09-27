@@ -426,7 +426,11 @@ class TargetDetector:
 
         return kept, debug
 
-    def verify_latest(self, camera_service) -> Tuple[List[VerifiedTarget], Optional[np.ndarray]]:
+    def verify_latest(
+        self,
+        camera_service,
+        not_before: Optional[float] = None,
+    ) -> Tuple[List[VerifiedTarget], Optional[np.ndarray]]:
         """Require consecutive matches on distinct fresh camera frames.
 
         The old version sampled CameraService.latest() several times and
@@ -464,6 +468,12 @@ class TargetDetector:
                 continue
 
             frame, capture_timestamp = sample
+            # The camera looks down AFTER the horizontal ToF scan. Frames
+            # decoded before pitch settled must never count toward target
+            # verification or falsely turn a real floor sign into zero hits.
+            if not_before is not None and float(capture_timestamp) <= float(not_before):
+                time.sleep(0.01)
+                continue
             if (
                 last_capture_timestamp is not None
                 and float(capture_timestamp) <= last_capture_timestamp
