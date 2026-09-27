@@ -280,6 +280,11 @@ class RealtimeMapGUI:
             right,
             text="ENLARGE LIVE CAMERA",
             command=self._open_camera_popup,
+        ).pack(fill="x", pady=(0, 4))
+        ttk.Button(
+            right,
+            text="SAVE RAW + DETECTED CAMERA FRAME",
+            command=self._save_camera_sample,
         ).pack(fill="x", pady=(0, 8))
 
         ttk.Separator(right, orient="horizontal").pack(fill="x", pady=12)
@@ -380,6 +385,18 @@ class RealtimeMapGUI:
             "Rescan queued: the robot will finish the active scan then "
             "inspect this cell again before choosing a movement."
         )
+
+    def _save_camera_sample(self) -> None:
+        if self.survey_bridge is None:
+            return
+        try:
+            paths = self.survey_bridge.save_camera_sample(self.output_dir)
+            if paths is None:
+                self.reason_var.set("No fresh camera sample to save.")
+                return
+            self.reason_var.set("Camera raw/debug saved: {} | {}".format(*paths))
+        except Exception as exc:
+            self.reason_var.set("Camera sample save failed: {}".format(exc))
 
     def _open_camera_popup(self) -> None:
         if self._preview_popup is not None:
