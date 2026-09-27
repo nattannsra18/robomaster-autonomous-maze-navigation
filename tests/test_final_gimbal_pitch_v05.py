@@ -45,8 +45,11 @@ class FakeGimbal:
         self.commands.append((float(pitch_speed), float(yaw_speed)))
         with self.tracker._lock:
             # Simulate a very small bounded motion during each 30 ms tick.
-            self.tracker.pitch += float(pitch_speed) * 0.03
-            self.tracker.yaw += float(yaw_speed) * 0.03
+            # Missing telemetry is not magically restored by a zero command.
+            if self.tracker.pitch is not None:
+                self.tracker.pitch += float(pitch_speed) * 0.03
+            if self.tracker.yaw is not None:
+                self.tracker.yaw += float(yaw_speed) * 0.03
         return True
 
 
