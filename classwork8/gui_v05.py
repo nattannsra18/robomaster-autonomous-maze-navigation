@@ -680,7 +680,11 @@ class RealtimeMapGUI:
             self.vision_var.set("Camera: unavailable; ToF mapping continues")
 
         self.target_var.set(
-            "Targets: {}".format(int(snapshot.get("target_count", 0)))
+            "Target records: {} | distant sightings: {} | near-wall candidates: {}".format(
+                int(snapshot.get("target_count", 0)),
+                int(snapshot.get("target_sighting_count", 0)),
+                int(snapshot.get("target_position_candidate_count", 0)),
+            )
         )
 
         # Live preview is updated separately in _poll; never replace it
