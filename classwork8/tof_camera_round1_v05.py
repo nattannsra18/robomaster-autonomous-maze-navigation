@@ -462,6 +462,76 @@ def _point_gimbal(
     sensors.reset_filters()
     return True
 
+
+def _set_camera_observation_pitch(
+    gimbal,
+    tracker: GimbalTracker,
+    config: Classwork8Config,
+    target_pitch: float,
+    stop_event: Optional[threading.Event],
+) -> bool:
+    """Change pitch while chassis is stopped, never commanding yaw at once."""
+    desired = max(
+        float(config.target_camera_pitch_min_deg),
+        min(float(config.target_camera_pitch_max_deg), float(target_pitch)),
+    )
+    deadline = time.monotonic() + float(config.target_camera_pitch_timeout_sec)
+    stable = 0
+
+    try:
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                return False
+
+            pitch, yaw = tracker.get_angles()
+            if pitch is None or yaw is None:
+                time.sleep(0.025)
+                continue
+
+            error = desired - float(pitch)
+            if abs(error) <= float(config.target_camera_pitch_tolerance_deg):
+                gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+                stable += 1
+                if stable >= int(config.gimbal_stable_samples):
+                    if not _sleep_interruptible(
+                        config.target_camera_settle_sec, stop_event
+                    ):
+                        return False
+                    final = tracker.get_pitch()
+                    return (
+                        final is not None
+                        and abs(desired - float(final))
+                        <= float(config.target_camera_pitch_tolerance_deg)
+                    )
+            else:
+                stable = 0
+                speed = max(
+                    float(config.gimbal_pitch_min_speed_dps),
+                    min(
+                        float(config.gimbal_pitch_max_speed_dps),
+                        abs(error) * float(config.gimbal_pitch_kp),
+                    ),
+                )
+                gimbal.drive_speed(
+                    pitch_speed=(
+                        math.copysign(speed, error)
+                        * float(config.gimbal_pitch_drive_sign)
+                    ),
+                    yaw_speed=0.0,
+                )
+            time.sleep(0.03)
+
+        print(
+            "[CAMERA] Observation pitch timeout: target={:+.1f}, measured={}".format(
+                desired, tracker.get_pitch()
+            ),
+            flush=True,
+        )
+        return False
+    finally:
+        gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+
+
 def _sample_tof(
     sensors: ToFOnlySensorManager,
     config: Classwork8Config,
