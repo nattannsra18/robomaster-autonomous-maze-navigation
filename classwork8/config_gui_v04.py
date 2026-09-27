@@ -12,7 +12,9 @@ from typing import Dict, List, Tuple
 
 def configure_before_run(config) -> bool:
     import tkinter as tk
-    from tkinter import messagebox, ttk
+    from tkinter import filedialog, messagebox, ttk
+    from dataclasses import replace
+    from pathlib import Path
 
     root = tk.Tk()
     root.title("Classwork 8 V04 - Mission Configuration")
@@ -114,6 +116,80 @@ def configure_before_run(config) -> bool:
 
     help_labels = []
 
+    # Ground Truth is prepared offline before connecting to RoboMaster. It is
+    # not passed into the unknown-world exploration planner.
+    ground_truth_status = tk.StringVar(
+        master=root,
+        value="Draw the physical layout before starting SLAM, or browse an existing CSV.",
+    )
+
+    def pending_map_config():
+        preview = replace(config)
+        for field in ("cell_size_m", "resolution_m", "map_width_m", "map_height_m"):
+            if field in variables:
+                setattr(preview, field, float(variables[field][0].get()))
+        preview.exploration_step_m = preview.cell_size_m
+        return preview
+
+    def update_ground_truth_fields(preview):
+        for field in ("ground_truth_csv", "auto_evaluate_on_save",
+                      "evaluation_crop_top", "evaluation_crop_left",
+                      "evaluation_rotate_deg"):
+            var, kind = variables[field]
+            value = getattr(preview, field)
+            var.set(bool(value) if kind == "bool" else str(value))
+        ground_truth_status.set(
+            "Ground Truth: {} | crop top={}, left={} | robot starts with UNKNOWN map".format(
+                preview.ground_truth_csv,
+                preview.evaluation_crop_top,
+                preview.evaluation_crop_left,
+            )
+        )
+
+    def open_ground_truth_editor():
+        try:
+            from .ground_truth_editor import GroundTruthEditor
+            preview = pending_map_config()
+            editor = GroundTruthEditor(root, preview)
+            root.wait_window(editor.window)
+            if editor.saved:
+                update_ground_truth_fields(preview)
+                if editor.start_requested:
+                    apply_and_start()
+        except (OSError, ValueError, ImportError, RuntimeError) as exc:
+            messagebox.showerror("Ground Truth Editor", str(exc), parent=root)
+
+    def browse_ground_truth():
+        path = filedialog.askopenfilename(
+            parent=root, title="Select an existing Ground Truth CSV",
+            filetypes=[("Ground Truth CSV", "*.csv")],
+        )
+        if not path:
+            return
+        preview = pending_map_config()
+        preview.ground_truth_csv = str(Path(path).resolve())
+        preview.auto_evaluate_on_save = True
+        metadata_path = Path(path).with_suffix(".json")
+        if metadata_path.is_file():
+            try:
+                import json
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if metadata.get("format") == "classwork8-physical-ground-truth-v1":
+                    if (abs(float(metadata["cell_size_m"]) - preview.cell_size_m) > 1e-7 or
+                        abs(float(metadata["occupancy_resolution_m"]) - preview.resolution_m) > 1e-7):
+                        raise ValueError("Ground Truth size/resolution differs from this mission configuration")
+                    from .ground_truth_editor import GroundTruthLayout
+                    layout = GroundTruthLayout.from_payload(metadata)
+                    top, left = layout.crop_coordinates(preview)
+                    preview.evaluation_crop_top = top
+                    preview.evaluation_crop_left = left
+                    preview.evaluation_rotate_deg = 0
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                messagebox.showerror("Invalid Ground Truth metadata", str(exc), parent=root)
+                return
+        update_ground_truth_fields(preview)
+
+
     def add_field(parent, attr, label, kind, help_text, row):
         ttk.Label(parent, text=label).grid(
             row=row, column=0, sticky="w", padx=(0, 10), pady=5
@@ -156,6 +232,21 @@ def configure_before_run(config) -> bool:
 
         for row, spec in enumerate(specs):
             add_field(parent, *spec, row=row)
+
+    editor_panel = ttk.LabelFrame(tabs["Completion / Export"], text="Physical Ground Truth map", padding=10)
+    editor_panel.grid(row=len(field_specs["Completion / Export"]), column=0,
+                      columnspan=3, sticky="ew", pady=(14, 6))
+    ttk.Button(editor_panel, text="DRAW PHYSICAL GROUND TRUTH MAP",
+               command=open_ground_truth_editor).pack(side="left", padx=(0, 10))
+    ttk.Button(editor_panel, text="BROWSE EXISTING CSV",
+               command=browse_ground_truth).pack(side="left")
+    ttk.Label(
+        tabs["Completion / Export"],
+        textvariable=ground_truth_status,
+        foreground="#2563eb",
+        wraplength=750,
+    ).grid(row=len(field_specs["Completion / Export"])+1,
+           column=0, columnspan=3, sticky="w", pady=(4, 10))
 
     info = ttk.LabelFrame(outer, text="60 cm calibration", padding=10)
     info.pack(fill="x", pady=(10, 0))
@@ -274,6 +365,20 @@ def configure_before_run(config) -> bool:
             # One logical step is always exactly one physical cell.
             config.exploration_step_m = float(config.cell_size_m)
             config.validate()
+            # If this CSV was drawn using our editor, confirm that changing
+            # mapping settings has not invalidated its physical alignment.
+            metadata_path = Path(config.ground_truth_csv).with_suffix(".json")
+            if config.auto_evaluate_on_save and Path(config.ground_truth_csv).is_file() and metadata_path.is_file():
+                import json
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if metadata.get("format") == "classwork8-physical-ground-truth-v1":
+                    from .ground_truth_editor import GroundTruthLayout
+                    layout = GroundTruthLayout.from_payload(metadata)
+                    if (abs(float(metadata["cell_size_m"]) - config.cell_size_m) > 1e-7 or
+                        abs(float(metadata["occupancy_resolution_m"]) - config.resolution_m) > 1e-7):
+                        raise ValueError("Ground Truth cell size/resolution changed; reopen the editor and save again")
+                    if layout.crop_coordinates(config) != (config.evaluation_crop_top, config.evaluation_crop_left):
+                        raise ValueError("Ground Truth crop differs from the field position; reopen the editor and save again")
 
         except Exception as exc:
             messagebox.showerror(
