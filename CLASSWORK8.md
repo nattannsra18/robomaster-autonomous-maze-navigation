@@ -543,3 +543,41 @@ when an explicit pitch correction is commanded. If the software times out,
 keep the chassis stopped and inspect the emitted pitch history / gimbal
 mechanics. Optical level may require calibration because the SDK reports
 relative gimbal angle, not the visual horizon of a particular camera mount.
+
+
+### V05 yaw-only scan isolation after 24-degree transient pitch log
+
+The subsequent real RoboMaster stationary test showed pitch reaching about +24.4
+degrees during FRONT -> RIGHT and -23.7 degrees during RIGHT -> FRONT, while
+settling to less than +/-0.8 degrees at the endpoints. Therefore the old
+simultaneous pitch/yaw control, and/or a physical gimbal/yaw coupling, must be
+isolated rather than only tightening endpoint tolerance.
+
+The V05 scanner now uses **three sequential stages**:
+
+1. While yaw is stopped, level pitch to the configured scan angle.
+2. Turn yaw **with pitch_speed fixed at exactly zero** (default max yaw 40
+   deg/s). Monitor the actual pitch subscriber during the whole sweep.
+3. Stop yaw, then re-level pitch with yaw_speed=0. Check both axes after
+   settling before accepting ToF or camera observations.
+
+If pitch departs from the intended scan plane by more than
+\`gimbal_yaw_pitch_guard_deg=6.0\` *during the yaw-only stage*, the scanner
+stops and returns failure. This is intentional: a persistent excursion with
+no concurrent pitch commands suggests hardware/firmware/cable coupling, not
+merely the previous dual-axis software controller. Avoid a full maze run until
+the stationary diagnostic demonstrates stable yaw-only operation. GUI shows
+the configurable pitch tolerance rather than an outdated hardcoded +/-2 deg.
+
+Run:
+
+\`\`\`powershell
+git pull origin classwork8-slam-exploration
+python -m py_compile classwork8\tof_camera_round1_v05.py final_gimbal_pitch_test.py
+python -m unittest tests.test_final_gimbal_pitch_v05 -v
+python -u final_gimbal_pitch_test.py
+\`\`\`
+
+The stationary diagnostic prints the pitch min/max and peak error even if a
+yaw-only drift guard stops the sequence; no chassis travel occurs. Do not
+increase the guard threshold just to make a failed test pass.
