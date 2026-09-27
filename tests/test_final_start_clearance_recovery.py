@@ -21,6 +21,7 @@ from classwork8.config import Classwork8Config
 from classwork8.motion_safety_v05 import (
     side_start_recovery_preflight,
     heading_alignment_preflight,
+    supervised_recheck_pose_ok,
 )
 from classwork8 import tof_camera_round1_v05 as mission
 
@@ -84,6 +85,36 @@ class HeadingAlignmentDecisionTests(unittest.TestCase):
         valid, status, _ = self.plan(0.6, self.rays())
         self.assertFalse(valid)
         self.assertEqual(status, "HEADING_RECOVERY_ALREADY_ALIGNED")
+
+
+class SupervisedRecheckTests(unittest.TestCase):
+    def test_stationary_aligned_robot_can_request_fresh_scan(self):
+        self.assertEqual(
+            supervised_recheck_pose_ok(
+                (0.6, 0.0), (0.609, -0.008), 0.7,
+            ),
+            (True, "SUPERVISED_FRESH_RECHECK_ALLOWED"),
+        )
+
+    def test_physically_displaced_robot_must_relocalize(self):
+        self.assertEqual(
+            supervised_recheck_pose_ok(
+                (0.6, 0.0), (0.72, 0.0), 0.0,
+            ),
+            (False, "RELOCALIZATION_REQUIRED"),
+        )
+
+    def test_bad_heading_and_missing_pose_block_resumption(self):
+        self.assertEqual(
+            supervised_recheck_pose_ok(
+                (0.6, 0.0), (0.6, 0.0), 5.0,
+            ),
+            (False, "SUPERVISED_HEADING_NOT_ALIGNED"),
+        )
+        self.assertEqual(
+            supervised_recheck_pose_ok(None, (0.6, 0.0), 0.0),
+            (False, "SUPERVISED_POSE_UNAVAILABLE"),
+        )
 
 
 class FakePose:
