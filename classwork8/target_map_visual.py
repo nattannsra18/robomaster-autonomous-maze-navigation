@@ -59,18 +59,35 @@ def target_plot_geometry(target: dict, cell_size_m: float):
 
 
 def confirmed_map_targets(targets):
-    """Return only camera-confirmed signs for map rendering/export.
+    """Only render verified near-wall sign positions, not bearing-only sightings.
 
-    PENDING_RECHECK is useful for internal revisit logic and targets.json,
-    but is not a confirmed sign and must not clutter the logical map.
-    Confirmed SIGHTING_ONLY observations remain visible as hollow bearing
-    markers; their position is not represented as a verified coordinate.
+    Retain all other target records in the registry and targets.json so the
+    robot can revisit them. A confirmed colour/shape alone does not establish
+    a map position. The allowed coordinate is still a *wall-surface estimate*,
+    not triangulated sign depth.
     """
-    return [
-        target for target in (targets or [])
-        if target.get("status") != "PENDING_RECHECK"
-        and target.get("confirmed") is not False
-    ]
+    import math
+
+    visible = []
+    for target in targets or []:
+        if target.get("status") == "PENDING_RECHECK":
+            continue
+        if target.get("confirmed") is False:
+            continue
+        if target.get("localization_status") != "NEAR_WALL_ESTIMATE":
+            continue
+        if target.get("range_confirmed_wall") is not True:
+            continue
+        xy = target.get("estimated_target_xy_m")
+        if not isinstance(xy, (list, tuple)) or len(xy) != 2:
+            continue
+        try:
+            if not all(math.isfinite(float(value)) for value in xy):
+                continue
+        except (TypeError, ValueError):
+            continue
+        visible.append(target)
+    return visible
 
 
 def target_marker_offsets(targets, cell_size_m: float):
