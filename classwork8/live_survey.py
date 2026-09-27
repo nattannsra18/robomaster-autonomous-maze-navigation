@@ -50,6 +50,62 @@ class LiveSurveyBridge:
         with self._lock:
             return float(self._pitch_deg)
 
+    def set_roi_bottom(self, value: float) -> float:
+        """Apply the camera image ROI immediately; never command the robot.
+
+        Both the preview and scan-time detector read the same config, so an
+        operator can see whether a low floor sign is entirely inside the ROI.
+        """
+        with self._lock:
+            lower = float(self._config.target_roi_top_ratio) + 0.06
+            bounded = min(0.99, max(lower, float(value)))
+            self._config.target_roi_bottom_ratio = bounded
+            self._status = "Target ROI updated to {:.0f}% of image height".format(
+                bounded * 100.0
+            )
+            return bounded
+
+    def get_roi_bottom(self) -> float:
+        with self._lock:
+            return float(self._config.target_roi_bottom_ratio)
+
+    @staticmethod
+    def annotate_live_candidates(frame, candidates, roi_bottom: float):
+        """Overlay the current independent detections on each live frame."""
+        h, w = frame.shape[:2]
+        count = min(9, len(candidates))
+        height = 34 + count * 17
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay, (3, 3), (min(w - 3, 326), min(h - 3, height)),
+            (12, 18, 26), -1,
+        )
+        cv2.addWeighted(overlay, 0.70, frame, 0.30, 0, frame)
+        cv2.putText(
+            frame,
+            "LIVE CANDIDATES: {} (not yet verified)".format(len(candidates)),
+            (9, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.40,
+            (255, 255, 255), 1, cv2.LINE_AA,
+        )
+        for index, item in enumerate(candidates[:9], 1):
+            cv2.putText(
+                frame,
+                "#{:02d} {:<6} {:<9} {:.2f}".format(
+                    index, item.color.upper(), item.shape.upper(), item.confidence
+                ),
+                (9, 19 + index * 17),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.41,
+                (255, 255, 255), 1, cv2.LINE_AA,
+            )
+        cv2.putText(
+            frame,
+            "ROI bottom {:.0f}%".format(roi_bottom * 100.0),
+            (max(0, w - 154), 18),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+            (255, 255, 255), 1, cv2.LINE_AA,
+        )
+        return frame
+
     def request_rescan(self) -> None:
         self._rescan.set()
         self.set_status("Rescan requested at the current cell")
@@ -101,6 +157,11 @@ class LiveSurveyBridge:
                 if previous_capture is None or capture_time > previous_capture:
                     try:
                         candidates, debug = detector.detect(frame)
+                        debug = self.annotate_live_candidates(
+                            debug,
+                            candidates,
+                            self.get_roi_bottom(),
+                        )
                         now = time.monotonic()
                         fps = (
                             0.0 if previous_processed is None
@@ -139,6 +200,7 @@ class LiveSurveyBridge:
                 "candidate_count": int(self._candidate_count),
                 "preview_fps": float(self._fps),
                 "pitch_deg": float(self._pitch_deg),
+                "roi_bottom": float(self._config.target_roi_bottom_ratio),
                 "status": self._status,
             }
 
