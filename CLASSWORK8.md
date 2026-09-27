@@ -467,3 +467,42 @@ The displayed confidence is a detection heuristic, not a calibrated
 probability of correctness. Cross-cell target association still requires
 camera geometry or additional validation; V05 deliberately does not merge
 targets from different approach cells based on one ToF distance alone.
+
+
+### V05 runtime GUI footer + horizontal gimbal pitch guard
+
+The runtime GUI keeps **SAVE GUI MAP NOW (Ctrl+S)** and **STOP & SAVE**
+visible in a fixed lower-right action area; long diagnostics/legend text is
+scrollable. Closing the window still requests safe stop/export.
+
+The ToF/camera gimbal is now controlled in both axes, not yaw alone:
+\`gimbal.sub_angle()\` provides relative pitch/yaw feedback. The mission
+defaults to horizontal \`gimbal_scan_pitch_deg=0.0\`. Both axes must remain
+inside their configured tolerances before a scan is accepted. If pitch drifts
+while a ToF range is sampled, the robot retries while stationary; if pitch
+moves beyond the motion safety threshold during translation, chassis motion
+stops before re-levelling. Failed orientation recovery aborts instead of
+silently mapping an upward/downward ToF ray as a wall.
+
+The config GUI exposes pitch target, correction gain, feedback/command sign,
+pitch tolerance and movement-safety threshold. The live GUI displays the
+actual relative pitch and yaw; a non-level warning is shown when pitch differs
+by over 2 degrees.
+
+**Test physical pitch/yaw without any chassis travel:**
+
+\`\`\`powershell
+python -u final_gimbal_pitch_test.py
+\`\`\`
+
+If the reported pitch error grows in the wrong direction during this stationary
+test, stop with Ctrl+C and re-run with \`--pitch-sign -1\`. Change the GUI sign
+only after confirming the hardware feedback response. If a gimbal cannot
+maintain its commanded horizontal position, inspect mounting/cables and do not
+start full maze exploration.
+
+**Offline tests without RoboMaster:**
+
+\`\`\`powershell
+python -m unittest tests.test_final_gimbal_pitch_v05 -v
+\`\`\`
