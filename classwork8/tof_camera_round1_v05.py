@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import statistics
 import threading
+from collections import deque
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -80,6 +81,7 @@ class GimbalTracker:
         self._lock = threading.Lock()
         self.pitch = None
         self.yaw = None
+        self._angle_history = deque(maxlen=4000)
 
     def callback(self, data):
         try:
@@ -90,6 +92,7 @@ class GimbalTracker:
             with self._lock:
                 self.pitch = pitch
                 self.yaw = yaw
+                self._angle_history.append((time.monotonic(), pitch, yaw))
         except Exception:
             return
 
@@ -104,6 +107,15 @@ class GimbalTracker:
     def get_angles(self) -> Tuple[Optional[float], Optional[float]]:
         with self._lock:
             return self.pitch, self.yaw
+
+    def pitch_samples_since(self, start_monotonic: float) -> List[float]:
+        """Measured pitch during a yaw sweep, including transient excursions."""
+        with self._lock:
+            return [
+                float(pitch)
+                for timestamp, pitch, _yaw in self._angle_history
+                if timestamp >= float(start_monotonic)
+            ]
 
 
 def _sleep_interruptible(seconds: float, stop_event: Optional[threading.Event]) -> bool:
