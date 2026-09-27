@@ -1775,7 +1775,12 @@ def _drive_one_cell(
     # finish.  This prevents mecanum slip from accumulating cell after cell.
     target_map_x = float(target_cell[0]) * config.cell_size_m
     target_map_y = float(target_cell[1]) * config.cell_size_m
-    if recovered_start_side:
+    preserve_wall_offset = recovered_start_side or any(
+        move_side_baselines.get(side) is not None
+        and 0.0 < float(move_side_baselines[side]) <= float(config.midcell_side_soft_margin_cm)
+        for side in wall_sides
+    )
+    if preserve_wall_offset:
         # A recovery nudge has moved the robot away from an actual nearby
         # wall. Do not let the ordinary centreline controller immediately
         # undo that safe offset by steering BACK into the same wall.
