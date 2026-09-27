@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 from typing import Optional, Set, Tuple
 
-from .occupancy_grid import FREE, WALL
+from .occupancy_grid import FREE, OCCUPIED as WALL
 
 # Directions within the physical editor: FRONT/top, RIGHT, BACK/bottom, LEFT.
 DELTAS = ((-1, 0), (0, 1), (1, 0), (0, -1))
