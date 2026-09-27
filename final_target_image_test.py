@@ -18,9 +18,18 @@ def main():
         description="Offline target-image regression check (no RoboMaster needed)"
     )
     parser.add_argument("image", nargs="?", help="saved target_raw_*.png")
+    parser.add_argument(
+        "--roi-bottom",
+        type=float,
+        default=None,
+        help="override lower ROI limit (e.g. 0.82 wall signs, 0.94 low floor signs)",
+    )
     args = parser.parse_args()
 
     config = Classwork8Config()
+    if args.roi_bottom is not None:
+        config.target_roi_bottom_ratio = float(args.roi_bottom)
+    config.validate()
     if args.image:
         image_path = Path(args.image)
     else:
