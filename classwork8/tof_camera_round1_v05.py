@@ -1088,7 +1088,11 @@ def _scan_four_directions(
             camera_service is not None
             and camera_service.running
             and target_detector is not None
-            and distance_cm is not None
+            # An uncertain range can still supply a genuine camera bearing,
+            # but MUST remain SIGHTING_ONLY without a fabricated distance.
+            # Do not look past an already confirmed physical wall after a
+            # contradictory long echo.
+            and (distance_cm is not None or previous_state != "WALL")
             and (
                 near_wall
                 or bool(config.target_survey_open_directions)
