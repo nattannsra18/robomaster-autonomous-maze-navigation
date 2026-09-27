@@ -1399,6 +1399,8 @@ def _drive_one_cell(
     drive_x_unit, drive_y_unit = DIR_VEC_DRIVE[direction]
     checkpoint_done = False
     scan_side_progress_origin = 0.0
+    max_abs_cross_track_m = 0.0
+    max_abs_heading_error_deg = 0.0
 
     scan_side_correction, scan_side_mode = _scan_side_guidance_v02(
         direction,
@@ -1458,6 +1460,14 @@ def _drive_one_cell(
             cross_track = rel_x - target_map_x
 
         progress = config.cell_size_m - max(0.0, remaining)
+        max_abs_cross_track_m = max(
+            max_abs_cross_track_m, abs(float(cross_track))
+        )
+        if yaw is not None:
+            max_abs_heading_error_deg = max(
+                max_abs_heading_error_deg,
+                abs(normalize_angle_deg(float(start_yaw_deg) - float(yaw))),
+            )
 
         if abs(cross_track) >= float(config.motion_cross_track_abort_m):
             stop_chassis(chassis)
@@ -1541,12 +1551,24 @@ def _drive_one_cell(
                 force=True,
             )
             print(
-                "[MOVE] Reached {}: progress={:.3f} m cross_track={:+.3f} m".format(
+                "[MOVE] Reached {}: progress={:.3f} m cross_track={:+.3f} m "
+                "| peak cross={:.3f} m yaw_error={:.2f} deg".format(
                     target_cell,
                     config.cell_size_m - remaining,
                     cross_track,
+                    max_abs_cross_track_m,
+                    max_abs_heading_error_deg,
                 ),
                 flush=True,
+            )
+            recorder.event(
+                time.monotonic(),
+                "CELL_MOTION_QUALITY",
+                "per-cell odometry path and heading deviation",
+                logical_node=target_cell,
+                peak_cross_track_m=round(max_abs_cross_track_m, 4),
+                peak_heading_error_deg=round(max_abs_heading_error_deg, 3),
+                midcell_side_checked=bool(checkpoint_done),
             )
             return True, "CELL_COMPLETE", moved
 
