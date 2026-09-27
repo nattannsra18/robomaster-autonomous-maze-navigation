@@ -81,6 +81,7 @@ class RealtimeMapGUI:
         self._vision_photo = None
         self.survey_bridge = survey_bridge
         self._last_preview_timestamp = -1.0
+        self._preview_visible = False
         self._preview_popup = None
         self._popup_label = None
         self._popup_photo = None
@@ -372,6 +373,7 @@ class RealtimeMapGUI:
     def _request_rescan(self) -> None:
         if self.survey_bridge is None:
             return
+        self._apply_camera_pitch()
         self.survey_bridge.request_rescan()
         self.pitch_status_var.set(
             "Rescan queued: the robot will finish the active scan then "
@@ -411,7 +413,12 @@ class RealtimeMapGUI:
             if not self._preview_popup.winfo_exists():
                 return
             image = self.Image.fromarray(frame[:, :, ::-1])
-            image.thumbnail((640, 390), self.Image.Resampling.BILINEAR)
+            bilinear = (
+                self.Image.Resampling.BILINEAR
+                if hasattr(self.Image, "Resampling")
+                else self.Image.BILINEAR
+            )
+            image.thumbnail((640, 390), bilinear)
             photo = self.ImageTk.PhotoImage(image=image)
             self._popup_photo = photo
             self._popup_label.configure(image=photo, text="")
@@ -437,13 +444,15 @@ class RealtimeMapGUI:
         if self.survey_bridge is not None:
             preview = self.survey_bridge.latest_preview()
             timestamp = preview["timestamp"]
-            if timestamp > self._last_preview_timestamp:
+            if preview["frame"] is None:
+                if self._preview_visible:
+                    self._render_vision_preview(None, False)
+                    self._preview_visible = False
+            elif timestamp > self._last_preview_timestamp:
                 self._last_preview_timestamp = timestamp
-                self._render_vision_preview(
-                    preview["frame"],
-                    preview["frame"] is not None,
-                )
+                self._render_vision_preview(preview["frame"], True)
                 self._render_camera_popup(preview["frame"])
+                self._preview_visible = True
             self.live_target_var.set(
                 "Live candidates: {}  preview {:.1f} FPS".format(
                     preview["candidate_count"], preview["preview_fps"]
