@@ -297,6 +297,48 @@ def stationary_escape_heading_preflight(
         return True, "RECOVERY_HEADING_STABLE_ALIGNED", reference
     return True, "RECOVERY_STABLE_OFFSET_ESCAPE_ONLY", reference
 
+
+def stationary_scan_motion(
+    before_xy: Optional[Tuple[float, float]],
+    after_xy: Optional[Tuple[float, float]],
+    before_yaw_deg: Optional[float],
+    after_yaw_deg: Optional[float],
+    *,
+    warn_translation_m: float = 0.004,
+    warn_yaw_deg: float = 0.35,
+) -> Tuple[Optional[float], Optional[float], bool]:
+    """Measure chassis odometry/attitude drift during a gimbal-only scan.
+
+    Diagnostic, not proof of physical immobility: wheel slip and passive
+    movement may not be visible to wheel odometry.
+    """
+    import math
+
+    distance = None
+    yaw_change = None
+    if before_xy is not None and after_xy is not None:
+        try:
+            coordinates = tuple(before_xy) + tuple(after_xy)
+            if len(coordinates) == 4 and all(math.isfinite(float(v)) for v in coordinates):
+                distance = math.hypot(
+                    float(after_xy[0]) - float(before_xy[0]),
+                    float(after_xy[1]) - float(before_xy[1]),
+                )
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if before_yaw_deg is not None and after_yaw_deg is not None:
+        try:
+            first, second = float(before_yaw_deg), float(after_yaw_deg)
+            if math.isfinite(first) and math.isfinite(second):
+                yaw_change = (second - first + 180.0) % 360.0 - 180.0
+        except (TypeError, ValueError, OverflowError):
+            pass
+    warning = (
+        (distance is not None and distance >= float(warn_translation_m))
+        or (yaw_change is not None and abs(yaw_change) >= float(warn_yaw_deg))
+    )
+    return distance, yaw_change, bool(warning)
+
 def supervised_recheck_pose_ok(
     paused_xy: Optional[Tuple[float, float]],
     current_xy: Optional[Tuple[float, float]],
