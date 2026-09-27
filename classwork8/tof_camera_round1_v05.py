@@ -1189,6 +1189,7 @@ def _midcell_wall_checkpoint(
     target_cell: Tuple[int, int],
     progress_m: float,
     stop_event: Optional[threading.Event],
+    baseline_ranges: Optional[Dict[int, Optional[float]]] = None,
 ) -> Tuple[bool, str, float]:
     """Stop and briefly measure confirmed side walls at a mid-cell point.
 
@@ -1236,19 +1237,6 @@ def _midcell_wall_checkpoint(
             flush=True,
         )
 
-        if float(value) <= float(config.midcell_side_hard_stop_cm):
-            recorder.event(
-                time.monotonic(),
-                "SIDE_CLEARANCE_LOW",
-                "confirmed side wall is too close; stopping without sideways motion",
-                logical_node=current_cell,
-                destination=target_cell,
-                progress_m=round(float(progress_m), 3),
-                direction=DIR_NAME[side],
-                tof_cm=float(value),
-            )
-            return False, "SIDE_CLEARANCE_LOW_{}".format(DIR_NAME[side]), 0.0
-
     can_continue, label, bias = side_checkpoint_decision(
         direction,
         wall_sides,
@@ -1258,8 +1246,40 @@ def _midcell_wall_checkpoint(
         wall_max_cm=config.scan_side_wall_max_cm,
         gain_mps_per_cm=config.scan_side_kp_mps_per_cm,
         max_bias_mps=config.midcell_side_max_bias_mps,
+        baseline_cm=baseline_ranges,
+        max_baseline_drop_cm=config.midcell_side_max_baseline_drop_cm,
+        recenter_deadband_cm=config.midcell_side_recenter_deadband_cm,
     )
     if not can_continue:
+        recorder.event(
+            time.monotonic(),
+            "SIDE_CHECK_STOP",
+            label,
+            logical_node=current_cell,
+            destination=target_cell,
+            progress_m=round(float(progress_m), 3),
+            readings_cm={DIR_NAME[side]: value for side, value in ranges.items()},
+            baseline_cm={
+                DIR_NAME[side]: value
+                for side, value in (baseline_ranges or {}).items()
+                if side in wall_sides
+            },
+        )
+        print(
+            "[SIDE_CHECK] STOP {}: mid={} cm; baseline={} cm; "
+            "critical={:.1f} cm; max_drop={:.1f} cm.".format(
+                label,
+                {DIR_NAME[side]: value for side, value in ranges.items()},
+                {
+                    DIR_NAME[side]: value
+                    for side, value in (baseline_ranges or {}).items()
+                    if side in wall_sides
+                },
+                float(config.midcell_side_hard_stop_cm),
+                float(config.midcell_side_max_baseline_drop_cm),
+            ),
+            flush=True,
+        )
         return False, label, 0.0
 
     if not _point_gimbal(gimbal, sensors, tracker, direction, config, stop_event):
@@ -1277,6 +1297,11 @@ def _midcell_wall_checkpoint(
         destination=target_cell,
         progress_m=round(float(progress_m), 3),
         readings_cm={DIR_NAME[side]: value for side, value in ranges.items()},
+        baseline_cm={
+            DIR_NAME[side]: value
+            for side, value in (baseline_ranges or {}).items()
+            if side in wall_sides
+        },
         correction_mps=round(float(bias), 4),
         fresh_forward_cm=round(float(forward_cm), 2),
     )
@@ -1499,6 +1524,7 @@ def _drive_one_cell(
                 chassis, gimbal, sensors, gimbal_tracker, recorder, config,
                 direction, wall_sides, current_cell, target_cell,
                 progress, stop_event,
+                baseline_ranges=scan_ranges,
             )
             if not ok_side:
                 stop_chassis(chassis)
