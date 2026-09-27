@@ -57,6 +57,22 @@ class Classwork8Config:
     scan_side_kp_mps_per_cm: float = 0.0020
     scan_side_max_correction_mps: float = 0.015
 
+    # V05 lateral protection using only the existing gimbal ToF. The robot
+    # stops halfway along a 60 cm leg ONLY when a mapped side has a confirmed
+    # wall, measures that wall while stationary, and then returns ToF to the
+    # travel direction before driving resumes. Never scan sideways in motion.
+    # These ranges are ToF sensor-to-wall, not chassis-side physical clearance.
+    midcell_side_check_enabled: bool = True
+    midcell_side_check_ratio: float = 0.48
+    midcell_side_hard_stop_cm: float = 22.0
+    midcell_side_soft_margin_cm: float = 28.0
+    midcell_side_max_bias_mps: float = 0.012
+    # Abort if wheel odometry reports excessive departure from the planned
+    # logical cell centreline; it cannot detect unreported wheel slip.
+    motion_cross_track_abort_m: float = 0.085
+    motion_cross_track_slow_m: float = 0.030
+    motion_slow_cross_track_speed_mps: float = 0.065
+
     # If a confirmed wall appears only after most of a cell has already been
     # traversed, keep the logical DFS state synchronized with the physical
     # robot instead of pretending it never left the previous cell.
@@ -285,6 +301,16 @@ class Classwork8Config:
             raise ValueError("tof_recovery_retries must be >= 0")
         if self.cell_center_tolerance_m <= 0.0:
             raise ValueError("cell_center_tolerance_m must be positive")
+        if not 0.10 <= self.midcell_side_check_ratio <= 0.85:
+            raise ValueError("midcell_side_check_ratio must be between 0.10 and 0.85")
+        if not 0.0 < self.midcell_side_hard_stop_cm < self.midcell_side_soft_margin_cm <= self.scan_side_wall_max_cm:
+            raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
+        if not 0.0 <= self.midcell_side_max_bias_mps <= 0.03:
+            raise ValueError("midcell_side_max_bias_mps must be 0..0.03")
+        if not 0.0 < self.motion_cross_track_slow_m < self.motion_cross_track_abort_m < self.cell_size_m / 2.0:
+            raise ValueError("cross-track limits must satisfy 0 < slow < abort < half cell size")
+        if not 0.0 < self.motion_slow_cross_track_speed_mps <= self.travel_speed_mps:
+            raise ValueError("motion_slow_cross_track_speed_mps must not exceed travel speed")
         if self.front_block_confirm_samples < 1:
             raise ValueError("front_block_confirm_samples must be >= 1")
         if not 0.0 < self.blocked_near_target_accept_ratio <= 1.0:
