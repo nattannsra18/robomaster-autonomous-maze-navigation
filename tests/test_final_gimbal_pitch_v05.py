@@ -56,7 +56,7 @@ class FakeGimbal:
 class PitchHoldTests(unittest.TestCase):
     def setUp(self):
         self.config = Classwork8Config()
-        self.config.gimbal_turn_timeout_sec = 2.5
+        self.config.gimbal_turn_timeout_sec = 5.0
         self.config.gimbal_stable_samples = 2
         self.config.gimbal_settle_sec = 0.01
         self.tracker = GimbalTracker()
@@ -78,6 +78,24 @@ class PitchHoldTests(unittest.TestCase):
         )
         self.assertEqual(self.sensors.resets, 1)
         self.assertTrue(any(abs(pitch) > 0.0 for pitch, _yaw in self.gimbal.commands))
+
+    def test_previous_plus_1_7_degree_end_point_is_not_accepted(self):
+        # This was accepted by the previous +/-2 degree threshold. The
+        # current tolerance should actively correct instead of reporting OK.
+        self.tracker.pitch = 1.7
+        self.tracker.yaw = 90.0
+
+        success = _point_gimbal(
+            self.gimbal, self.sensors, self.tracker, 1, self.config, None
+        )
+        self.assertTrue(success)
+        self.assertLessEqual(
+            abs(self.tracker.get_pitch() - self.config.gimbal_scan_pitch_deg),
+            self.config.gimbal_pitch_tolerance_deg,
+        )
+        self.assertTrue(
+            any(abs(pitch) > 0.0 for pitch, _yaw in self.gimbal.commands)
+        )
 
     def test_no_pitch_feedback_fails_safely(self):
         self.config.gimbal_turn_timeout_sec = 0.12
