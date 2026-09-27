@@ -1666,9 +1666,9 @@ def _try_small_heading_alignment(
                 status = "HEADING_RECOVERY_YAW_REGRESSED"
                 break
             last_error = abs(now_error)
-            z = math.copysign(
-                float(config.side_start_heading_speed_dps) /
-                float(config.heading_drive_sign), now_error
+            z = (
+                math.copysign(float(config.side_start_heading_speed_dps), now_error)
+                / float(config.heading_drive_sign)
             )
             chassis.drive_speed(
                 x=0.0, y=0.0, z=z, timeout=config.drive_timeout_sec,
@@ -2142,14 +2142,33 @@ def _drive_one_cell(
                 and config.side_start_auto_recovery_enabled
                 and confirmed is not None
             ):
-                recovered, recovery_reason, recovered_cm = (
-                    _recover_critical_start_side(
+                heading_cleared = False
+                if config.side_start_heading_recovery_enabled:
+                    (
+                        heading_cleared, heading_reason, heading_cm,
+                        may_continue,
+                    ) = _try_small_heading_alignment(
                         chassis, gimbal, pose, sensors, gimbal_tracker,
-                        recorder, config, side, direction, current_cell,
-                        start_x, start_y, start_yaw_deg, float(confirmed),
-                        stop_event,
+                        recorder, config, side, current_cell,
+                        start_yaw_deg, float(confirmed), stop_event,
                     )
-                )
+                    if not may_continue:
+                        return False, heading_reason + "_" + DIR_NAME[side], 0.0
+                    if heading_cm is not None:
+                        confirmed = float(heading_cm)
+                if heading_cleared:
+                    recovered = True
+                    recovery_reason = "HEADING_RECOVERY_CLEAR"
+                    recovered_cm = confirmed
+                else:
+                    recovered, recovery_reason, recovered_cm = (
+                        _recover_critical_start_side(
+                            chassis, gimbal, pose, sensors, gimbal_tracker,
+                            recorder, config, side, direction, current_cell,
+                            start_x, start_y, start_yaw_deg, float(confirmed),
+                            stop_event,
+                        )
+                    )
                 recorder.event(
                     time.monotonic(), "SIDE_START_AUTORECOVERY", recovery_reason,
                     logical_node=current_cell, destination=target_cell,
