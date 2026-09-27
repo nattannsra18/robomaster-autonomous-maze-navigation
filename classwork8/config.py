@@ -77,13 +77,18 @@ class Classwork8Config:
 
     # Closed-loop gimbal scan tuning. The actual relative yaw is read from
     # gimbal.sub_angle(), so the mapper does not assume the gimbal reached target.
-    gimbal_yaw_speed_dps: float = 90.0
-    gimbal_min_yaw_speed_dps: float = 20.0
-    gimbal_yaw_kp: float = 1.6
+    # Turn slowly with YAW ONLY; restore level PITCH after yaw finishes.
+    # The field sweep showed +/-24 deg pitch excursions when both axes were
+    # commanded together. If pitch still moves >6 deg with pitch_speed=0,
+    # abort mapping and investigate physical/firmware coupling instead.
+    gimbal_yaw_speed_dps: float = 40.0
+    gimbal_min_yaw_speed_dps: float = 8.0
+    gimbal_yaw_kp: float = 1.0
     gimbal_tolerance_deg: float = 2.0
     gimbal_stable_samples: int = 3
-    gimbal_turn_timeout_sec: float = 7.0
+    gimbal_turn_timeout_sec: float = 10.0
     gimbal_settle_sec: float = 0.20
+    gimbal_yaw_pitch_guard_deg: float = 6.0
 
     # V05 ToF/camera both share the gimbal: yaw-only control does not keep
     # pitch level. Hold the horizontal mission scan pitch using feedback.
@@ -246,6 +251,12 @@ class Classwork8Config:
             raise ValueError("gimbal pitch gain/tolerance must be positive")
         if self.gimbal_pitch_unsafe_deg <= self.gimbal_pitch_tolerance_deg:
             raise ValueError("gimbal pitch unsafe angle must exceed tolerance")
+        if self.gimbal_yaw_pitch_guard_deg <= self.gimbal_pitch_tolerance_deg:
+            raise ValueError("gimbal yaw pitch guard must exceed pitch tolerance")
+        if not 0.0 < self.gimbal_min_yaw_speed_dps <= self.gimbal_yaw_speed_dps:
+            raise ValueError("gimbal yaw speed limits are invalid")
+        if self.gimbal_turn_timeout_sec <= 0.0:
+            raise ValueError("gimbal turn timeout must be positive")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
             raise ValueError("ToF mapping range is invalid")
         if self.tof_open_cm <= self.stop_front_cm:
