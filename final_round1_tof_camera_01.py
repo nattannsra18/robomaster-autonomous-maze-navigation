@@ -57,6 +57,9 @@ def _defaults(config: Classwork8Config) -> None:
 
     config.tof_recovery_wait_sec = 1.20
     config.tof_recovery_retries = 2
+    # Enable bounded wall-follow correction in this mission only; CRITICAL
+    # side and forward ranges still stop the chassis.
+    config.wall_follow_recovery_enabled = True
 
     config.closed_maze_auto_stop = True
     config.closed_maze_perimeter_wall_ratio = 0.70
