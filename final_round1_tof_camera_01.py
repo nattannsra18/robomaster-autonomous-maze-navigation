@@ -65,8 +65,8 @@ def _defaults(config: Classwork8Config) -> None:
     # Final Round 1 camera target survey.
     config.target_detection_enabled = True
     config.target_camera_resolution = "360p"
-    config.target_min_confidence = 0.58
-    config.target_save_confidence = 0.70
+    config.target_min_confidence = 0.50
+    config.target_save_confidence = 0.60
     config.target_sample_frames = 6
     config.target_verify_frames = 4
 
