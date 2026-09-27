@@ -56,6 +56,7 @@ def _defaults(config: Classwork8Config) -> None:
     config.travel_speed_mps = 0.20
     config.midcell_side_check_enabled = False  # opt in through the GUI
     config.side_start_auto_recovery_enabled = True  # guarded 2.5 cm nudges; ToF + odometry
+    config.supervised_hold_on_safety_dead_end = True  # do not auto-finish on trapped/deferred frontier
 
     config.tof_recovery_wait_sec = 1.20
     config.tof_recovery_retries = 2
