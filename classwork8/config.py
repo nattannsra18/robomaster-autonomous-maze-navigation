@@ -64,8 +64,14 @@ class Classwork8Config:
     # These ranges are ToF sensor-to-wall, not chassis-side physical clearance.
     midcell_side_check_enabled: bool = True
     midcell_side_check_ratio: float = 0.48
-    midcell_side_hard_stop_cm: float = 22.0
-    midcell_side_soft_margin_cm: float = 28.0
+    # These are sensor-to-wall distances, NOT physical chassis clearance.
+    # Field log: RIGHT was 14.5 cm at start and 14.7 cm mid-leg; an old 22 cm
+    # absolute stop falsely aborted normal travel. Calibrate the critical
+    # range using measured sensor-to-body offset before a full maze trial.
+    midcell_side_hard_stop_cm: float = 10.0
+    midcell_side_soft_margin_cm: float = 18.0
+    midcell_side_max_baseline_drop_cm: float = 4.0
+    midcell_side_recenter_deadband_cm: float = 1.5
     midcell_side_max_bias_mps: float = 0.012
     motion_total_lateral_max_mps: float = 0.028
     # Explicit cap for wall-adjacent legs: 0.25 m/s is NOT used next to foam walls.
@@ -309,6 +315,10 @@ class Classwork8Config:
             raise ValueError("midcell_side_check_ratio must be between 0.10 and 0.85")
         if not 0.0 < self.midcell_side_hard_stop_cm < self.midcell_side_soft_margin_cm <= self.scan_side_wall_max_cm:
             raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
+        if not 0.0 < self.midcell_side_max_baseline_drop_cm <= 20.0:
+            raise ValueError("midcell_side_max_baseline_drop_cm must be 0..20 cm")
+        if not 0.0 <= self.midcell_side_recenter_deadband_cm < self.midcell_side_max_baseline_drop_cm:
+            raise ValueError("midcell side recenter deadband must be less than baseline-drop stop")
         if not 0.0 <= self.midcell_side_max_bias_mps <= 0.03:
             raise ValueError("midcell_side_max_bias_mps must be 0..0.03")
         if not 0.0 < self.motion_total_lateral_max_mps <= 0.05:
