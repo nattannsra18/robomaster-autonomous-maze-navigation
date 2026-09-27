@@ -293,7 +293,8 @@ class RealtimeMapGUI:
                 "Blue = realtime odometry trajectory\n"
                 "Light blue = travelled logical path\n"
                 "Purple dashed = planned route to nearest frontier\n"
-                "Colored Txx = detected target position estimate\n"
+                "Colored Txx = wall-range-confirmed target\n"
+                "Txx? = camera-only observation; position needs review\n"
                 "Green S = mission start\n"
                 "Red R = robot\n"
                 "Orange arrow = current ToF/Gimbal direction"
@@ -821,9 +822,12 @@ class RealtimeMapGUI:
                 outline="white",
                 width=2,
             )
+            target_label = str(target.get("target_id", "T"))
+            if not target.get("range_confirmed_wall", True):
+                target_label += "?"
             draw.text(
                 (tx - radius * 0.6, ty - 5),
-                str(target.get("target_id", "T")),
+                target_label,
                 fill="white",
                 font=font,
             )
@@ -1139,10 +1143,13 @@ class RealtimeMapGUI:
                 outline="white",
                 width=2,
             )
+            target_label = str(target.get("target_id", "T"))
+            if not target.get("range_confirmed_wall", True):
+                target_label += "?"
             canvas.create_text(
                 tx,
                 ty,
-                text=str(target.get("target_id", "T")),
+                text=target_label,
                 fill="white",
                 font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
             )
