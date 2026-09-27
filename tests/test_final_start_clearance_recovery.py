@@ -306,7 +306,7 @@ class PhysicalNudgeSimulation(unittest.TestCase):
             self.sensor.direction = direction
             self.tracker.direction = direction
             return True
-        with mock.patch.object(mission, "_point_gimbal", side_effect=point), \\
+        with mock.patch.object(mission, "_point_gimbal", side_effect=point), \
              mock.patch.object(mission.time, "sleep", return_value=None):
             ok, reason, final_cm = mission._recover_critical_start_side(
                 self.chassis, object(), self.pose, self.sensor,
