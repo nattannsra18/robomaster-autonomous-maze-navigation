@@ -182,17 +182,19 @@ class Classwork8Config:
     target_camera_pitch_tolerance_deg: float = 1.5
     target_camera_pitch_timeout_sec: float = 4.5
     target_camera_settle_sec: float = 0.15
-    target_preview_fps: float = 8.0
+    target_preview_fps: float = 10.0
     target_survey_open_directions: bool = True
 
     # Lighting-robust OpenCV detector.
     target_clahe_clip_limit: float = 2.0
     target_clahe_grid: int = 8
     target_morph_kernel: int = 3
-    # Calibrate this region to include the sign strip but exclude reflective
-    # floor objects. It is a camera-image region, not a preloaded maze map.
+    # Ground-level signs may appear in the lower camera frame after looking
+    # down. Keep the visible band adjustable in the running GUI: extending it
+    # can also admit reflective floor clutter, so inspect the live overlay.
+    # These are camera-image ratios, never a preloaded maze layout.
     target_roi_top_ratio: float = 0.18
-    target_roi_bottom_ratio: float = 0.82
+    target_roi_bottom_ratio: float = 0.94
     target_roi_border_margin_px: int = 3
     target_min_contour_area_px: float = 300.0
     target_min_contour_area_ratio: float = 0.0010
