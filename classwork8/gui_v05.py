@@ -266,7 +266,7 @@ class RealtimeMapGUI:
         ).pack(anchor="w", pady=(0, 3))
         self.yaw_speed_slider = tk.Scale(
             right,
-            from_=15, to=90, resolution=5,
+            from_=15, to=120, resolution=5,
             orient="horizontal",
             variable=self.yaw_speed_var,
             label="Max Gimbal yaw speed (deg/s)",
