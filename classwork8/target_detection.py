@@ -282,17 +282,29 @@ class TargetDetector:
         hsv = cv2.cvtColor(normalized, cv2.COLOR_BGR2HSV)
         lab = cv2.cvtColor(normalized, cv2.COLOR_BGR2LAB)
 
-        frame_area = float(frame.shape[0] * frame.shape[1])
+        frame_h, frame_w = frame.shape[:2]
+        frame_area = float(frame_h * frame_w)
         min_area = max(
             float(self.config.target_min_contour_area_px),
             float(self.config.target_min_contour_area_ratio) * frame_area,
         )
         max_area = float(self.config.target_max_contour_area_ratio) * frame_area
 
+        # The real-camera sample showed seven signs on the foam wall plus a
+        # false YELLOW RECTANGLE on a reflective floor object.  Restrict
+        # candidates to an adjustable vertical sign band.  Reject clipped
+        # contours at its boundaries instead of classifying partial objects.
+        roi_top = int(frame_h * float(self.config.target_roi_top_ratio))
+        roi_bottom = int(frame_h * float(self.config.target_roi_bottom_ratio))
+        roi_bottom = max(roi_top + 1, min(frame_h, roi_bottom))
+        roi_margin = int(self.config.target_roi_border_margin_px)
+
         detections: List[TargetDetection] = []
 
         for color_name in COLOR_RANGES:
             mask = self._make_mask(hsv, color_name)
+            mask[:roi_top, :] = 0
+            mask[roi_bottom:, :] = 0
             found = cv2.findContours(
                 mask,
                 cv2.RETR_EXTERNAL,
@@ -309,13 +321,25 @@ class TargetDetector:
                 if abs(moments["m00"]) < 1e-9:
                     continue
 
+                bbox = tuple(int(v) for v in cv2.boundingRect(contour))
+                bx, by, bw, bh = bbox
+
+                # A clipped sign (or a wall/background patch cut at the ROI
+                # edge) does not have a trustworthy geometric shape.
+                if (
+                    bx <= roi_margin
+                    or bx + bw >= frame_w - roi_margin
+                    or by <= roi_top + roi_margin
+                    or by + bh >= roi_bottom - roi_margin
+                ):
+                    continue
+
                 shape, shape_conf, metrics = self._shape(contour)
                 if shape == "unknown":
                     continue
 
                 cx = int(moments["m10"] / moments["m00"])
                 cy = int(moments["m01"] / moments["m00"])
-                bbox = tuple(int(v) for v in cv2.boundingRect(contour))
 
                 median_hsv, median_lab = self._inside_statistics(contour, hsv, lab)
                 color_conf = self._color_confidence(
@@ -363,6 +387,23 @@ class TargetDetector:
                 kept.append(detection)
 
         debug = frame.copy()
+        cv2.rectangle(
+            debug,
+            (0, roi_top),
+            (frame_w - 1, roi_bottom - 1),
+            (180, 180, 180),
+            1,
+        )
+        cv2.putText(
+            debug,
+            "TARGET ROI",
+            (8, max(14, roi_top + 16)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
         for detection in kept:
             colour = DRAW_COLOURS.get(detection.color, (255, 255, 255))
             cv2.drawContours(debug, [detection.contour], -1, colour, 2)
@@ -387,6 +428,12 @@ class TargetDetector:
         return kept, debug
 
     def verify_latest(self, camera_service) -> Tuple[List[VerifiedTarget], Optional[np.ndarray]]:
+        """Require consecutive matches on distinct fresh camera frames.
+
+        The old version sampled CameraService.latest() several times and
+        could count one cached frame repeatedly.  This uses capture timestamps
+        and one-to-one associations so nearby identical signs stay separate.
+        """
         tracks: List[dict] = []
         last_debug = None
 
@@ -394,23 +441,52 @@ class TargetDetector:
             int(self.config.target_verify_frames),
             int(self.config.target_sample_frames),
         )
+        interval_sec = float(self.config.target_frame_interval_sec)
+        deadline = time.monotonic() + max(
+            1.0,
+            sample_count * max(0.06, interval_sec) * 3.0,
+        )
+        used_frame_count = 0
+        last_capture_timestamp: Optional[float] = None
 
-        for _index in range(sample_count):
-            frame = camera_service.latest(
-                max_age_sec=float(self.config.target_max_frame_age_sec)
-            )
-            if frame is None:
-                time.sleep(float(self.config.target_frame_interval_sec))
+        while used_frame_count < sample_count and time.monotonic() < deadline:
+            if hasattr(camera_service, "latest_with_timestamp"):
+                sample = camera_service.latest_with_timestamp(
+                    max_age_sec=float(self.config.target_max_frame_age_sec)
+                )
+            else:
+                frame = camera_service.latest(
+                    max_age_sec=float(self.config.target_max_frame_age_sec)
+                )
+                sample = None if frame is None else (frame, time.monotonic())
+
+            if sample is None:
+                time.sleep(0.01)
                 continue
 
+            frame, capture_timestamp = sample
+            if (
+                last_capture_timestamp is not None
+                and float(capture_timestamp) <= last_capture_timestamp
+            ):
+                time.sleep(0.01)
+                continue
+
+            last_capture_timestamp = float(capture_timestamp)
+            used_frame_count += 1
             detections, debug = self.detect(frame)
             last_debug = debug
 
+            next_tracks: List[dict] = []
+            used_previous = set()
+
             for detection in detections:
-                best_track = None
+                best_index = None
                 best_distance = None
 
-                for track in tracks:
+                for index, track in enumerate(tracks):
+                    if index in used_previous:
+                        continue
                     if (
                         track["color"] != detection.color
                         or track["shape"] != detection.shape
@@ -422,30 +498,40 @@ class TargetDetector:
                         detection.centroid[0] - px,
                         detection.centroid[1] - py,
                     )
+                    if distance > float(self.config.target_verify_max_jump_px):
+                        continue
 
-                    if distance <= float(self.config.target_verify_max_jump_px):
-                        if best_distance is None or distance < best_distance:
-                            best_track = track
-                            best_distance = distance
+                    if best_distance is None or distance < best_distance:
+                        best_index = index
+                        best_distance = distance
 
-                if best_track is None:
-                    tracks.append(
-                        {
-                            "color": detection.color,
-                            "shape": detection.shape,
-                            "count": 1,
-                            "confidence_sum": detection.confidence,
-                            "last_centroid": detection.centroid,
-                            "last_detection": detection,
-                        }
-                    )
+                if best_index is None:
+                    next_tracks.append({
+                        "color": detection.color,
+                        "shape": detection.shape,
+                        "count": 1,
+                        "confidence_sum": float(detection.confidence),
+                        "last_centroid": detection.centroid,
+                        "last_detection": detection,
+                    })
                 else:
-                    best_track["count"] += 1
-                    best_track["confidence_sum"] += detection.confidence
-                    best_track["last_centroid"] = detection.centroid
-                    best_track["last_detection"] = detection
+                    used_previous.add(best_index)
+                    previous = tracks[best_index]
+                    next_tracks.append({
+                        "color": detection.color,
+                        "shape": detection.shape,
+                        "count": int(previous["count"]) + 1,
+                        "confidence_sum": (
+                            float(previous["confidence_sum"])
+                            + float(detection.confidence)
+                        ),
+                        "last_centroid": detection.centroid,
+                        "last_detection": detection,
+                    })
 
-            time.sleep(float(self.config.target_frame_interval_sec))
+            # Dropping unmatched tracks enforces consecutive observations.
+            tracks = next_tracks
+            time.sleep(max(0.005, interval_sec))
 
         verified: List[VerifiedTarget] = []
 
@@ -453,17 +539,15 @@ class TargetDetector:
             if track["count"] < int(self.config.target_verify_frames):
                 continue
 
-            confidence = track["confidence_sum"] / float(track["count"])
+            confidence = float(track["confidence_sum"]) / float(track["count"])
             if confidence < float(self.config.target_save_confidence):
                 continue
 
-            verified.append(
-                VerifiedTarget(
-                    detection=track["last_detection"],
-                    verified_frames=int(track["count"]),
-                    confidence=float(confidence),
-                )
-            )
+            verified.append(VerifiedTarget(
+                detection=track["last_detection"],
+                verified_frames=int(track["count"]),
+                confidence=float(confidence),
+            ))
 
         verified.sort(key=lambda item: item.confidence, reverse=True)
         return verified, last_debug
@@ -538,23 +622,34 @@ class TargetRegistry:
         }
         self.observations.append(observation)
 
-        merge_distance = float(self.config.target_merge_distance_m)
         match = None
 
         for target in self.targets:
             if target["color"] != detection.color or target["shape"] != detection.shape:
                 continue
 
-            tx, ty = target["estimated_target_xy_m"]
-            if math.hypot(target_x - tx, target_y - ty) <= merge_distance:
-                match = target
-                break
+            # A ToF reading measures distance along the gimbal ray; it cannot
+            # distinguish the lateral positions of several signs on one wall.
+            # Merge only repeat detections from the SAME approach cell and
+            # SAME viewing direction with a sufficiently close image centroid.
+            # Cross-cell association needs calibrated camera geometry and is
+            # deliberately deferred instead of silently losing real targets.
+            for view in target.get("reference_views", []):
+                if (
+                    view["approach_cell"] != observation["approach_cell"]
+                    or int(view["view_direction"]) != int(direction) % 4
+                ):
+                    continue
+                old_cx, old_cy = view["centroid_px"]
+                distance_px = math.hypot(
+                    detection.centroid[0] - old_cx,
+                    detection.centroid[1] - old_cy,
+                )
+                if distance_px <= float(self.config.target_merge_centroid_px):
+                    match = target
+                    break
 
-            if (
-                list(observation["approach_cell"]) in target["approach_cells"]
-                and int(direction) % 4 in target["view_directions"]
-            ):
-                match = target
+            if match is not None:
                 break
 
         if match is None:
@@ -566,6 +661,11 @@ class TargetRegistry:
                 "approach_cells": [list(observation["approach_cell"])],
                 "view_directions": [int(direction) % 4],
                 "view_direction_names": [DIR_NAME[int(direction) % 4]],
+                "reference_views": [{
+                    "approach_cell": list(observation["approach_cell"]),
+                    "view_direction": int(direction) % 4,
+                    "centroid_px": list(observation["centroid_px"]),
+                }],
                 "observations": 1,
                 "confidence": float(verified.confidence),
                 "status": "DETECTED",
