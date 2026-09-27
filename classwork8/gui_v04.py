@@ -17,6 +17,7 @@ fixed-grid GUI.
 
 from __future__ import annotations
 
+import json
 import math
 import queue
 import threading
@@ -54,6 +55,7 @@ class RealtimeMapGUI:
         auto_save_map: bool = True,
         export_width_px: int = 1200,
         export_height_px: int = 900,
+        evaluation_config=None,
     ):
         import tkinter as tk
         from tkinter import ttk
@@ -71,6 +73,7 @@ class RealtimeMapGUI:
         self.auto_save_map = bool(auto_save_map)
         self.export_width_px = int(export_width_px)
         self.export_height_px = int(export_height_px)
+        self.evaluation_config = evaluation_config
         self._auto_saved_run_dirs = set()
         self._last_saved_path = None
         self._queue = queue.Queue()
@@ -412,6 +415,21 @@ class RealtimeMapGUI:
                         + "\nGUI map save failed: {}".format(exc)
                     ).strip()
 
+        if snapshot.get("finished") and snapshot.get("run_dir"):
+            report = Path(str(snapshot["run_dir"])) / "evaluation" / "evaluation.json"
+            if report.is_file():
+                try:
+                    outcome = json.loads(report.read_text(encoding="utf-8"))
+                    if outcome.get("evaluation_status") == "complete":
+                        reason_text += ("\nMap Accuracy: {:.2f}% | Assignment Coverage: {:.2f}%".format(
+                            outcome["map_accuracy_percent"], outcome["coverage_percent"]
+                        ))
+                    else:
+                        reason_text += ("\nEvaluation: {} (see evaluation/evaluation.txt)".format(
+                            outcome.get("evaluation_status", "unknown")
+                        ))
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
         self.reason_var.set(reason_text)
 
     def _save_gui_map_now(self) -> None:
@@ -421,15 +439,39 @@ class RealtimeMapGUI:
             return
 
         try:
-            folder = self.output_dir / "gui_snapshots"
+            # Save the current map together with a same-time evaluation snapshot.
+            # The full mission logs/trajectory are exported by STOP & SAVE.
+            run_dir = Path(str(snapshot.get("run_dir") or self.output_dir))
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            folder = run_dir / "gui_snapshots" / stamp
             folder.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            target = folder / "gui_map_{}.png".format(stamp)
+            target = folder / "gui_map.png"
             self._export_map_png(snapshot, target)
             self._last_saved_path = target
-            self.reason_var.set("GUI map saved: {}".format(target))
+            reason = "GUI snapshot saved: {}".format(folder)
+
+            matrix = snapshot.get("matrix")
+            if matrix:
+                from .evaluate import auto_evaluate_saved_map, write_csv
+                # Live snapshot uses bottom-to-top matrix(), while map.csv has
+                # top-to-bottom rows. Match the final exported CSV exactly.
+                snapshot_map = folder / "map.csv"
+                write_csv(snapshot_map, list(reversed(matrix)))
+                if self.evaluation_config is not None and self.evaluation_config.auto_evaluate_on_save:
+                    result = auto_evaluate_saved_map(
+                        snapshot_map, folder / "evaluation", self.evaluation_config
+                    )
+                    if result["evaluation_status"] == "complete":
+                        reason += "\nAccuracy {:.2f}% | Coverage {:.2f}%".format(
+                            result["map_accuracy_percent"], result["coverage_percent"]
+                        )
+                    else:
+                        reason += "\nEvaluation: {} (see evaluation/)".format(
+                            result["evaluation_status"]
+                        )
+            self.reason_var.set(reason)
         except Exception as exc:
-            self.reason_var.set("GUI map save failed: {}".format(exc))
+            self.reason_var.set("GUI snapshot save/evaluation failed: {}".format(exc))
 
 
     def _export_map_png(self, snapshot: dict, target_path: Path) -> None:
@@ -988,6 +1030,7 @@ def run_with_gui(
         auto_save_map=config.gui_auto_save_map,
         export_width_px=config.gui_export_width_px,
         export_height_px=config.gui_export_height_px,
+        evaluation_config=config,
     )
 
     def worker():
