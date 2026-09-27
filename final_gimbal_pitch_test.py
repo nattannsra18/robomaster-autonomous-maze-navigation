@@ -114,6 +114,7 @@ def main():
         # Safe adjacent-yaw scan sequence; avoid direct +180 to -90 wrapping.
         for direction in (0, 1, 2, 1, 0, 3, 0):
             print("[TEST] Pointing {}...".format(DIR_NAME[direction]), flush=True)
+            sweep_started = time.monotonic()
             if not _point_gimbal(
                 gimbal, sensors, tracker, direction, config, None
             ):
@@ -121,6 +122,24 @@ def main():
                     "Gimbal did not reach both angles at {}".format(
                         DIR_NAME[direction]
                     )
+                )
+            pitch_samples = tracker.pitch_samples_since(sweep_started)
+            if pitch_samples:
+                low, high = min(pitch_samples), max(pitch_samples)
+                peak = max(
+                    abs(value - config.gimbal_scan_pitch_deg)
+                    for value in pitch_samples
+                )
+                print(
+                    "[SWEEP] {} pitch min={:+.1f} max={:+.1f} peak_error={:.1f} deg "
+                    "({} fresh angle samples)".format(
+                        DIR_NAME[direction],
+                        low,
+                        high,
+                        peak,
+                        len(pitch_samples),
+                    ),
+                    flush=True,
                 )
             pitch, yaw = tracker.get_angles()
             print(
@@ -142,12 +161,20 @@ def main():
                 flush=True,
             )
             if abs(float(pitch_after) - config.gimbal_scan_pitch_deg) > (
-                config.gimbal_pitch_unsafe_deg
+                config.gimbal_pitch_tolerance_deg + 0.25
             ):
                 raise RuntimeError(
-                    "Pitch drifted after stabilization at {}".format(
-                        DIR_NAME[direction]
+                    "Pitch not level after stabilization at {}: {:+.1f} deg".format(
+                        DIR_NAME[direction], float(pitch_after)
                     )
+                )
+            if pitch_samples and peak > config.gimbal_pitch_unsafe_deg:
+                print(
+                    "[WARN] Large TRANSIENT pitch during {}. Check the gimbal "
+                    "mount and record a side-view video before maze driving.".format(
+                        DIR_NAME[direction]
+                    ),
+                    flush=True,
                 )
 
         print("[TEST] Four-way pitch/yaw hold completed.")
