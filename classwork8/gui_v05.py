@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from .live_survey import LiveSurveyBridge
-from .target_map_visual import target_plot_geometry
+from .target_map_visual import target_plot_geometry, target_marker_offsets
 
 
 class RealtimeMapGUI:
@@ -957,13 +957,23 @@ class RealtimeMapGUI:
             "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
-        for target in snapshot.get("targets") or []:
+        targets = snapshot.get("targets") or []
+        badge_offsets = target_marker_offsets(
+            targets, float(snapshot.get("cell_size_m", 0.60))
+        )
+        for target, (offset_x, offset_y) in zip(targets, badge_offsets):
             hint, origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
             if hint is None:
                 continue
-            tx, ty = metric_to_image(*hint)
+            anchor_x, anchor_y = metric_to_image(*hint)
+            tx = anchor_x + offset_x * size
+            ty = anchor_y + offset_y * size
+            if offset_x or offset_y:
+                # Short leader points to the common ToF range estimate.
+                draw.line((anchor_x, anchor_y, tx, ty),
+                          fill=self.COLOURS["muted"], width=1)
             colour = target_colours.get(
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
@@ -972,7 +982,7 @@ class RealtimeMapGUI:
                 if origin is not None:
                     oxp, oyp = metric_to_image(*origin)
                     draw.line(
-                        (oxp, oyp, tx, ty),
+                        (oxp, oyp, anchor_x, anchor_y),
                         fill=colour, width=max(2, int(size * 0.025)),
                     )
                 draw.ellipse(
@@ -1293,13 +1303,24 @@ class RealtimeMapGUI:
             "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
-        for target in snapshot.get("targets") or []:
+        targets = snapshot.get("targets") or []
+        badge_offsets = target_marker_offsets(
+            targets, float(snapshot.get("cell_size_m", 0.60))
+        )
+        for target, (offset_x, offset_y) in zip(targets, badge_offsets):
             hint, origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
             if hint is None:
                 continue
-            tx, ty = metric_to_canvas(*hint)
+            anchor_x, anchor_y = metric_to_canvas(*hint)
+            tx = anchor_x + offset_x * size
+            ty = anchor_y + offset_y * size
+            if offset_x or offset_y:
+                canvas.create_line(
+                    anchor_x, anchor_y, tx, ty,
+                    fill=colours["muted"], width=1,
+                )
             colour = target_colours.get(
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
@@ -1308,7 +1329,7 @@ class RealtimeMapGUI:
                 if origin is not None:
                     oxp, oyp = metric_to_canvas(*origin)
                     canvas.create_line(
-                        oxp, oyp, tx, ty, fill=colour, width=2,
+                        oxp, oyp, anchor_x, anchor_y, fill=colour, width=2,
                         dash=(4, 4),
                     )
                 canvas.create_oval(
