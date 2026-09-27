@@ -2427,6 +2427,9 @@ def run(
     # the cached wall topology is for planning; movement always samples fresh
     # travel-direction ToF before and throughout every cell.
     scanned_cells: Set[Tuple[int, int]] = set()
+    # One automatic revisit survey for any provisional sign in a cached cell.
+    # Do not force endless rescans when the sign cannot be reverified.
+    pending_rechecked_cells: Set[Tuple[int, int]] = set()
 
     raw_start_x = 0.0
     raw_start_y = 0.0
@@ -2731,6 +2734,23 @@ def run(
                 config.skip_scanned_visited_cells,
                 survey_bridge.rescan_requested(),
             )
+
+            # A previous camera view may have left provisional colour/shape
+            # evidence. Revisit it once rather than indefinitely reusing the
+            # cached 4-way scan; later visits can reuse topology as usual.
+            pending_here = any(
+                list(current_cell) in item.get("observation_cells", [])
+                for item in target_registry.pending_targets
+            )
+            if (cache_valid and pending_here
+                    and current_cell not in pending_rechecked_cells):
+                pending_rechecked_cells.add(current_cell)
+                cache_valid = False
+                print(
+                    "[TARGET_RECHECK] Revisiting {} once for pending camera signs.".format(
+                        current_cell
+                    ), flush=True,
+                )
 
             if cache_valid:
                 # Cache contains only confirmed topology, not a fresh ToF
