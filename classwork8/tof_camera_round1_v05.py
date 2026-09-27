@@ -1016,6 +1016,8 @@ def _scan_four_directions(
                             camera_pitch_deg=selected_pitch,
                             range_confirmed_wall=near_wall,
                             tof_cm=distance_cm,
+                            localization_status=saved_target["localization_status"],
+                            sighting_cell_hint=saved_target.get("sighting_cell_hint"),
                         )
                         print(
                             "[TARGET] {} {} -> {} conf={:.2f} {} from {} {}".format(
@@ -1030,6 +1032,17 @@ def _scan_four_directions(
                             ),
                             flush=True,
                         )
+                        if not near_wall:
+                            print(
+                                "[TARGET] {} is a distant sighting only. "
+                                "Candidate cell {} along {}; do NOT use as "
+                                "Round-2 target position until close revalidation.".format(
+                                    saved_target["target_id"],
+                                    saved_target.get("sighting_cell_hint"),
+                                    DIR_NAME[direction],
+                                ),
+                                flush=True,
+                            )
                 else:
                     print(
                         "[TARGET] Camera pitch not reached at {}; survey skipped.".format(
