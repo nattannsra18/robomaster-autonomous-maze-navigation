@@ -85,3 +85,24 @@ def side_checkpoint_decision(
         label = "MIDCELL_CLEARANCE_OK"
 
     return True, label, max(-max_bias, min(max_bias, bias))
+
+
+def bound_travel_lateral(
+    x_cmd: float,
+    y_cmd: float,
+    travel_right: Tuple[float, float],
+    max_lateral_mps: float,
+) -> Tuple[float, float]:
+    """Limit combined odometry+scan lateral command without altering travel.
+
+    Unit travel-right vectors in DIR_RIGHT_VEC_DRIVE are orthogonal to the
+    commanded longitudinal direction for FRONT/RIGHT/BACK/LEFT.
+    """
+    rx, ry = travel_right
+    lateral = x_cmd * rx + y_cmd * ry
+    bounded = max(
+        -float(max_lateral_mps),
+        min(float(max_lateral_mps), float(lateral)),
+    )
+    difference = bounded - lateral
+    return x_cmd + rx * difference, y_cmd + ry * difference
