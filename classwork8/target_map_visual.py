@@ -1,8 +1,9 @@
-"""Conservative target plotting for the Final Round-1 discovered GUI map.
+"""Conservative target geometry and confirmed-only Final Round-1 map filtering.
 
-A distant camera observation is a bearing, not a confirmed target location.
-Show its ToF-ray endpoint only as a hollow '?' hint with a line of sight from
-the observing cell. Never place it at the observing cell as a physical sign.
+Distant camera sightings are stored for later rechecks but are NOT displayed
+as map signs until a wall-range estimate establishes a provisional position.
+The geometric helper can still represent bearing-only observations for
+non-map analysis without treating them as physical positions.
 """
 
 from __future__ import annotations
