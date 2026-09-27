@@ -694,6 +694,23 @@ def _scan_four_directions(
                 flush=True,
             )
 
+        # One final pitch guard also covers the ambiguous-range retry period.
+        # Never commit WALL/OPEN topology from a ray that has tilted away from
+        # its horizontal scan plane.
+        final_scan_pitch = gimbal_tracker.get_pitch()
+        if (
+            final_scan_pitch is None
+            or abs(
+                float(final_scan_pitch) - float(config.gimbal_scan_pitch_deg)
+            ) > float(config.gimbal_pitch_tolerance_deg)
+        ):
+            print(
+                "[SCAN] {} pitch changed during sampling/retry; aborting scan "
+                "without updating topology.".format(DIR_NAME[direction]),
+                flush=True,
+            )
+            return None
+
         ranges[direction] = distance_cm
         print(
             "[SCAN] {} ToF = {} cm".format(
@@ -720,6 +737,18 @@ def _scan_four_directions(
             verified_targets, target_debug = target_detector.verify_latest(
                 camera_service
             )
+            camera_pitch = gimbal_tracker.get_pitch()
+            if (
+                camera_pitch is None
+                or abs(
+                    float(camera_pitch) - float(config.gimbal_scan_pitch_deg)
+                ) > float(config.gimbal_pitch_tolerance_deg)
+            ):
+                print(
+                    "[TARGET] Camera survey skipped: gimbal pitch drifted.",
+                    flush=True,
+                )
+                verified_targets = []
             if target_debug is not None:
                 target_debug_holder[0] = target_debug
 
