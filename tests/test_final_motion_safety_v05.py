@@ -210,7 +210,7 @@ class SideCheckLogicTests(unittest.TestCase):
         self.assertIn("_midcell_wall_checkpoint(", drive_source)
 
     def test_new_default_is_fast_on_open_routes_but_limited_near_walls(self):
-        self.assertAlmostEqual(self.config.travel_speed_mps, 0.25)
+        self.assertAlmostEqual(self.config.travel_speed_mps, 0.20)
         self.assertAlmostEqual(
             self.config.motion_wall_adjacent_speed_cap_mps, 0.12
         )
