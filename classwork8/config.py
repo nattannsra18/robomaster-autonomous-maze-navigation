@@ -76,6 +76,16 @@ class Classwork8Config:
     # Independent of the optional halfway checkpoint: stop, scan opposite,
     # and permit only short, odometry-checked moves AWAY from a start-side wall.
     side_start_auto_recovery_enabled: bool = False
+    # Optional experimental: align chassis with mission-start yaw by <=1 deg
+    # ONLY after fresh four-way rays pass the clearance gate. A single ToF
+    # does not measure chassis-corner clearance; leave OFF until physically
+    # checking the robot's swept footprint and supervising the first trial.
+    side_start_heading_recovery_enabled: bool = False
+    side_start_heading_min_error_deg: float = 1.5
+    side_start_heading_max_step_deg: float = 1.0
+    side_start_heading_max_initial_error_deg: float = 8.0
+    side_start_heading_speed_dps: float = 5.0
+    side_start_heading_other_clearance_cm: float = 22.0
     side_start_recovery_step_m: float = 0.025
     side_start_recovery_max_attempts: int = 3
     side_start_recovery_speed_mps: float = 0.055
@@ -343,6 +353,16 @@ class Classwork8Config:
             raise ValueError("midcell_side_check_ratio must be between 0.10 and 0.85")
         if not 0.0 < self.midcell_side_hard_stop_cm < self.midcell_side_soft_margin_cm <= self.scan_side_wall_max_cm:
             raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
+        if not 0.5 <= self.side_start_heading_min_error_deg <= 5.0:
+            raise ValueError("heading alignment error threshold must be 0.5..5 deg")
+        if not 0.1 < self.side_start_heading_max_step_deg <= 2.0:
+            raise ValueError("heading alignment step must be >0.1 and <=2 deg")
+        if not self.side_start_heading_max_initial_error_deg >= self.side_start_heading_min_error_deg:
+            raise ValueError("heading alignment max initial error is invalid")
+        if not 0.0 < self.side_start_heading_speed_dps <= 8.0:
+            raise ValueError("heading alignment speed must be <=8 deg/s")
+        if self.side_start_heading_other_clearance_cm < self.stop_front_cm:
+            raise ValueError("heading alignment clearance must be >= emergency stop range")
         if not 0.0 < self.side_start_recovery_step_m <= 0.03:
             raise ValueError("side-start recovery step must be >0 and <=3 cm")
         if not 1 <= self.side_start_recovery_max_attempts <= 3:
