@@ -177,8 +177,8 @@ class Classwork8Config:
     # Candidate confidence + temporal verification.
     target_min_confidence: float = 0.58
     target_save_confidence: float = 0.70
-    target_sample_frames: int = 5
-    target_verify_frames: int = 3
+    target_sample_frames: int = 6
+    target_verify_frames: int = 4
     target_frame_interval_sec: float = 0.045
     target_verify_max_jump_px: float = 50.0
     target_merge_centroid_px: float = 18.0
