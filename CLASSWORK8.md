@@ -506,3 +506,40 @@ start full maze exploration.
 \`\`\`powershell
 python -m unittest tests.test_final_gimbal_pitch_v05 -v
 \`\`\`
+
+### V05 revised pitch damping after stationary hardware log
+
+The 27 Sep stationary test showed yaw reached every requested direction, but
+pitch alternated between about -1.7 and +1.7 degrees. This was **not** a
+passing demonstration of steady level pitch: the old +/-2 degree tolerance
+accepted all these endpoints, and the 4 deg/s minimum correction could add
+visible nodding. The updated scan pitch defaults are:
+
+```text
+Target pitch       0.0 deg
+Pitch Kp           0.9
+Minimum pitch rate 1.5 deg/s
+Maximum pitch rate 10.0 deg/s
+Pitch tolerance    0.8 deg
+Unsafe pitch drift 6.0 deg (stop motion)
+```
+
+The test now logs `[SWEEP]` pitch min/max/peak error using actual angle
+subscription samples during each yaw turn, in addition to `[TEST]` and
+`[HOLD]` endpoints. It also checks that the pitch is close to the target
+after the 0.30 s stationary hold. This is necessary because an endpoint can
+appear level even when the camera nods substantially during the sweep.
+
+Run the offline regression first, then the **stationary** hardware diagnostic:
+
+```powershell
+python -m unittest tests.test_final_gimbal_pitch_v05 -v
+python -u final_gimbal_pitch_test.py
+```
+
+Do not flip the pitch drive sign merely because a small residual pitch error
+remains. Reverse it only if feedback consistently moves away from the target
+when an explicit pitch correction is commanded. If the software times out,
+keep the chassis stopped and inspect the emitted pitch history / gimbal
+mechanics. Optical level may require calibration because the SDK reports
+relative gimbal angle, not the visual horizon of a particular camera mount.
