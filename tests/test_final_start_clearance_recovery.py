@@ -47,6 +47,36 @@ class PreflightTests(unittest.TestCase):
         )
 
 
+
+class RequestedRoundOneDefaultsTests(unittest.TestCase):
+    def test_recovery_gimbal_and_camera_defaults(self):
+        config = Classwork8Config()
+        self.assertEqual(config.side_start_recovery_opposite_min_cm, 20.0)
+        self.assertEqual(config.gimbal_yaw_speed_dps, 120.0)
+        self.assertEqual(config.gimbal_min_yaw_speed_dps, 28.0)
+        self.assertEqual(config.gimbal_yaw_kp, 4.8)
+        self.assertEqual(config.target_camera_pitch_deg, -20.0)
+        config.validate()
+
+    def test_20cm_preflight_does_not_remove_live_forward_stop(self):
+        config = Classwork8Config()
+        args = dict(
+            hard_stop_cm=config.midcell_side_hard_stop_cm,
+            release_margin_cm=config.side_start_release_margin_cm,
+            opposite_min_cm=config.side_start_recovery_opposite_min_cm,
+            step_m=config.side_start_recovery_step_m,
+        )
+        self.assertEqual(
+            side_start_recovery_preflight(8.0, 20.0, **args),
+            (True, "RECOVERY_SAFE_OPPOSITE_RAY"),
+        )
+        self.assertEqual(
+            side_start_recovery_preflight(8.0, 19.9, **args),
+            (False, "RECOVERY_OPPOSITE_TOO_CLOSE"),
+        )
+        self.assertEqual(config.stop_front_cm, 18.0)
+
+
 class HeadingAlignmentDecisionTests(unittest.TestCase):
     def rays(self, critical=10.7, opposite=30.0):
         return {0: opposite, 1: 32.0, 2: critical, 3: 35.0}
