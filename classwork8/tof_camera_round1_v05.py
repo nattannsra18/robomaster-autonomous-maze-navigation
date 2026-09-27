@@ -35,6 +35,7 @@ from .target_detection import (
     TargetDetector,
     TargetRegistry,
     save_topology,
+    survey_targets_with_hold,
 )
 from .vision import CorridorVision
 
@@ -989,41 +990,22 @@ def _scan_four_directions(
                     # ToF viewpoint: the low sign may only enter the image
                     # after the new camera pitch has settled.
                     survey_frame_epoch = time.monotonic()
-                    verified_targets, target_debug = target_detector.verify_latest(
-                        camera_service,
-                        not_before=survey_frame_epoch,
+                    # Keep the stationary view while independent camera frames
+                    # contain unverified signs. Do not turn the gimbal away
+                    # after seeing only one useful frame. The hold is bounded
+                    # and retains a separate evidence record for weak signs.
+                    verified_targets, pending_candidates, target_debug, survey_windows = (
+                        survey_targets_with_hold(
+                            target_detector, camera_service, config,
+                            not_before=survey_frame_epoch, stop_event=stop_event,
+                        )
                     )
-                    # The live overlay shows instantaneous CANDIDATES, whereas
-                    # targets.json only saves independent multi-frame tracks.
-                    # A second distinct-frame window can recover signs that
-                    # were intermittently occluded or glared in the first.
-                    live_count = survey_bridge.latest_preview()["candidate_count"]
-                    if live_count > len(verified_targets):
-                        print(
-                            "[TARGET] {} live candidates but {} verified; "
-                            "retrying a fresh stationary verification window.".format(
-                                live_count, len(verified_targets)
-                            ),
-                            flush=True,
-                        )
-                        second, second_debug = target_detector.verify_latest(
-                            camera_service,
-                            not_before=time.monotonic(),
-                        )
-                        if second_debug is not None:
-                            target_debug = second_debug
-                        for candidate in second:
-                            if any(
-                                existing.detection.color == candidate.detection.color
-                                and existing.detection.shape == candidate.detection.shape
-                                and math.hypot(
-                                    existing.detection.centroid[0] - candidate.detection.centroid[0],
-                                    existing.detection.centroid[1] - candidate.detection.centroid[1],
-                                ) <= float(config.target_merge_centroid_px)
-                                for existing in verified_targets
-                            ):
-                                continue
-                            verified_targets.append(candidate)
+                    print(
+                        "[TARGET_HOLD] {} windows={} confirmed={} pending={} (max {:.1f}s)".format(
+                            DIR_NAME[direction], survey_windows, len(verified_targets),
+                            len(pending_candidates), float(config.target_hold_max_sec),
+                        ), flush=True,
+                    )
                     target_debug_holder[0] = target_debug
 
                     measured_pitch = gimbal_tracker.get_pitch()
@@ -1038,6 +1020,33 @@ def _scan_four_directions(
                             flush=True,
                         )
                         verified_targets = []
+                        pending_candidates = []
+
+                    # Record weaker but repeatedly observed colour/shape
+                    # separately. These are unverified bearings, not Round-2
+                    # physical coordinates or counted confirmed targets.
+                    for evidence in pending_candidates:
+                        pending = target_registry.add_pending(
+                            evidence, current_cell, direction, distance_cm,
+                        )
+                        if pending.get("status") != "PENDING_RECHECK":
+                            continue
+                        recorder.event(
+                            time.monotonic(), "TARGET_PENDING",
+                            "{} {} (unverified, {} independent frames)".format(
+                                evidence["detection"].color.upper(),
+                                evidence["detection"].shape.upper(), evidence["frames"],
+                            ), logical_node=current_cell,
+                            direction=DIR_NAME[direction],
+                            pending_id=pending["target_id"],
+                        )
+                        print(
+                            "[TARGET_PENDING] {} {} -> {} ({} frames; recheck later)".format(
+                                evidence["detection"].color.upper(),
+                                evidence["detection"].shape.upper(), pending["target_id"],
+                                evidence["frames"],
+                            ), flush=True,
+                        )
 
                     for verified in verified_targets:
                         saved_target = target_registry.add_verified(
@@ -2517,6 +2526,7 @@ def run(
                 camera_active and target_detector is not None
             ),
             "target_count": len(target_registry.targets),
+            "target_pending_count": len(target_registry.pending_targets),
             "target_sighting_count": sum(
                 1 for item in target_registry.targets
                 if item.get("localization_status") == "SIGHTING_ONLY"
@@ -2525,7 +2535,10 @@ def run(
                 1 for item in target_registry.targets
                 if item.get("localization_status") == "NEAR_WALL_ESTIMATE"
             ),
-            "targets": target_registry.public_targets(),
+            "targets": (
+                target_registry.public_targets()
+                + target_registry.public_pending_targets()
+            ),
         })
 
     try:
