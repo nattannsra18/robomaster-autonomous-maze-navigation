@@ -68,6 +68,8 @@ class Classwork8Config:
     midcell_side_soft_margin_cm: float = 28.0
     midcell_side_max_bias_mps: float = 0.012
     motion_total_lateral_max_mps: float = 0.028
+    # Explicit cap for wall-adjacent legs: 0.25 m/s is NOT used next to foam walls.
+    motion_wall_adjacent_speed_cap_mps: float = 0.12
     # Abort if wheel odometry reports excessive departure from the planned
     # logical cell centreline; it cannot detect unreported wheel slip.
     motion_cross_track_abort_m: float = 0.085
@@ -97,10 +99,10 @@ class Classwork8Config:
     # Turn slowly with YAW ONLY; restore level PITCH after yaw finishes.
     # The observed transient yaw/pitch excursion is logged, but ToF is sampled
     # only AFTER both axes settle to their configured scan angles.
-    gimbal_yaw_speed_dps: float = 40.0
-    gimbal_min_yaw_speed_dps: float = 8.0
-    gimbal_yaw_kp: float = 1.0
-    gimbal_tolerance_deg: float = 2.0
+    gimbal_yaw_speed_dps: float = 90.0
+    gimbal_min_yaw_speed_dps: float = 12.0
+    gimbal_yaw_kp: float = 2.0
+    gimbal_tolerance_deg: float = 2.5
     gimbal_stable_samples: int = 3
     gimbal_turn_timeout_sec: float = 10.0
     gimbal_settle_sec: float = 0.20
@@ -114,9 +116,9 @@ class Classwork8Config:
     # The 27 Sep stationary log alternated around -1.7 / +1.7 deg because
     # the old 2 deg tolerance accepted both endpoints. Slow correction near
     # level and use a tighter acceptance window; do not force a 4 deg/s pulse.
-    gimbal_pitch_kp: float = 0.9
-    gimbal_pitch_min_speed_dps: float = 1.5
-    gimbal_pitch_max_speed_dps: float = 10.0
+    gimbal_pitch_kp: float = 1.5
+    gimbal_pitch_min_speed_dps: float = 3.0
+    gimbal_pitch_max_speed_dps: float = 24.0
     gimbal_pitch_tolerance_deg: float = 0.8
     gimbal_pitch_unsafe_deg: float = 6.0
     gimbal_pitch_drive_sign: float = 1.0
@@ -145,7 +147,8 @@ class Classwork8Config:
     max_moves: int = 500
 
     # Conservative mecanum translation. No 90-degree chassis scan turns.
-    travel_speed_mps: float = 0.12
+    # Requested open-route ceiling. Mapped wall-adjacent legs remain speed-capped.
+    travel_speed_mps: float = 0.25
     stop_front_cm: float = 18.0
     slow_front_cm: float = 35.0
     drive_timeout_sec: float = 0.15
@@ -193,7 +196,7 @@ class Classwork8Config:
     target_max_frame_age_sec: float = 0.60
     # Camera looks down only while stopped, after the horizontal ToF ray has
     # been sampled. Mapping/driving ALWAYS restore gimbal_scan_pitch_deg.
-    target_camera_pitch_deg: float = -10.0
+    target_camera_pitch_deg: float = -15.0
     target_camera_pitch_min_deg: float = -20.0
     target_camera_pitch_max_deg: float = 10.0
     target_camera_pitch_tolerance_deg: float = 1.5
@@ -211,7 +214,7 @@ class Classwork8Config:
     # can also admit reflective floor clutter, so inspect the live overlay.
     # These are camera-image ratios, never a preloaded maze layout.
     target_roi_top_ratio: float = 0.18
-    target_roi_bottom_ratio: float = 0.94
+    target_roi_bottom_ratio: float = 0.96
     target_roi_border_margin_px: int = 3
     target_min_contour_area_px: float = 300.0
     target_min_contour_area_ratio: float = 0.0010
@@ -226,9 +229,9 @@ class Classwork8Config:
     # Candidate confidence + temporal verification.
     target_min_confidence: float = 0.50
     target_save_confidence: float = 0.60
-    target_sample_frames: int = 6
+    target_sample_frames: int = 8
     target_verify_frames: int = 4
-    target_frame_interval_sec: float = 0.045
+    target_frame_interval_sec: float = 0.040
     target_verify_max_jump_px: float = 50.0
     target_merge_centroid_px: float = 18.0
 
@@ -310,6 +313,8 @@ class Classwork8Config:
             raise ValueError("midcell_side_max_bias_mps must be 0..0.03")
         if not 0.0 < self.motion_total_lateral_max_mps <= 0.05:
             raise ValueError("motion_total_lateral_max_mps must be 0..0.05")
+        if not 0.0 < self.motion_wall_adjacent_speed_cap_mps <= self.travel_speed_mps:
+            raise ValueError("wall-adjacent speed cap must be >0 and <= travel speed")
         if not 0.0 < self.motion_cross_track_slow_m < self.motion_cross_track_abort_m < self.cell_size_m / 2.0:
             raise ValueError("cross-track limits must satisfy 0 < slow < abort < half cell size")
         if not 0.0 < self.motion_slow_cross_track_speed_mps <= self.travel_speed_mps:
