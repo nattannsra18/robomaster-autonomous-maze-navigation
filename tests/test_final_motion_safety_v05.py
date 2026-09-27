@@ -3,6 +3,7 @@
 No RoboMaster connection, camera, chassis, or physical gimbal is used.
 """
 
+import inspect
 import sys
 import types
 import unittest
@@ -107,6 +108,26 @@ class SideCheckLogicTests(unittest.TestCase):
         ok, label, bias = self.decide(0, {3}, {3: 200.0})
         self.assertTrue(ok)
         self.assertEqual(bias, 0.0)
+
+    def test_checkpoint_code_is_only_inside_drive_not_four_way_scan(self):
+        scan_source = inspect.getsource(mission._scan_four_directions)
+        drive_source = inspect.getsource(mission._drive_one_cell)
+        # Regression: the previous commit inserted the motion checkpoint into
+        # the stationary map scanner and crashed with NameError before a move.
+        self.assertNotIn("checkpoint_enabled", scan_source)
+        self.assertNotIn("checkpoint_done", scan_source)
+        self.assertIn("checkpoint_enabled", drive_source)
+        self.assertIn("_midcell_wall_checkpoint(", drive_source)
+
+    def test_new_default_is_fast_on_open_routes_but_limited_near_walls(self):
+        self.assertAlmostEqual(self.config.travel_speed_mps, 0.25)
+        self.assertAlmostEqual(
+            self.config.motion_wall_adjacent_speed_cap_mps, 0.12
+        )
+        self.config.validate()
+        self.config.travel_speed_mps = 0.08
+        # Lowering travel speed during tuning must remain valid.
+        self.config.validate()
 
     def test_config_rejects_invalid_side_thresholds(self):
         self.config.midcell_side_soft_margin_cm = 20.0
