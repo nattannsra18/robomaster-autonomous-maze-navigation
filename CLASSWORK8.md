@@ -738,3 +738,60 @@ targets; RIGHT/BACK were not completed. Before the next run, use the
 independent annotated preview and **SAVE RAW + DETECTED CAMERA FRAME** at a
 direction with a visible real low sign, and inspect the 0.94 ROI boundary,
 camera pitch and confidence.
+
+
+### V05 follow-up: distant sign location, yaw speed, visited-cell scan reuse
+
+The real-field screenshot showed a red sign at the far end of a corridor, but
+the first camera-only observation was plotted near the start cell. A monocular
+camera detection provides an observing cell, viewing direction and pixel
+centroid, **not** a measured sign position. A horizontal ToF ray can end on a
+different plane from the low sign.
+
+V05 now keeps these different kinds of evidence separate in \`targets.json\`:
+- \`observation_cells\`: robot cells from which the sign was seen;
+- \`line_of_sight_end_xy_m\`: the horizontal ToF ray endpoint when available;
+- \`sighting_cell_hint\`: the *unconfirmed* last cell before the distant ToF
+  wall reading; e.g. 136 cm along LEFT from (0,0) suggests (0,2), but does
+  not establish a target location;
+- \`estimated_target_xy_m: null\`, \`approach_cells: []\`,
+  \`status: SIGHTING_ONLY\`, and \`round2_position_ready: false\` for distant
+  sightings;
+- \`NEAR_WALL_ESTIMATE\` for the conservative projection after a later
+  wall-range-confirmed observation; these projections still require close
+  verification before round 2.
+
+The map displays distant observations as **hollow Txx? LOS** markers, with a
+dashed line from the observer to the tentative ray cell. Only tentative
+near-wall estimates are solid markers. Neither is a guaranteed ground-truth
+target coordinate, and neither is automatically marked Round-2-ready.
+Duplicate observations from different cells are retained for later geometric
+association rather than silently merging two same-colored signs.
+
+The first tab of the pre-mission Configuration GUI is now **Mission Settings**
+with the frequent controls (robot speed, maximum Gimbal yaw speed, visited
+cell scan reuse, target survey, camera pitch/ROI and export). The advanced
+tabs share the same Tk variables; no duplicate settings diverge.
+The runtime GUI also has a max-yaw slider (15-90 deg/s) and visited-cell scan
+checkbox. These controls update configuration at scan/checkpoints and never
+directly command motors.
+
+**Skip repeat scan** reuses a 4-way cached OPEN/WALL topology only if that
+exact visited cell has previously completed all four physical directions,
+every edge is known, and no operator rescan is pending. On a revisit it records
+\`SCAN_REUSED\` and skips the time-consuming gimbal sweep and camera survey.
+New cells, ambiguous/unknown edges, explicit RESCAN, and a disabled option
+still get the full scan. Before EVERY translation, and THROUGHOUT motion,
+fresh ToF in the actual travel direction remains mandatory; cached distances
+are never reused for collision protection or temporary side centering.
+
+Offline regression (no RoboMaster required):
+
+\`\`\`powershell
+python -m unittest tests.test_final_target_detection tests.test_final_scan_reuse tests.test_final_live_survey -v
+\`\`\`
+
+If tests pass, run \`python -u final_round1_tof_camera_01.py\` and first verify
+that a far sign produces \`SIGHTING_ONLY\` / \`sighting_cell_hint\` rather than
+a physical target at the start, and that returning to a fully scanned cell
+produces \`[SCAN_REUSED]\` while fresh move-direction ToF remains active.
