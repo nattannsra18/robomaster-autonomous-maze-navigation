@@ -28,6 +28,7 @@ from .motion_safety_v05 import (
     critical_start_side_recheck,
     side_start_recovery_preflight,
     heading_alignment_preflight,
+    supervised_recheck_pose_ok,
     side_checkpoint_decision,
 )
 from .config import Classwork8Config
@@ -3378,6 +3379,102 @@ def run(
             # sightings in registry/targets.json for subsequent rechecks.
             "targets": target_registry.public_targets(),
         })
+
+    def await_supervised_recheck(reason: str) -> bool:
+        """Non-terminal mission hold; requires an explicit operator rescan.
+
+        Every motion hazard still stops chassis speed immediately. Do not
+        automatically drive with stale ToF or assume a manually LIFTED robot
+        retains the old logical map frame.
+        """
+        stop_chassis(chassis)
+        paused_x, paused_y = _relative_xy(
+            pose, raw_start_x, raw_start_y, raw_start_yaw, config,
+        )
+        paused_xy = (
+            (float(paused_x), float(paused_y))
+            if paused_x is not None and paused_y is not None else None
+        )
+        recorder.event(
+            time.monotonic(), "AWAITING_ASSISTANCE", reason,
+            logical_node=current_cell, moves=moves,
+            instruction="Clear obstacle without lifting robot, then press RESCAN CURRENT CELL",
+        )
+        print(
+            "[AWAITING_ASSISTANCE] {}. Motors stopped; mission remains open. "
+            "After clearing the obstacle, press RESCAN CURRENT CELL; "
+            "use STOP & SAVE / restart if robot was lifted.".format(reason),
+            flush=True,
+        )
+        while not stop_event.is_set():
+            publish_state(
+                status="AWAITING_ASSISTANCE: press RESCAN CURRENT CELL after checking clearance",
+                logical_cell=current_cell,
+                gimbal_direction=current_gimbal_direction,
+                tof_cm=sensors.get_front_cm(),
+                moves=moves, reason=reason,
+                force=True, finished=False,
+            )
+            if survey_bridge.consume_rescan():
+                rel_x, rel_y = _relative_xy(
+                    pose, raw_start_x, raw_start_y, raw_start_yaw, config,
+                )
+                current_xy = (
+                    (float(rel_x), float(rel_y))
+                    if rel_x is not None and rel_y is not None else None
+                )
+                yaw = pose.get_yaw()
+                yaw_error = (
+                    normalize_angle_deg(float(yaw) - float(raw_start_yaw))
+                    if yaw is not None else None
+                )
+                ok, result = supervised_recheck_pose_ok(
+                    paused_xy, current_xy, yaw_error,
+                    max_yaw_error_deg=float(config.heading_recover_release_deg),
+                )
+                if ok and current_xy is not None:
+                    # A partly completed cell / physically lifted robot has
+                    # unknown map alignment: never drive from its old cell ID.
+                    center_x = float(current_cell[0]) * float(config.cell_size_m)
+                    center_y = float(current_cell[1]) * float(config.cell_size_m)
+                    if (
+                        abs(current_xy[0] - center_x)
+                            > float(config.side_start_recovery_max_center_offset_m) + 0.005
+                        or abs(current_xy[1] - center_y)
+                            > float(config.side_start_recovery_max_center_offset_m) + 0.005
+                    ):
+                        ok, result = False, "RELOCALIZATION_REQUIRED"
+                recorder.event(
+                    time.monotonic(), "SUPERVISED_RESCAN", result,
+                    logical_node=current_cell,
+                    actual_xy_m=current_xy,
+                    yaw_error_deg=yaw_error,
+                )
+                if ok:
+                    # Remove only *temporarily deferred* route blocks, not
+                    # physical WALL evidence or permanent obstacle records.
+                    for first, second in tuple(safety_deferred_edges):
+                        for direction in range(4):
+                            if _neighbor(first, direction) == second:
+                                blocked_edges.discard((first, direction))
+                                blocked_edges.discard((second, (direction + 2) % 4))
+                                break
+                    safety_deferred_edges.clear()
+                    uncertain_rescan_count.pop(current_cell, None)
+                    scanned_cells.discard(current_cell)
+                    print(
+                        "[SUPERVISED_RESCAN] {}. Re-scanning the current cell; "
+                        "all motion gates will still apply.".format(result),
+                        flush=True,
+                    )
+                    return True
+                print(
+                    "[SUPERVISED_RESCAN] {}. Staying stationary. If the robot "
+                    "was lifted/moved, use STOP & SAVE and restart mapping.".format(result),
+                    flush=True,
+                )
+            stop_event.wait(0.25)
+        return False
 
     try:
         publish_state(
