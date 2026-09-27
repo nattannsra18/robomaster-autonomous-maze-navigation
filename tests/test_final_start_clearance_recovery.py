@@ -74,7 +74,7 @@ class RequestedRoundOneDefaultsTests(unittest.TestCase):
             side_start_recovery_preflight(8.0, 19.9, **args),
             (False, "RECOVERY_OPPOSITE_TOO_CLOSE"),
         )
-        self.assertEqual(config.stop_front_cm, 18.0)
+        self.assertEqual(config.stop_front_cm, 13.0)
 
 
 class HeadingAlignmentDecisionTests(unittest.TestCase):
