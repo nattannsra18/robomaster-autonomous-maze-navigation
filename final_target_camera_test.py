@@ -105,14 +105,13 @@ def main():
             )
             y += 24
 
-            for item in detections[:8]:
-                text = "{} {} conf={:.2f} hsv=({:.0f},{:.0f},{:.0f})".format(
+            for index, item in enumerate(detections[:12], 1):
+                text = "#{:02d} {} {} c={:.2f} ar={:.2f}".format(
+                    index,
                     item.color.upper(),
                     item.shape.upper(),
                     item.confidence,
-                    item.median_hsv[0],
-                    item.median_hsv[1],
-                    item.median_hsv[2],
+                    item.aspect_ratio,
                 )
                 cv2.putText(
                     debug,
