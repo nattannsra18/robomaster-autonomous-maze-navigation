@@ -73,6 +73,14 @@ class Classwork8Config:
     # Only an independently repeated stationary SIDE measurement can clear
     # one suspicious low range. Sustained 6.5 cm must still halt the chassis.
     side_start_recheck_enabled: bool = True
+    # Independent of the optional halfway checkpoint: stop, scan opposite,
+    # and permit only short, odometry-checked moves AWAY from a start-side wall.
+    side_start_auto_recovery_enabled: bool = False
+    side_start_recovery_step_m: float = 0.025
+    side_start_recovery_max_attempts: int = 3
+    side_start_recovery_speed_mps: float = 0.055
+    side_start_recovery_opposite_min_cm: float = 25.0
+    side_start_recovery_max_center_offset_m: float = 0.085
     side_start_release_margin_cm: float = 2.0
     side_start_recheck_max_spread_cm: float = 2.0
     midcell_side_soft_margin_cm: float = 18.0
@@ -326,6 +334,16 @@ class Classwork8Config:
             raise ValueError("midcell_side_check_ratio must be between 0.10 and 0.85")
         if not 0.0 < self.midcell_side_hard_stop_cm < self.midcell_side_soft_margin_cm <= self.scan_side_wall_max_cm:
             raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
+        if not 0.0 < self.side_start_recovery_step_m <= 0.03:
+            raise ValueError("side-start recovery step must be >0 and <=3 cm")
+        if not 1 <= self.side_start_recovery_max_attempts <= 3:
+            raise ValueError("side-start recovery attempt limit must be 1..3")
+        if not 0.0 < self.side_start_recovery_speed_mps <= 0.08:
+            raise ValueError("side-start recovery speed must be <=0.08 m/s")
+        if self.side_start_recovery_opposite_min_cm < 20.0:
+            raise ValueError("side-start opposite clearance must be >=20 cm")
+        if not 0.0 < self.side_start_recovery_max_center_offset_m < self.cell_size_m / 2:
+            raise ValueError("side-start centre offset limit is invalid")
         if not 0.0 < self.side_start_release_margin_cm <= 5.0:
             raise ValueError("side start release margin must be 0..5 cm")
         if not 0.0 < self.side_start_recheck_max_spread_cm <= 5.0:
