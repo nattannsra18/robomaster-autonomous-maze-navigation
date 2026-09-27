@@ -27,6 +27,7 @@ from .motion_safety_v05 import (
     bound_travel_lateral,
     critical_start_side_recheck,
     side_start_recovery_preflight,
+    heading_alignment_preflight,
     side_checkpoint_decision,
 )
 from .config import Classwork8Config
@@ -1530,6 +1531,207 @@ def _midcell_wall_checkpoint(
         flush=True,
     )
     return True, label, float(bias)
+
+
+def _try_small_heading_alignment(
+    chassis,
+    gimbal,
+    pose: PoseTracker,
+    sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker,
+    recorder: RunRecorder,
+    config: Classwork8Config,
+    side: int,
+    current_cell: Tuple[int, int],
+    start_yaw_deg: float,
+    confirmed_side_cm: float,
+    stop_event: Optional[threading.Event],
+) -> Tuple[bool, str, Optional[float], bool]:
+    """Optional one-degree alignment, not arbitrary rotation in a tight cell.
+
+    Returns (clearance_confirmed, reason, side_cm, safe_to_try_old_recovery).
+    One central ToF ray per direction cannot certify chassis CORNER clearance;
+    this experimental feature is default OFF until swept-body clearance is
+    physically established. No motor motion if any stationary preflight fails.
+    """
+    stop_chassis(chassis)
+    if not config.side_start_heading_recovery_enabled:
+        return False, "HEADING_RECOVERY_DISABLED", confirmed_side_cm, True
+    heading_now = pose.get_yaw()
+    if heading_now is None:
+        return False, "HEADING_RECOVERY_NO_YAW", confirmed_side_cm, True
+    error = normalize_angle_deg(float(start_yaw_deg) - float(heading_now))
+    if abs(error) < float(config.side_start_heading_min_error_deg):
+        print("[HEADING_RECOVERY] Current yaw is already aligned; not turning.", flush=True)
+        return False, "HEADING_RECOVERY_ALREADY_ALIGNED", confirmed_side_cm, True
+
+    # Do not confuse recorded peak yaw error with the REAL angle at this stop.
+    # Scan all four independent directions, with stationary chassis and fresh
+    # ToF median pairs, rather than treating a cached topology as clearance.
+    current_gimbal_yaw = tracker.get_yaw()
+    order = [2, 1, 0, 3] if (
+        current_gimbal_yaw is not None and float(current_gimbal_yaw) > 45.0
+    ) else [3, 0, 1, 2]
+    rays = {}
+    for direction in order:
+        if stop_event is not None and stop_event.is_set():
+            return False, "USER_STOP", confirmed_side_cm, False
+        if not _point_gimbal(
+            gimbal, sensors, tracker, direction, config, stop_event
+        ):
+            return False, "HEADING_RECOVERY_SCAN_GIMBAL_FAILED", confirmed_side_cm, False
+        pair = []
+        for _ in range(2):
+            sensors.reset_filters()
+            value = _wait_for_fresh_tof(
+                sensors, config.tof_recovery_wait_sec, stop_event
+            )
+            pitch = tracker.get_pitch()
+            if (
+                pitch is None or abs(
+                    float(pitch) - float(config.gimbal_scan_pitch_deg)
+                ) > float(config.gimbal_pitch_tolerance_deg)
+            ):
+                value = None
+            pair.append(value)
+        if any(v is None for v in pair):
+            return False, "HEADING_RECOVERY_SCAN_TOF_MISSING", confirmed_side_cm, False
+        if abs(float(pair[0]) - float(pair[1])) > float(config.side_start_recheck_max_spread_cm):
+            return False, "HEADING_RECOVERY_SCAN_INCONSISTENT", confirmed_side_cm, False
+        rays[direction] = min(float(v) for v in pair)
+    # The fresh ray in the critical direction must not be silently overridden
+    # by a historical reading; use the conservative shorter reading.
+    critical_cm = min(float(confirmed_side_cm), float(rays[side]))
+    rays[side] = critical_cm
+    can_rotate, decision, step_deg = heading_alignment_preflight(
+        error, rays, side,
+        min_error_deg=config.side_start_heading_min_error_deg,
+        max_step_deg=config.side_start_heading_max_step_deg,
+        max_initial_error_deg=config.side_start_heading_max_initial_error_deg,
+        critical_side_min_cm=config.midcell_side_hard_stop_cm,
+        other_side_min_cm=max(
+            float(config.stop_front_cm),
+            float(config.side_start_heading_other_clearance_cm),
+        ),
+    )
+    recorder.event(
+        time.monotonic(), "HEADING_RECOVERY_PREFLIGHT", decision,
+        logical_node=current_cell,
+        yaw_error_deg=round(float(error), 2),
+        rays_cm={DIR_NAME[d]: round(v, 2) for d, v in rays.items()},
+        proposed_step_deg=round(float(step_deg), 2),
+    )
+    print(
+        "[HEADING_RECOVERY] live yaw error={:+.2f}deg, rays={} => {}".format(
+            error,
+            {DIR_NAME[d]: round(v, 1) for d, v in rays.items()},
+            decision,
+        ), flush=True,
+    )
+    if not can_rotate:
+        return False, decision, critical_cm, True
+
+    # The gimbal ToF has seen only its centreline; the operator must establish
+    # the real swept-body envelope before enabling. Rotate toward the mission
+    # heading by at most one degree, with no translation and odometry guards.
+    raw_start = pose.get_xy()
+    if raw_start[0] is None or raw_start[1] is None:
+        return False, "HEADING_RECOVERY_ODOMETRY_UNAVAILABLE", critical_cm, False
+    reference_x, reference_y = float(raw_start[0]), float(raw_start[1])
+    goal_improvement = abs(float(step_deg)) * 0.7
+    last_error = abs(error)
+    status = "HEADING_RECOVERY_TIMEOUT"
+    deadline = time.monotonic() + 1.4
+    try:
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                status = "USER_STOP"
+                break
+            yaw = pose.get_yaw()
+            raw_x, raw_y = pose.get_xy()
+            if yaw is None or raw_x is None or raw_y is None:
+                status = "HEADING_RECOVERY_FEEDBACK_LOST"
+                break
+            now_error = normalize_angle_deg(float(start_yaw_deg) - float(yaw))
+            if abs(now_error) > abs(error) + 0.6:
+                status = "HEADING_RECOVERY_WRONG_DIRECTION"
+                break
+            if math.hypot(float(raw_x) - reference_x, float(raw_y) - reference_y) > 0.012:
+                status = "HEADING_RECOVERY_ODOMETRY_DRIFT"
+                break
+            if abs(error) - abs(now_error) >= goal_improvement:
+                status = "HEADING_RECOVERY_STEP_DONE"
+                break
+            if abs(now_error) > last_error + 0.6:
+                status = "HEADING_RECOVERY_YAW_REGRESSED"
+                break
+            last_error = abs(now_error)
+            z = math.copysign(
+                float(config.side_start_heading_speed_dps) /
+                float(config.heading_drive_sign), now_error
+            )
+            chassis.drive_speed(
+                x=0.0, y=0.0, z=z, timeout=config.drive_timeout_sec,
+            )
+            time.sleep(min(0.04, float(config.loop_delay_sec)))
+    finally:
+        stop_chassis(chassis)
+    if status != "HEADING_RECOVERY_STEP_DONE":
+        recorder.event(
+            time.monotonic(), "HEADING_RECOVERY_STOP", status,
+            logical_node=current_cell,
+        )
+        return False, status, critical_cm, False
+
+    # Re-point and re-measure the ORIGINAL wall twice; a change in yaw is NOT
+    # proof that body clearance improved. Also recheck the opposite ray.
+    for direction in (side, (side + 2) % 4):
+        if not _point_gimbal(
+            gimbal, sensors, tracker, direction, config, stop_event
+        ):
+            return False, "HEADING_RECOVERY_RECHECK_GIMBAL_FAILED", critical_cm, False
+        pair = []
+        for _ in range(2):
+            sensors.reset_filters()
+            pair.append(_wait_for_fresh_tof(
+                sensors, config.tof_recovery_wait_sec, stop_event
+            ))
+        if any(v is None for v in pair):
+            return False, "HEADING_RECOVERY_RECHECK_TOF_MISSING", critical_cm, False
+        if abs(float(pair[0]) - float(pair[1])) > float(config.side_start_recheck_max_spread_cm):
+            return False, "HEADING_RECOVERY_RECHECK_INCONSISTENT", critical_cm, False
+        rays[direction] = min(float(v) for v in pair)
+    new_side_cm = float(rays[side])
+    release = (
+        new_side_cm >= float(config.midcell_side_hard_stop_cm) +
+            float(config.side_start_release_margin_cm)
+        and float(rays[(side + 2) % 4]) >=
+            float(config.side_start_heading_other_clearance_cm)
+        and new_side_cm >= critical_cm + 0.5
+    )
+    recorder.event(
+        time.monotonic(), "HEADING_RECOVERY_RESULT",
+        "HEADING_RECOVERY_CLEAR" if release else "HEADING_RECOVERY_NOT_CLEAR",
+        logical_node=current_cell,
+        before_cm=round(critical_cm, 2),
+        after_cm=round(new_side_cm, 2),
+        opposite_cm=round(float(rays[(side + 2) % 4]), 2),
+        yaw_after_deg=pose.get_yaw(),
+    )
+    print(
+        "[HEADING_RECOVERY] side {:.1f} -> {:.1f} cm, opposite {:.1f} cm, "
+        "cleared={}".format(
+            critical_cm, new_side_cm, rays[(side + 2) % 4], release
+        ), flush=True,
+    )
+    # If the tiny physical rotation did not solve the problem, stop rather
+    # than guessing additional rotation/translation on an altered footprint.
+    return (
+        release,
+        "HEADING_RECOVERY_CLEAR" if release else "HEADING_RECOVERY_NOT_CLEAR",
+        new_side_cm,
+        bool(release),
+    )
 
 
 def _recover_critical_start_side(
