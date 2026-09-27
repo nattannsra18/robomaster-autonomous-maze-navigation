@@ -1839,6 +1839,25 @@ def _recover_critical_start_side(
         pulse_deadline = time.monotonic() + min(1.5, 0.35 + 2.0 * step / speed)
         travelled = 0.0
         reason = "RECOVERY_PULSE_TIMEOUT"
+        heading_loss_error_deg = None
+
+        # Unlike regular cell travel, the escape pulse deliberately never
+        # rotates the chassis beside a critically close wall. If yaw drifts,
+        # stop and check whether feedback settles before doing anything else.
+        pre_pulse_yaw = pose.get_yaw()
+        if pre_pulse_yaw is None:
+            return False, "RECOVERY_HEADING_FEEDBACK_MISSING", current_side
+        pre_pulse_error = normalize_angle_deg(
+            float(pre_pulse_yaw) - float(start_yaw_deg)
+        )
+        if abs(pre_pulse_error) > float(config.heading_recover_trigger_deg):
+            recorder.event(
+                time.monotonic(), "CLEARANCE_HEADING",
+                "RECOVERY_HEADING_PRE_PULSE_UNSAFE",
+                logical_node=current_cell, attempt=attempt,
+                yaw_error_deg=round(pre_pulse_error, 3),
+            )
+            return False, "RECOVERY_HEADING_PRE_PULSE_UNSAFE", current_side
 
         try:
             while time.monotonic() < pulse_deadline:
@@ -1864,9 +1883,14 @@ def _recover_critical_start_side(
                 ):
                     reason = "RECOVERY_GIMBAL_DIRECTION_LOST"
                     break
-                if robot_yaw is None or abs(
-                    normalize_angle_deg(float(robot_yaw) - float(start_yaw_deg))
-                ) > float(config.heading_recover_trigger_deg):
+                if robot_yaw is None:
+                    reason = "RECOVERY_HEADING_FEEDBACK_MISSING"
+                    break
+                heading_error_deg = normalize_angle_deg(
+                    float(robot_yaw) - float(start_yaw_deg)
+                )
+                if abs(heading_error_deg) > float(config.heading_recover_trigger_deg):
+                    heading_loss_error_deg = heading_error_deg
                     reason = "RECOVERY_HEADING_LOST"
                     break
                 if raw_x is None or raw_y is None:
@@ -1913,6 +1937,85 @@ def _recover_critical_start_side(
             escape_direction=DIR_NAME[away],
             attempt=attempt, travelled_m=round(float(travelled), 4),
         )
+        if reason == "RECOVERY_HEADING_LOST":
+            # One out-of-limit yaw sample must stop translation IMMEDIATELY.
+            # Once stopped, check whether it was a transient attitude spike.
+            # Do not issue yaw motor commands when the original wall is only
+            # a few centimetres from the chassis: the body corners can sweep
+            # into it even if a centreline ToF ray looks clear.
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP", current_side
+            if not _sleep_interruptible(0.15, stop_event):
+                return False, "USER_STOP", current_side
+            stopped_errors = []
+            for _ in range(3):
+                if stop_event is not None and stop_event.is_set():
+                    return False, "USER_STOP", current_side
+                stopped_yaw = pose.get_yaw()
+                if stopped_yaw is None:
+                    break
+                stopped_errors.append(normalize_angle_deg(
+                    float(stopped_yaw) - float(start_yaw_deg)
+                ))
+                if not _sleep_interruptible(0.035, stop_event):
+                    return False, "USER_STOP", current_side
+            settled = (
+                len(stopped_errors) == 3
+                and all(
+                    abs(value) <= float(config.heading_recover_release_deg)
+                    for value in stopped_errors
+                )
+            )
+            # Recheck physical odometry before an attempted restart. The next
+            # loop obtains two NEW opposite ToF returns and checks cell offset.
+            now_xy = pose.get_xy()
+            position_ok = False
+            if now_xy[0] is not None and now_xy[1] is not None:
+                px, py = _map_xy_from_raw(
+                    float(now_xy[0]), float(now_xy[1]), start_x, start_y,
+                    start_yaw_deg, config.odom_scale_x, config.odom_scale_y,
+                )
+                position_ok = (
+                    abs(px - center_x) <= max_offset + 0.005
+                    and abs(py - center_y) <= max_offset + 0.005
+                )
+            recorder.event(
+                time.monotonic(), "CLEARANCE_HEADING",
+                "RECOVERY_HEADING_SETTLED" if settled and position_ok
+                else "RECOVERY_HEADING_PERSISTENT",
+                logical_node=current_cell, attempt=attempt,
+                observed_yaw_error_deg=heading_loss_error_deg,
+                stopped_yaw_errors_deg=[
+                    round(value, 3) for value in stopped_errors
+                ],
+                position_ok=position_ok, progress_m=round(travelled, 4),
+            )
+            print(
+                "[CLEARANCE_HEADING] attempt={} moving error={}; stopped={} "
+                "settled={} position_ok={}".format(
+                    attempt,
+                    None if heading_loss_error_deg is None
+                    else round(heading_loss_error_deg, 2),
+                    [round(value, 2) for value in stopped_errors],
+                    settled, position_ok,
+                ), flush=True,
+            )
+            if not settled:
+                return False, "RECOVERY_HEADING_PERSISTENT", current_side
+            if not position_ok:
+                return False, "RECOVERY_HEADING_POSITION_UNSAFE", current_side
+            if attempt < int(config.side_start_recovery_max_attempts):
+                # Consumes the failed pulse attempt; no infinite retry and
+                # no tolerance relaxation. Next loop starts fully stopped.
+                print(
+                    "[CLEARANCE_HEADING] Retrying with fresh ToF and odometry "
+                    "(remaining attempts={}).".format(
+                        int(config.side_start_recovery_max_attempts) - attempt
+                    ), flush=True,
+                )
+                continue
+            return False, "RECOVERY_HEADING_RETRY_LIMIT", current_side
+
         if reason != "RECOVERY_PULSE_COMPLETE":
             return False, reason, current_side
         if travelled < 0.012:
