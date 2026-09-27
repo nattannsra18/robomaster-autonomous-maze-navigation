@@ -93,6 +93,11 @@ class Classwork8Config:
     side_start_recovery_step_m: float = 0.025
     side_start_recovery_max_attempts: int = 3
     side_start_recovery_speed_mps: float = 0.055
+    # A stopped, stable 4..8-degree offset can only make short z=0 escape nudges;
+    # it may NOT resume ordinary cell travel or rotate beside the close wall.
+    side_start_escape_max_stable_yaw_deg: float = 8.0
+    side_start_escape_max_yaw_spread_deg: float = 0.75
+    side_start_escape_max_in_pulse_drift_deg: float = 1.0
     side_start_recovery_opposite_min_cm: float = 25.0
     side_start_recovery_max_center_offset_m: float = 0.085
     side_start_release_margin_cm: float = 2.0
@@ -373,6 +378,12 @@ class Classwork8Config:
             raise ValueError("side-start recovery attempt limit must be 1..3")
         if not 0.0 < self.side_start_recovery_speed_mps <= 0.08:
             raise ValueError("side-start recovery speed must be <=0.08 m/s")
+        if not self.heading_recover_trigger_deg <= self.side_start_escape_max_stable_yaw_deg <= 8.0:
+            raise ValueError("escape stable-yaw cap must be between heading trigger and 8 deg")
+        if not 0.1 <= self.side_start_escape_max_yaw_spread_deg <= 1.0:
+            raise ValueError("escape stationary yaw spread must be 0.1..1 deg")
+        if not 0.25 <= self.side_start_escape_max_in_pulse_drift_deg <= 1.5:
+            raise ValueError("escape in-pulse yaw drift must be 0.25..1.5 deg")
         if self.side_start_recovery_opposite_min_cm < 20.0:
             raise ValueError("side-start opposite clearance must be >=20 cm")
         if not 0.0 < self.side_start_recovery_max_center_offset_m < self.cell_size_m / 2:
