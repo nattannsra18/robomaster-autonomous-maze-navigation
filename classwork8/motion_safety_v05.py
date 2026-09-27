@@ -41,51 +41,82 @@ def side_checkpoint_decision(
     wall_max_cm: float,
     gain_mps_per_cm: float,
     max_bias_mps: float,
+    baseline_cm: Optional[Dict[int, Optional[float]]] = None,
+    max_baseline_drop_cm: float = 4.0,
+    recenter_deadband_cm: float = 1.5,
 ) -> Tuple[bool, str, float]:
     """Evaluate a stationary side scan: (may_continue, label, right_bias).
 
-    A dangerously short return makes further travel unsafe. Missing or long
-    side returns are not blindly treated as clearance and never generate
-    an automatic lateral steering command.
+    ToF-to-wall distance is not the robot body's wall clearance. The old
+    default absolute stop of 22 cm exceeded the user's physically normal
+    right reading (14.5 cm), and killed a run at a stable 14.7 cm.
+
+    Stop on an independently calibrated CRITICAL sensor return or when a
+    wall has become meaningfully closer relative to its freshly scanned
+    start-of-leg baseline. Never infer a centering target of 28 cm from a
+    single wall, and never steer using a missing/stale baseline.
     """
     left_dir = (int(direction) - 1) % 4
     right_dir = (int(direction) + 1) % 4
-
+    baseline_cm = baseline_cm or {}
     valid = {}
+    reference = {}
+
     for side in wall_sides:
         value = readings_cm.get(side)
-        if value is None or value <= 0:
+        if value is None or float(value) <= 0.0:
             continue
-        if float(value) <= float(hard_stop_cm):
-            return False, "SIDE_CLEARANCE_LOW_{}".format(
-                "LEFT" if side == left_dir else "RIGHT"
-            ), 0.0
-        if float(value) <= float(wall_max_cm):
-            valid[side] = float(value)
+        distance = float(value)
+        name = "LEFT" if side == left_dir else "RIGHT"
+        if distance <= float(hard_stop_cm):
+            return False, "SIDE_CRITICAL_RANGE_{}".format(name), 0.0
+
+        if distance > float(wall_max_cm):
+            # A missing wall echo cannot justify lateral correction.
+            continue
+
+        valid[side] = distance
+        baseline = baseline_cm.get(side)
+        if baseline is not None and 0.0 < float(baseline) <= float(wall_max_cm):
+            baseline = float(baseline)
+            reference[side] = baseline
+            if baseline - distance >= float(max_baseline_drop_cm):
+                return False, "SIDE_RANGE_DROP_{}".format(name), 0.0
 
     if not valid:
         return True, "SIDE_WALL_NOT_VISIBLE_NO_AUTO_STEER", 0.0
 
     max_bias = max(0.0, float(max_bias_mps))
     gain = max(0.0, float(gain_mps_per_cm))
+    deadband = max(0.0, float(recenter_deadband_cm))
     bias = 0.0
 
-    if left_dir in valid and right_dir in valid:
-        # Left wall closer -> move right (positive travel-relative correction).
-        error_cm = valid[right_dir] - valid[left_dir]
+    if left_dir in reference and right_dir in reference:
+        # Preserve the *starting* side-distance balance, not a made-up
+        # absolute 28 cm clearance on each side.
+        left_change = valid[left_dir] - reference[left_dir]
+        right_change = valid[right_dir] - reference[right_dir]
+        error_cm = right_change - left_change
+        if abs(error_cm) <= deadband:
+            return True, "MIDCELL_SIDE_BASELINE_STABLE", 0.0
         bias = error_cm * gain
-        label = "MIDCELL_BETWEEN_WALLS"
-    elif left_dir in valid and valid[left_dir] < float(soft_margin_cm):
-        bias = (float(soft_margin_cm) - valid[left_dir]) * gain
+        label = "MIDCELL_RESTORE_SIDE_BALANCE"
+    elif left_dir in reference:
+        loss_cm = reference[left_dir] - valid[left_dir]
+        if loss_cm <= deadband:
+            return True, "MIDCELL_SIDE_BASELINE_STABLE", 0.0
+        bias = loss_cm * gain
         label = "MIDCELL_BIAS_AWAY_LEFT"
-    elif right_dir in valid and valid[right_dir] < float(soft_margin_cm):
-        bias = -(float(soft_margin_cm) - valid[right_dir]) * gain
+    elif right_dir in reference:
+        loss_cm = reference[right_dir] - valid[right_dir]
+        if loss_cm <= deadband:
+            return True, "MIDCELL_SIDE_BASELINE_STABLE", 0.0
+        bias = -loss_cm * gain
         label = "MIDCELL_BIAS_AWAY_RIGHT"
     else:
-        label = "MIDCELL_CLEARANCE_OK"
+        return True, "MIDCELL_NO_BASELINE_NO_AUTO_STEER", 0.0
 
     return True, label, max(-max_bias, min(max_bias, bias))
-
 
 def bound_travel_lateral(
     x_cmd: float,
