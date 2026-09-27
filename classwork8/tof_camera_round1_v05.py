@@ -1881,6 +1881,38 @@ def _drive_one_cell(
             release_margin_cm=config.side_start_release_margin_cm,
             max_spread_cm=config.side_start_recheck_max_spread_cm,
         )
+        if diagnostic == "SIDE_START_RECHECK_INCONSISTENT":
+            # Two divergent echoes can be a single foam reflection. Check
+            # ONE more independent pair while fully stopped; still require
+            # stable release or confirmed critical before any movement.
+            retry_values = []
+            for _ in range(2):
+                if stop_event is not None and stop_event.is_set():
+                    return False, "USER_STOP", 0.0
+                sensors.reset_filters()
+                retry = _wait_for_fresh_tof(
+                    sensors, config.tof_recovery_wait_sec, stop_event
+                )
+                pitch = gimbal_tracker.get_pitch()
+                if (
+                    pitch is None
+                    or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
+                        > float(config.gimbal_pitch_tolerance_deg)
+                ):
+                    retry = None
+                retry_values.append(retry)
+            fresh_values = retry_values
+            cleared, diagnostic, confirmed = critical_start_side_recheck(
+                (fresh_values[0], fresh_values[1]),
+                hard_stop_cm=config.midcell_side_hard_stop_cm,
+                release_margin_cm=config.side_start_release_margin_cm,
+                max_spread_cm=config.side_start_recheck_max_spread_cm,
+            )
+            print(
+                "[SIDE_START] One bounded stationary recheck: {} -> {}".format(
+                    fresh_values, diagnostic,
+                ), flush=True,
+            )
         recorder.event(
             time.monotonic(),
             "SIDE_START_RECHECK",
