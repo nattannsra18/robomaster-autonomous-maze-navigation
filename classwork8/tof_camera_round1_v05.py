@@ -28,6 +28,7 @@ from .motion_safety_v05 import (
     critical_start_side_recheck,
     side_start_recovery_preflight,
     heading_alignment_preflight,
+    stationary_escape_heading_preflight,
     supervised_recheck_pose_ok,
     side_checkpoint_decision,
 )
@@ -1842,23 +1843,57 @@ def _recover_critical_start_side(
         reason = "RECOVERY_PULSE_TIMEOUT"
         heading_loss_error_deg = None
 
-        # Unlike regular cell travel, the escape pulse deliberately never
-        # rotates the chassis beside a critically close wall. If yaw drifts,
-        # stop and check whether feedback settles before doing anything else.
-        pre_pulse_yaw = pose.get_yaw()
-        if pre_pulse_yaw is None:
-            return False, "RECOVERY_HEADING_FEEDBACK_MISSING", current_side
-        pre_pulse_error = normalize_angle_deg(
-            float(pre_pulse_yaw) - float(start_yaw_deg)
-        )
-        if abs(pre_pulse_error) > float(config.heading_recover_trigger_deg):
-            recorder.event(
-                time.monotonic(), "CLEARANCE_HEADING",
-                "RECOVERY_HEADING_PRE_PULSE_UNSAFE",
-                logical_node=current_cell, attempt=attempt,
-                yaw_error_deg=round(pre_pulse_error, 3),
+        # A single yaw sample after a long gimbal scan was prematurely
+        # terminating real runs. Check THREE stopped readings, with at most
+        # one stationary retry. A consistent small heading offset permits ONLY
+        # a tiny z=0 translation AWAY from the confirmed wall. No rotation.
+        pre_pulse_reference = None
+        pre_pulse_label = "RECOVERY_HEADING_FEEDBACK_MISSING"
+        escape_offset_mode = False
+        for stationary_check in range(2):
+            if not _sleep_interruptible(0.12, stop_event):
+                return False, "USER_STOP", current_side
+            stopped_errors = []
+            for _ in range(3):
+                if stop_event is not None and stop_event.is_set():
+                    return False, "USER_STOP", current_side
+                sample = pose.get_yaw()
+                stopped_errors.append(
+                    normalize_angle_deg(float(sample) - float(start_yaw_deg))
+                    if sample is not None else None
+                )
+                if not _sleep_interruptible(0.035, stop_event):
+                    return False, "USER_STOP", current_side
+            allowed, pre_pulse_label, pre_pulse_reference = (
+                stationary_escape_heading_preflight(
+                    stopped_errors,
+                    trigger_deg=config.heading_recover_trigger_deg,
+                    max_stable_offset_deg=config.side_start_escape_max_stable_yaw_deg,
+                    max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
+                )
             )
-            return False, "RECOVERY_HEADING_PRE_PULSE_UNSAFE", current_side
+            recorder.event(
+                time.monotonic(), "CLEARANCE_HEADING", pre_pulse_label,
+                logical_node=current_cell, attempt=attempt,
+                stationary_check=stationary_check + 1,
+                yaw_errors_deg=[
+                    None if value is None else round(value, 3)
+                    for value in stopped_errors
+                ],
+            )
+            if allowed:
+                escape_offset_mode = (
+                    pre_pulse_label == "RECOVERY_STABLE_OFFSET_ESCAPE_ONLY"
+                )
+                break
+        else:
+            return False, pre_pulse_label, current_side
+        print(
+            "[CLEARANCE_HEADING] attempt={} {} stopped yaw={} deg; "
+            "escape only, no chassis turn.".format(
+                attempt, pre_pulse_label, round(pre_pulse_reference, 2),
+            ), flush=True,
+        )
 
         try:
             while time.monotonic() < pulse_deadline:
@@ -1890,7 +1925,20 @@ def _recover_critical_start_side(
                 heading_error_deg = normalize_angle_deg(
                     float(robot_yaw) - float(start_yaw_deg)
                 )
-                if abs(heading_error_deg) > float(config.heading_recover_trigger_deg):
+                if (
+                    not math.isfinite(heading_error_deg)
+                    or abs(heading_error_deg) > (
+                        float(config.side_start_escape_max_stable_yaw_deg)
+                        if escape_offset_mode
+                        else float(config.heading_recover_trigger_deg)
+                    )
+                    or (
+                        escape_offset_mode
+                        and abs(normalize_angle_deg(
+                            heading_error_deg - pre_pulse_reference
+                        )) > float(config.side_start_escape_max_in_pulse_drift_deg)
+                    )
+                ):
                     heading_loss_error_deg = heading_error_deg
                     reason = "RECOVERY_HEADING_LOST"
                     break
@@ -1960,11 +2008,31 @@ def _recover_critical_start_side(
                 ))
                 if not _sleep_interruptible(0.035, stop_event):
                     return False, "USER_STOP", current_side
+            allowed_stopped, stopped_label, stopped_reference = (
+                stationary_escape_heading_preflight(
+                    stopped_errors,
+                    trigger_deg=config.heading_recover_trigger_deg,
+                    max_stable_offset_deg=config.side_start_escape_max_stable_yaw_deg,
+                    max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
+                )
+            )
             settled = (
-                len(stopped_errors) == 3
-                and all(
-                    abs(value) <= float(config.heading_recover_release_deg)
-                    for value in stopped_errors
+                allowed_stopped
+                and (
+                    (
+                        escape_offset_mode
+                        and stopped_reference is not None
+                        and abs(normalize_angle_deg(
+                            stopped_reference - pre_pulse_reference
+                        )) <= float(config.side_start_escape_max_in_pulse_drift_deg)
+                    )
+                    or (
+                        not escape_offset_mode
+                        and all(
+                            abs(value) <= float(config.heading_recover_release_deg)
+                            for value in stopped_errors
+                        )
+                    )
                 )
             )
             # Recheck physical odometry before an attempted restart. The next
@@ -2058,6 +2126,37 @@ def _recover_critical_start_side(
             ), flush=True,
         )
         if released:
+            # A 2.5 cm no-turn escape is NOT permission for normal full-cell
+            # travel. That controller may issue yaw correction, sweeping the
+            # corners toward the wall. Require stable near-start heading first.
+            final_errors = []
+            for _ in range(3):
+                if stop_event is not None and stop_event.is_set():
+                    return False, "USER_STOP", current_side
+                yaw_now = pose.get_yaw()
+                final_errors.append(
+                    normalize_angle_deg(float(yaw_now) - float(start_yaw_deg))
+                    if yaw_now is not None else None
+                )
+                if not _sleep_interruptible(0.035, stop_event):
+                    return False, "USER_STOP", current_side
+            aligned, _, _ = stationary_escape_heading_preflight(
+                final_errors,
+                trigger_deg=config.heading_recover_release_deg,
+                max_stable_offset_deg=config.heading_recover_release_deg,
+                max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
+            )
+            if not aligned:
+                recorder.event(
+                    time.monotonic(), "CLEARANCE_HEADING",
+                    "RECOVERY_CLEARANCE_RESTORED_HEADING_UNALIGNED",
+                    logical_node=current_cell,
+                    yaw_errors_deg=final_errors, side_cm=current_side,
+                )
+                return (
+                    False, "RECOVERY_CLEARANCE_RESTORED_HEADING_UNALIGNED",
+                    current_side,
+                )
             return True, "RECOVERY_CLEARANCE_CONFIRMED", current_side
 
     return False, "RECOVERY_ATTEMPT_LIMIT", current_side
