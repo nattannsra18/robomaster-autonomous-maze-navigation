@@ -61,3 +61,38 @@ def target_plot_geometry(target: dict, cell_size_m: float):
             origin[1] + dy * float(cell_size_m),
         )
     return endpoint, origin, True
+
+
+def target_marker_offsets(targets, cell_size_m: float):
+    """Pure display-only offsets, in logical-cell widths, for shared ToF rays.
+
+    Multiple signs on the same wall can have exactly the same 2-D ToF range
+    estimate. Spread badges so none disappears. Never alter targets.json or
+    imply these badge offsets are triangulated physical coordinates.
+    """
+    import math
+
+    entries = list(targets or [])
+    offsets = [(0.0, 0.0) for _ in entries]
+    groups = {}
+    for index, target in enumerate(entries):
+        xy, _, _ = target_plot_geometry(target, cell_size_m)
+        if xy is None:
+            continue
+        # Only symbols at nearly identical physical plot positions collide.
+        key = (round(xy[0], 3), round(xy[1], 3))
+        groups.setdefault(key, []).append(index)
+
+    for indices in groups.values():
+        n = len(indices)
+        if n <= 1:
+            continue
+        columns = int(math.ceil(math.sqrt(n)))
+        rows = int(math.ceil(n / columns))
+        for slot, index in enumerate(indices):
+            col, row = slot % columns, slot // columns
+            offsets[index] = (
+                (col - (columns - 1) / 2.0) * 0.36,
+                (row - (rows - 1) / 2.0) * 0.36,
+            )
+    return offsets
