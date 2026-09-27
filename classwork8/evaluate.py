@@ -164,6 +164,72 @@ def evaluate(
     return metrics
 
 
+def auto_evaluate_saved_map(predicted_path: Path, output_dir: Path, config) -> dict:
+    """Always save a clearly labelled evaluation status; score only against real GT.
+
+    This intentionally never guesses a crop/orientation or treats the unknown
+    8x8-m working canvas as the lecturer's actual field area.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ground_truth_path = Path(str(getattr(config, "ground_truth_csv", "")).strip() or "ground_truth.csv").expanduser()
+    result = {
+        "evaluation_status": "ground_truth_missing",
+        "map_accuracy_percent": None,
+        "coverage_percent": None,
+        "ground_truth_file": str(ground_truth_path),
+        "note": "Place a measured ground_truth.csv at the configured path to calculate assignment scores. The working-canvas percentage is diagnostic, not assignment Coverage.",
+    }
+    try:
+        predicted = read_map(predicted_path)
+        total = sum(map(len, predicted))
+        explored = sum(value != UNKNOWN for row in predicted for value in row)
+        result.update({
+            "working_canvas_explored_cells": explored,
+            "working_canvas_total_cells": total,
+            "working_canvas_coverage_percent": round(100.0 * explored / total, 3),
+        })
+        if ground_truth_path.is_file():
+            top = int(getattr(config, "evaluation_crop_top", -1))
+            left = int(getattr(config, "evaluation_crop_left", -1))
+            rotate = int(getattr(config, "evaluation_rotate_deg", 0))
+            result = evaluate(
+                predicted_path, ground_truth_path, output_dir,
+                top=None if top == -1 else top,
+                left=None if left == -1 else left,
+                rotate=rotate,
+            )
+            result.update({
+                "evaluation_status": "complete",
+                "working_canvas_coverage_percent": round(100.0 * explored / total, 3),
+            })
+            write_csv(output_dir / "ground_truth.csv", read_map(ground_truth_path, ground_truth=True))
+        else:
+            (output_dir / "evaluation.txt").write_text(
+                "Assignment Map Accuracy: NOT AVAILABLE (Ground Truth missing)\n"
+                "Assignment Coverage: NOT AVAILABLE (field evaluation bounds unknown)\n"
+                f"Working canvas coverage ONLY: {result['working_canvas_coverage_percent']:.2f}% "
+                f"({explored}/{total} fine-grid cells)\n"
+                f"Expected Ground Truth: {ground_truth_path}\n",
+                encoding="utf-8",
+            )
+    except (OSError, ValueError, TypeError) as exc:
+        result["evaluation_status"] = "evaluation_error"
+        result["map_accuracy_percent"] = None
+        result["coverage_percent"] = None
+        result["error"] = str(exc)
+        (output_dir / "evaluation.txt").write_text(
+            "Assignment evaluation could not be computed.\n"
+            f"Reason: {exc}\n"
+            "Map/log/trajectory remain saved; verify Ground Truth resolution, "
+            "orientation and explicit crop coordinates.\n",
+            encoding="utf-8",
+        )
+    (output_dir / "evaluation.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate an aligned occupancy-grid map against independently prepared Ground Truth")
     parser.add_argument("predicted", type=Path, help="exported map.csv (5-cm occupancy grid by default)")
