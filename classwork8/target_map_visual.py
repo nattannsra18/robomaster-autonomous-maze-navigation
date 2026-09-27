@@ -45,9 +45,15 @@ def target_plot_geometry(target: dict, cell_size_m: float):
     )
     direction_list = target.get("view_directions") or [0]
     direction = int(direction_list[0]) % 4
-    ray_hint = target.get("line_of_sight_end_xy_m")
-    if ray_hint is not None and len(ray_hint) == 2:
-        endpoint = (float(ray_hint[0]), float(ray_hint[1]))
+    # A distant wall's candidate cell is the last cell before its measured
+    # range plane. Show an OPEN circle at its centre (not as a confirmed target).
+    # Retain actual ToF ray end in targets.json for later geometric validation.
+    cell_hint = target.get("sighting_cell_hint")
+    if cell_hint is not None and len(cell_hint) == 2:
+        endpoint = (
+            float(cell_hint[0]) * float(cell_size_m),
+            float(cell_hint[1]) * float(cell_size_m),
+        )
     else:
         dx, dy = _DIR_VEC[direction]
         endpoint = (
