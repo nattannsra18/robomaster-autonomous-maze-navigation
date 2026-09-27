@@ -944,8 +944,13 @@ def _scan_four_directions(
             )
             try:
                 if camera_position_ok:
+                    # Do not verify cached frames from the previous horizontal
+                    # ToF viewpoint: the low sign may only enter the image
+                    # after the new camera pitch has settled.
+                    survey_frame_epoch = time.monotonic()
                     verified_targets, target_debug = target_detector.verify_latest(
-                        camera_service
+                        camera_service,
+                        not_before=survey_frame_epoch,
                     )
                     target_debug_holder[0] = target_debug
 
