@@ -1653,6 +1653,35 @@ def _drive_one_cell(
     recovered_start_side = False
     for side in sorted(wall_sides):
         baseline = move_side_baselines.get(side)
+        if baseline is None and config.side_start_auto_recovery_enabled:
+            # Cached visited-cell topology may say WALL without carrying a
+            # current sensor range. Acquire a fresh side range before driving;
+            # never silently skip a side-start safety check on relocation.
+            stop_chassis(chassis)
+            if not _point_gimbal(
+                gimbal, sensors, gimbal_tracker, side, config, stop_event
+            ):
+                return False, "SIDE_START_FRESH_GIMBAL_FAILED", 0.0
+            baseline = _wait_for_fresh_tof(
+                sensors, config.tof_recovery_wait_sec, stop_event
+            )
+            if baseline is None:
+                return False, "SIDE_START_FRESH_TOF_UNAVAILABLE", 0.0
+            move_side_baselines[side] = float(baseline)
+            print(
+                "[SIDE_START] Cached topology: fresh {} range={:.1f} cm.".format(
+                    DIR_NAME[side], float(baseline)
+                ), flush=True,
+            )
+            if not _point_gimbal(
+                gimbal, sensors, gimbal_tracker, direction, config, stop_event
+            ):
+                return False, "SIDE_START_FRESH_RETURN_FORWARD_FAILED", 0.0
+            initial_front_cm = _wait_for_move_tof_v03(
+                sensors, config, stop_event
+            )
+            if initial_front_cm is None:
+                return False, "SIDE_START_FRESH_FORWARD_TOF_STALE", 0.0
         if baseline is None or float(baseline) <= 0.0 or float(baseline) > float(
             config.midcell_side_hard_stop_cm
         ):
