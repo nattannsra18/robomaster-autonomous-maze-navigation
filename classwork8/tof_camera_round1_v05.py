@@ -275,6 +275,7 @@ def _point_gimbal(
     direction: int,
     config: Classwork8Config,
     stop_event: Optional[threading.Event],
+    _final_retry: bool = True,
 ) -> bool:
     """Staged, single-axis mapping scan: level pitch -> yaw only -> level pitch.
 
@@ -442,6 +443,14 @@ def _point_gimbal(
             ),
             flush=True,
         )
+        if _final_retry and not _stopped():
+            # A near-threshold endpoint can drift during the final settle.
+            # Re-stabilize ONCE; do not weaken the ray-validation tolerances.
+            print("[GIMBAL] Retrying final orientation once while stopped.", flush=True)
+            return _point_gimbal(
+                gimbal, sensors, tracker, direction, config, stop_event,
+                _final_retry=False,
+            )
         return False
 
     samples = tracker.pitch_samples_since(started_yaw)
@@ -984,6 +993,37 @@ def _scan_four_directions(
                         camera_service,
                         not_before=survey_frame_epoch,
                     )
+                    # The live overlay shows instantaneous CANDIDATES, whereas
+                    # targets.json only saves independent multi-frame tracks.
+                    # A second distinct-frame window can recover signs that
+                    # were intermittently occluded or glared in the first.
+                    live_count = survey_bridge.latest_preview()["candidate_count"]
+                    if live_count > len(verified_targets):
+                        print(
+                            "[TARGET] {} live candidates but {} verified; "
+                            "retrying a fresh stationary verification window.".format(
+                                live_count, len(verified_targets)
+                            ),
+                            flush=True,
+                        )
+                        second, second_debug = target_detector.verify_latest(
+                            camera_service,
+                            not_before=time.monotonic(),
+                        )
+                        if second_debug is not None:
+                            target_debug = second_debug
+                        for candidate in second:
+                            if any(
+                                existing.detection.color == candidate.detection.color
+                                and existing.detection.shape == candidate.detection.shape
+                                and math.hypot(
+                                    existing.detection.centroid[0] - candidate.detection.centroid[0],
+                                    existing.detection.centroid[1] - candidate.detection.centroid[1],
+                                ) <= float(config.target_merge_centroid_px)
+                                for existing in verified_targets
+                            ):
+                                continue
+                            verified_targets.append(candidate)
                     target_debug_holder[0] = target_debug
 
                     measured_pitch = gimbal_tracker.get_pitch()
@@ -1210,7 +1250,7 @@ def _midcell_wall_checkpoint(
         (int(direction) - 1) % 4,
         (int(direction) + 1) % 4,
     ):
-        if side not in wall_sides:
+        if side not in wall_sides and not config.wall_follow_recovery_enabled:
             continue
 
         if stop_event is not None and stop_event.is_set():
@@ -1254,6 +1294,13 @@ def _midcell_wall_checkpoint(
         baseline_cm=baseline_ranges,
         max_baseline_drop_cm=config.midcell_side_max_baseline_drop_cm,
         recenter_deadband_cm=config.midcell_side_recenter_deadband_cm,
+        allow_soft_recovery=(
+            bool(config.wall_follow_recovery_enabled) and len(wall_sides) == 1
+        ),
+        opposite_clearance_cm=(
+            ranges.get((next(iter(wall_sides)) + 2) % 4)
+            if len(wall_sides) == 1 else None
+        ),
     )
     if not can_continue:
         recorder.event(
