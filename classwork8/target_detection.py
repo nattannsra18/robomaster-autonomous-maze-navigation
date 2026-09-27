@@ -36,11 +36,14 @@ COLOR_RANGES = {
     "blue": [
         ((88, 65, 35), (138, 255, 255)),
     ],
+    # Keep these hue bands DISJOINT. Previous yellow 18..39 and orange 5..24
+    # overlapped at H=18..24, so a warm yellow sign could be saved as orange
+    # depending on the colour confidence / duplicate-suppression ordering.
     "yellow": [
         ((18, 65, 55), (39, 255, 255)),
     ],
     "orange": [
-        ((5, 80, 50), (24, 255, 255)),
+        ((5, 80, 50), (17, 255, 255)),
     ],
 }
 
