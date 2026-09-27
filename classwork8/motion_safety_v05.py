@@ -261,3 +261,34 @@ def heading_alignment_preflight(
             return False, "HEADING_RECOVERY_NO_ROTATION_CLEARANCE_" + str(direction), 0.0
     correction = max(-float(max_step_deg), min(float(max_step_deg), error))
     return True, "HEADING_RECOVERY_SMALL_CORRECTION", correction
+
+
+def supervised_recheck_pose_ok(
+    paused_xy: Optional[Tuple[float, float]],
+    current_xy: Optional[Tuple[float, float]],
+    yaw_error_deg: Optional[float],
+    *,
+    max_position_change_m: float = 0.03,
+    max_yaw_error_deg: float = 1.0,
+) -> Tuple[bool, str]:
+    """Do not reuse an old logical map after moving/lifting the physical robot.
+
+    This validates reported wheel odometry, not actual unreported wheel slip.
+    It does NOT authorize motor motion: every attempted leg must independently
+    pass its existing fresh ToF, heading and odometry safety gates.
+    """
+    import math
+
+    if paused_xy is None or current_xy is None or yaw_error_deg is None:
+        return False, "SUPERVISED_POSE_UNAVAILABLE"
+    values = tuple(paused_xy) + tuple(current_xy) + (yaw_error_deg,)
+    if len(values) != 5 or not all(math.isfinite(float(v)) for v in values):
+        return False, "SUPERVISED_POSE_INVALID"
+    if math.hypot(
+        float(current_xy[0]) - float(paused_xy[0]),
+        float(current_xy[1]) - float(paused_xy[1]),
+    ) > float(max_position_change_m):
+        return False, "RELOCALIZATION_REQUIRED"
+    if abs(float(yaw_error_deg)) > float(max_yaw_error_deg):
+        return False, "SUPERVISED_HEADING_NOT_ALIGNED"
+    return True, "SUPERVISED_FRESH_RECHECK_ALLOWED"
