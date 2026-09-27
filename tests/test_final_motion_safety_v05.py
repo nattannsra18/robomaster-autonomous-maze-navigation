@@ -38,7 +38,7 @@ class SideCheckLogicTests(unittest.TestCase):
     def setUp(self):
         self.config = Classwork8Config()
 
-    def decide(self, direction, walls, readings):
+    def decide(self, direction, walls, readings, baseline=None):
         return side_checkpoint_decision(
             direction,
             walls,
@@ -48,6 +48,9 @@ class SideCheckLogicTests(unittest.TestCase):
             wall_max_cm=self.config.scan_side_wall_max_cm,
             gain_mps_per_cm=self.config.scan_side_kp_mps_per_cm,
             max_bias_mps=self.config.midcell_side_max_bias_mps,
+            baseline_cm=baseline,
+            max_baseline_drop_cm=self.config.midcell_side_max_baseline_drop_cm,
+            recenter_deadband_cm=self.config.midcell_side_recenter_deadband_cm,
         )
 
     def test_only_confirmed_wall_sides_need_stationary_scan(self):
@@ -64,25 +67,60 @@ class SideCheckLogicTests(unittest.TestCase):
 
     def test_two_walls_use_correct_lateral_sign(self):
         # FRONT: LEFT is 3, RIGHT is 1; left is closer -> move right.
-        ok, label, bias = self.decide(0, {3, 1}, {3: 24.0, 1: 33.0})
+        ok, label, bias = self.decide(
+            0, {3, 1}, {3: 24.0, 1: 33.0},
+            baseline={3: 27.0, 1: 32.0},
+        )
         self.assertTrue(ok)
-        self.assertEqual(label, "MIDCELL_BETWEEN_WALLS")
+        self.assertEqual(label, "MIDCELL_RESTORE_SIDE_BALANCE")
         self.assertGreater(bias, 0.0)
         self.assertLessEqual(bias, 0.012)
-        ok, _, reverse = self.decide(0, {3, 1}, {3: 33.0, 1: 24.0})
+        ok, _, reverse = self.decide(
+            0, {3, 1}, {3: 33.0, 1: 24.0},
+            baseline={3: 32.0, 1: 27.0},
+        )
         self.assertTrue(ok)
         self.assertLess(reverse, 0.0)
 
     def test_single_close_wall_biases_away(self):
-        ok, label, bias = self.decide(0, {3}, {3: 24.0})
+        ok, label, bias = self.decide(
+            0, {3}, {3: 24.0}, baseline={3: 27.0}
+        )
         self.assertTrue(ok)
         self.assertEqual(label, "MIDCELL_BIAS_AWAY_LEFT")
         self.assertGreater(bias, 0.0)
 
-        ok, label, bias = self.decide(0, {1}, {1: 24.0})
+        ok, label, bias = self.decide(
+            0, {1}, {1: 24.0}, baseline={1: 27.0}
+        )
         self.assertTrue(ok)
         self.assertEqual(label, "MIDCELL_BIAS_AWAY_RIGHT")
         self.assertLess(bias, 0.0)
+
+    def test_real_field_14_5_to_14_7_cm_is_stable(self):
+        # 2026-09-27 log: start RIGHT 14.5, halfway RIGHT 14.7 cm.
+        # It must not be treated as collision solely because it is below
+        # the obsolete 22 cm stop threshold.
+        ok, label, bias = self.decide(
+            0, {1}, {1: 14.7}, baseline={1: 14.5}
+        )
+        self.assertTrue(ok)
+        self.assertEqual(label, "MIDCELL_SIDE_BASELINE_STABLE")
+        self.assertEqual(bias, 0.0)
+
+    def test_real_field_baseline_drop_still_stops(self):
+        ok, label, bias = self.decide(
+            0, {1}, {1: 10.4}, baseline={1: 14.5}
+        )
+        self.assertFalse(ok)
+        self.assertEqual(label, "SIDE_RANGE_DROP_RIGHT")
+        self.assertEqual(bias, 0.0)
+
+    def test_without_baseline_no_lateral_autosteer(self):
+        ok, label, bias = self.decide(0, {1}, {1: 14.7})
+        self.assertTrue(ok)
+        self.assertEqual(label, "MIDCELL_NO_BASELINE_NO_AUTO_STEER")
+        self.assertEqual(bias, 0.0)
 
     def test_combined_lateral_command_is_bounded_without_changing_forward(self):
         # FRONT travel: chassis +Y moves right.
@@ -95,9 +133,9 @@ class SideCheckLogicTests(unittest.TestCase):
         self.assertAlmostEqual(y, 0.10)
 
     def test_dangerous_side_range_forces_stop_not_correction(self):
-        ok, label, bias = self.decide(0, {3, 1}, {3: 21.0, 1: 35.0})
+        ok, label, bias = self.decide(0, {3, 1}, {3: 9.0, 1: 35.0})
         self.assertFalse(ok)
-        self.assertEqual(label, "SIDE_CLEARANCE_LOW_LEFT")
+        self.assertEqual(label, "SIDE_CRITICAL_RANGE_LEFT")
         self.assertEqual(bias, 0.0)
 
     def test_missing_or_far_side_data_never_produces_steering(self):
@@ -130,7 +168,7 @@ class SideCheckLogicTests(unittest.TestCase):
         self.config.validate()
 
     def test_config_rejects_invalid_side_thresholds(self):
-        self.config.midcell_side_soft_margin_cm = 20.0
+        self.config.midcell_side_soft_margin_cm = 9.0
         with self.assertRaises(ValueError):
             self.config.validate()
 
@@ -150,7 +188,7 @@ class StationarySideCheckpointTests(unittest.TestCase):
         self.tracker.get_pitch.return_value = 0.0
         self.recorder = mock.Mock()
 
-    def run_checkpoint(self, samples):
+    def run_checkpoint(self, samples, baseline=None):
         def get_tof(_sensors, _config, _stop):
             return next(samples)
 
@@ -173,11 +211,14 @@ class StationarySideCheckpointTests(unittest.TestCase):
                 target_cell=(1, 0),
                 progress_m=0.30,
                 stop_event=None,
+                baseline_ranges=baseline,
             )
             return result, stop, point, fresh
 
     def test_stops_before_side_check_and_restores_forward(self):
-        result, stop, point, fresh = self.run_checkpoint(iter((25.0, 32.0)))
+        result, stop, point, fresh = self.run_checkpoint(
+            iter((25.0, 32.0)), baseline={3: 28.0, 1: 32.0}
+        )
         self.assertTrue(result[0])
         self.assertGreater(result[2], 0.0)
         stop.assert_called_once_with(self.chassis)
@@ -188,10 +229,35 @@ class StationarySideCheckpointTests(unittest.TestCase):
         fresh.assert_called_once()
         self.recorder.event.assert_called_once()
 
+    def test_real_field_stable_side_range_resumes_forward_tof(self):
+        # Only RIGHT is mapped as a wall for this leg.
+        with mock.patch.object(mission, "stop_chassis") as stop, \
+             mock.patch.object(mission, "_point_gimbal", return_value=True) as point, \
+             mock.patch.object(mission, "_sample_tof", return_value=14.7), \
+             mock.patch.object(
+                 mission, "_wait_for_move_tof_v03", return_value=90.0
+             ) as fresh:
+            ok, label, bias = mission._midcell_wall_checkpoint(
+                self.chassis, self.gimbal, self.sensor, self.tracker,
+                self.recorder, self.config,
+                direction=0, wall_sides={1},
+                current_cell=(0, 0), target_cell=(1, 0),
+                progress_m=0.29, stop_event=None,
+                baseline_ranges={1: 14.5},
+            )
+            self.assertTrue(ok)
+            self.assertEqual(label, "MIDCELL_SIDE_BASELINE_STABLE")
+            self.assertEqual(bias, 0.0)
+            stop.assert_called_once_with(self.chassis)
+            self.assertEqual(
+                [call.args[3] for call in point.call_args_list], [1, 0]
+            )
+            fresh.assert_called_once()
+
     def test_side_too_close_stays_stopped_without_new_forward_motion(self):
-        result, stop, point, fresh = self.run_checkpoint(iter((19.0, 32.0)))
+        result, stop, point, fresh = self.run_checkpoint(iter((9.0, 32.0)))
         self.assertFalse(result[0])
-        self.assertEqual(result[1], "SIDE_CLEARANCE_LOW_LEFT")
+        self.assertEqual(result[1], "SIDE_CRITICAL_RANGE_LEFT")
         stop.assert_called_once_with(self.chassis)
         fresh.assert_not_called()
 
