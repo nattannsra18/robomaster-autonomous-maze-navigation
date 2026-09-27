@@ -29,6 +29,7 @@ from classwork8.config import Classwork8Config
 from classwork8.motion_safety_v05 import (
     adjacent_wall_sides,
     bound_travel_lateral,
+    critical_start_side_recheck,
     side_checkpoint_decision,
 )
 from classwork8 import tof_camera_round1_v05 as mission
@@ -103,6 +104,50 @@ class SideCheckLogicTests(unittest.TestCase):
         )
         self.assertEqual(correction, 0.0)
         self.assertEqual(reason, "SINGLE_WALL_BASELINE_ONLY")
+
+    def test_recheck_confirmed_6_5cm_still_stops(self):
+        cleared, reason, value = critical_start_side_recheck(
+            (6.4, 6.6),
+            hard_stop_cm=10.0,
+            release_margin_cm=2.0,
+            max_spread_cm=2.0,
+        )
+        self.assertFalse(cleared)
+        self.assertEqual(reason, "SIDE_START_CRITICAL_CONFIRMED")
+        self.assertAlmostEqual(value, 6.5)
+
+    def test_recheck_can_clear_one_spurious_short_side_echo(self):
+        cleared, reason, value = critical_start_side_recheck(
+            (14.5, 14.7),
+            hard_stop_cm=10.0,
+            release_margin_cm=2.0,
+            max_spread_cm=2.0,
+        )
+        self.assertTrue(cleared)
+        self.assertEqual(reason, "SIDE_START_TRANSIENT_CLEARED")
+        self.assertAlmostEqual(value, 14.6)
+
+    def test_recheck_single_high_reflection_cannot_clear_stop(self):
+        cleared, reason, value = critical_start_side_recheck(
+            (6.5, 14.7),
+            hard_stop_cm=10.0,
+            release_margin_cm=2.0,
+            max_spread_cm=2.0,
+        )
+        self.assertFalse(cleared)
+        self.assertEqual(reason, "SIDE_START_RECHECK_INCONSISTENT")
+        self.assertIsNone(value)
+
+    def test_recheck_missing_to_f_cannot_clear_stop(self):
+        cleared, reason, value = critical_start_side_recheck(
+            (None, 15.0),
+            hard_stop_cm=10.0,
+            release_margin_cm=2.0,
+            max_spread_cm=2.0,
+        )
+        self.assertFalse(cleared)
+        self.assertEqual(reason, "SIDE_START_RECHECK_NO_FRESH_TOF")
+        self.assertIsNone(value)
 
     def test_real_field_14_5_to_14_7_cm_is_stable(self):
         # 2026-09-27 log: start RIGHT 14.5, halfway RIGHT 14.7 cm.
