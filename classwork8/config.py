@@ -69,6 +69,11 @@ class Classwork8Config:
     # absolute stop falsely aborted normal travel. Calibrate the critical
     # range using measured sensor-to-body offset before a full maze trial.
     midcell_side_hard_stop_cm: float = 10.0
+    # Only an independently repeated stationary SIDE measurement can clear
+    # one suspicious low range. Sustained 6.5 cm must still halt the chassis.
+    side_start_recheck_enabled: bool = True
+    side_start_release_margin_cm: float = 2.0
+    side_start_recheck_max_spread_cm: float = 2.0
     midcell_side_soft_margin_cm: float = 18.0
     midcell_side_max_baseline_drop_cm: float = 4.0
     midcell_side_recenter_deadband_cm: float = 1.5
@@ -315,6 +320,10 @@ class Classwork8Config:
             raise ValueError("midcell_side_check_ratio must be between 0.10 and 0.85")
         if not 0.0 < self.midcell_side_hard_stop_cm < self.midcell_side_soft_margin_cm <= self.scan_side_wall_max_cm:
             raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
+        if not 0.0 < self.side_start_release_margin_cm <= 5.0:
+            raise ValueError("side start release margin must be 0..5 cm")
+        if not 0.0 < self.side_start_recheck_max_spread_cm <= 5.0:
+            raise ValueError("side start recheck max spread must be 0..5 cm")
         if not 0.0 < self.midcell_side_max_baseline_drop_cm <= 20.0:
             raise ValueError("midcell_side_max_baseline_drop_cm must be 0..20 cm")
         if not 0.0 <= self.midcell_side_recenter_deadband_cm < self.midcell_side_max_baseline_drop_cm:
