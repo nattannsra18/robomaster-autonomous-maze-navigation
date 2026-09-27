@@ -141,6 +141,13 @@ def configure_before_run(config) -> bool:
             if field in variables:
                 setattr(preview, field, float(variables[field][0].get()))
         preview.exploration_step_m = preview.cell_size_m
+        for field in ("ground_truth_csv", "evaluation_crop_top",
+                      "evaluation_crop_left", "evaluation_rotate_deg",
+                      "auto_evaluate_on_save"):
+            if field in variables:
+                var, kind = variables[field]
+                setattr(preview, field, bool(var.get()) if kind == "bool"
+                        else int(var.get()) if kind == "int" else str(var.get()))
         return preview
 
     def update_ground_truth_fields(preview):
