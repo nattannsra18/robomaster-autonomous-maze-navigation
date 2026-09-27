@@ -25,6 +25,7 @@ from .live_survey import LiveSurveyBridge
 from .motion_safety_v05 import (
     adjacent_wall_sides,
     bound_travel_lateral,
+    critical_start_side_recheck,
     side_checkpoint_decision,
 )
 from .config import Classwork8Config
@@ -1362,25 +1363,91 @@ def _drive_one_cell(
     if initial_front_cm is None:
         return False, "TOF_STALE", 0.0
 
-    # A known wall already inside the calibrated critical sensor range
-    # should prevent *starting* this leg, not be treated as a steering cue.
-    # An uncalibrated range above the threshold is a baseline, not evidence
-    # that a particular chassis-side clearance is safe.
-    for side in wall_sides:
-        baseline = (scan_ranges or {}).get(side)
-        if baseline is not None and 0.0 < float(baseline) <= float(
+    # The initial four-way scan can report an anomalously short side range.
+    # Never blindly bypass it: stop and obtain TWO independent fresh returns
+    # at the side angle. A sustained 6.5 cm still blocks movement until the
+    # operator has physically checked the chassis/wall clearance.
+    move_side_baselines = dict(scan_ranges or {})
+    for side in sorted(wall_sides):
+        baseline = move_side_baselines.get(side)
+        if baseline is None or float(baseline) <= 0.0 or float(baseline) > float(
             config.midcell_side_hard_stop_cm
         ):
-            stop_chassis(chassis)
-            print(
-                "[MOVE] SIDE_CRITICAL_AT_START {}: {:.1f} cm <= {:.1f} cm.".format(
-                    DIR_NAME[side],
-                    float(baseline),
-                    float(config.midcell_side_hard_stop_cm),
-                ),
-                flush=True,
-            )
+            continue
+
+        stop_chassis(chassis)
+        print(
+            "[SIDE_START] {} {:.1f} cm <= critical {:.1f} cm. "
+            "Stopping to verify side clearance.".format(
+                DIR_NAME[side],
+                float(baseline),
+                float(config.midcell_side_hard_stop_cm),
+            ),
+            flush=True,
+        )
+        if not config.side_start_recheck_enabled:
             return False, "SIDE_CRITICAL_AT_START_{}".format(DIR_NAME[side]), 0.0
+
+        if not _point_gimbal(
+            gimbal, sensors, gimbal_tracker, side, config, stop_event
+        ):
+            return False, "SIDE_START_RECHECK_GIMBAL_FAILED", 0.0
+
+        fresh_values = []
+        for _ in range(2):
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP", 0.0
+            sensors.reset_filters()
+            value = _wait_for_fresh_tof(
+                sensors, config.tof_recovery_wait_sec, stop_event
+            )
+            pitch = gimbal_tracker.get_pitch()
+            if (
+                pitch is None
+                or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
+                > float(config.gimbal_pitch_tolerance_deg)
+            ):
+                value = None
+            fresh_values.append(value)
+
+        cleared, diagnostic, confirmed = critical_start_side_recheck(
+            (fresh_values[0], fresh_values[1]),
+            hard_stop_cm=config.midcell_side_hard_stop_cm,
+            release_margin_cm=config.side_start_release_margin_cm,
+            max_spread_cm=config.side_start_recheck_max_spread_cm,
+        )
+        recorder.event(
+            time.monotonic(),
+            "SIDE_START_RECHECK",
+            diagnostic,
+            logical_node=current_cell,
+            destination=target_cell,
+            direction=DIR_NAME[side],
+            first_cm=round(float(baseline), 2),
+            repeated_cm=fresh_values,
+            cleared=bool(cleared),
+        )
+        print(
+            "[SIDE_START] {} original={:.1f} cm; fresh={} cm => {}".format(
+                DIR_NAME[side], float(baseline), fresh_values, diagnostic
+            ),
+            flush=True,
+        )
+        if not cleared:
+            return False, "{}_{}".format(diagnostic, DIR_NAME[side]), 0.0
+
+        move_side_baselines[side] = confirmed
+        if not _point_gimbal(
+            gimbal, sensors, gimbal_tracker, direction, config, stop_event
+        ):
+            return False, "SIDE_START_RETURN_FORWARD_FAILED", 0.0
+        initial_front_cm = _wait_for_move_tof_v03(
+            sensors, config, stop_event
+        )
+        if initial_front_cm is None:
+            return False, "SIDE_START_FORWARD_TOF_STALE", 0.0
+
+    scan_ranges = move_side_baselines
 
     x0, y0 = pose.get_xy()
     if x0 is None or y0 is None:
