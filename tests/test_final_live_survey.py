@@ -70,6 +70,26 @@ class LiveSurveyTests(unittest.TestCase):
         finally:
             bridge.stop()
 
+    def test_roi_bottom_changes_do_not_command_gimbal(self):
+        bridge = LiveSurveyBridge(self.config)
+        self.assertAlmostEqual(bridge.set_roi_bottom(0.96), 0.96)
+        self.assertAlmostEqual(self.config.target_roi_bottom_ratio, 0.96)
+        self.assertAlmostEqual(bridge.get_roi_bottom(), 0.96)
+        self.assertAlmostEqual(bridge.set_roi_bottom(1.20), 0.99)
+        self.assertGreaterEqual(
+            bridge.set_roi_bottom(-1.0),
+            self.config.target_roi_top_ratio + 0.06,
+        )
+        self.assertEqual(self.config.gimbal_scan_pitch_deg, 0.0)
+
+    def test_annotation_contains_candidate_overlay(self):
+        frame = np.full((360, 640, 3), 120, dtype=np.uint8)
+        result = LiveSurveyBridge.annotate_live_candidates(
+            frame.copy(), [], self.config.target_roi_bottom_ratio
+        )
+        self.assertEqual(result.shape, frame.shape)
+        self.assertFalse(np.array_equal(result, frame))
+
     def test_camera_pitch_motion_never_commands_yaw(self):
         tracker = GimbalTracker()
         tracker.pitch = 0.0
