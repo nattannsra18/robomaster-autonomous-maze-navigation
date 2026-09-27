@@ -6,7 +6,7 @@ from pathlib import Path
 from classwork8.config import Classwork8Config
 from classwork8.evaluate import calculate_metrics
 from classwork8.ground_truth_editor import GroundTruthLayout
-from classwork8.occupancy_grid import FREE, UNKNOWN, WALL
+from classwork8.occupancy_grid import FREE, UNKNOWN, OCCUPIED as WALL
 
 
 class GroundTruthEditorModelTests(unittest.TestCase):
