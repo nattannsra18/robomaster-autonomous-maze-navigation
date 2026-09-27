@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import Callable
 
 from .live_survey import LiveSurveyBridge
-from .target_map_visual import target_plot_geometry, target_marker_offsets
+from .target_map_visual import (
+    confirmed_map_targets,
+    target_plot_geometry,
+    target_marker_offsets,
+)
 
 
 class RealtimeMapGUI:
@@ -680,9 +684,8 @@ class RealtimeMapGUI:
             self.vision_var.set("Camera: unavailable; ToF mapping continues")
 
         self.target_var.set(
-            "Verified: {} | provisional (needs recheck): {} | distant: {} | near-wall: {}".format(
+            "Confirmed signs: {} | distant sightings: {} | near-wall estimates: {}".format(
                 int(snapshot.get("target_count", 0)),
-                int(snapshot.get("target_pending_count", 0)),
                 int(snapshot.get("target_sighting_count", 0)),
                 int(snapshot.get("target_position_candidate_count", 0)),
             )
@@ -812,7 +815,7 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
-        for target in snapshot.get("targets") or []:
+        for target in confirmed_map_targets(snapshot.get("targets")):
             hint, _origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
@@ -958,7 +961,7 @@ class RealtimeMapGUI:
             "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
-        targets = snapshot.get("targets") or []
+        targets = confirmed_map_targets(snapshot.get("targets"))
         badge_offsets = target_marker_offsets(
             targets, float(snapshot.get("cell_size_m", 0.60))
         )
@@ -991,10 +994,7 @@ class RealtimeMapGUI:
                     fill=self.COLOURS["background"],
                     outline=colour, width=3,
                 )
-                pending = target.get("status") == "PENDING_RECHECK"
-                label = str(target.get("target_id", "T")) + (
-                    "? CHECK" if pending else "? LOS"
-                )
+                label = str(target.get("target_id", "T")) + "? LOS"
                 draw.text((tx + radius + 2, ty - 5), label, fill=colour, font=font)
             else:
                 draw.ellipse(
@@ -1130,7 +1130,7 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
-        for target in snapshot.get("targets") or []:
+        for target in confirmed_map_targets(snapshot.get("targets")):
             hint, _origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
@@ -1307,7 +1307,7 @@ class RealtimeMapGUI:
             "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
-        targets = snapshot.get("targets") or []
+        targets = confirmed_map_targets(snapshot.get("targets"))
         badge_offsets = target_marker_offsets(
             targets, float(snapshot.get("cell_size_m", 0.60))
         )
@@ -1342,10 +1342,7 @@ class RealtimeMapGUI:
                 )
                 canvas.create_text(
                     tx + radius + 4, ty, anchor="w",
-                    text=str(target.get("target_id", "T")) + (
-                        "? CHECK" if target.get("status") == "PENDING_RECHECK"
-                        else "? LOS"
-                    ),
+                    text=str(target.get("target_id", "T")) + "? LOS",
                     fill=colour, font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
                 )
             else:
