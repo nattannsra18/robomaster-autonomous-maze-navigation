@@ -232,6 +232,13 @@ class GroundTruthEditor:
         self.config = config
         self.layout = GroundTruthLayout()
         self.csv_path = Path(config.output_dir) / "ground_truth" / "ground_truth.csv"
+        self.saved = False
+        self.start_requested = False
+        self.wall_thickness_var = tk.StringVar(master=parent, value="5")
+        self.rows_var = tk.StringVar(master=parent, value="5")
+        self.cols_var = tk.StringVar(master=parent, value="5")
+        self.tool_var = tk.StringVar(master=parent, value="wall")
+        self.info_var = tk.StringVar(master=parent, value="Draw physical walls and click START (green). Outer walls are fixed.")
         # Re-open a previously authored reference automatically when its
         # editable JSON is available, instead of starting with an empty maze.
         previous_csv = Path(str(getattr(config, "ground_truth_csv", "")))
@@ -250,13 +257,6 @@ class GroundTruthEditor:
                     self.wall_thickness_var.set(str(round(float(previous.get("wall_thickness_m", .05))*100, 2)))
             except (OSError, ValueError, TypeError, KeyError):
                 pass
-        self.saved = False
-        self.start_requested = False
-        self.wall_thickness_var = tk.StringVar(master=parent, value="5")
-        self.rows_var = tk.StringVar(master=parent, value="5")
-        self.cols_var = tk.StringVar(master=parent, value="5")
-        self.tool_var = tk.StringVar(master=parent, value="wall")
-        self.info_var = tk.StringVar(master=parent, value="Draw physical walls and click START (green). Outer walls are fixed.")
         self.window = tk.Toplevel(parent)
         self.window.title("Classwork 8 - Draw Physical Ground Truth (evaluation only)")
         self.window.geometry("1060x820")
