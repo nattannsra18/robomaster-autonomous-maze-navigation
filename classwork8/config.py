@@ -62,6 +62,7 @@ class Classwork8Config:
     # wall, measures that wall while stationary, and then returns ToF to the
     # travel direction before driving resumes. Never scan sideways in motion.
     # These ranges are ToF sensor-to-wall, not chassis-side physical clearance.
+    wall_follow_recovery_enabled: bool = False  # opt in through Final Round-1 GUI
     midcell_side_check_enabled: bool = True
     midcell_side_check_ratio: float = 0.48
     # These are sensor-to-wall distances, NOT physical chassis clearance.
