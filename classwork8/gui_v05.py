@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .live_survey import LiveSurveyBridge
+
 
 class RealtimeMapGUI:
     COLOURS = {
@@ -54,6 +56,7 @@ class RealtimeMapGUI:
         auto_save_map: bool = True,
         export_width_px: int = 1200,
         export_height_px: int = 900,
+        survey_bridge=None,
     ):
         import tkinter as tk
         from tkinter import ttk
@@ -76,6 +79,11 @@ class RealtimeMapGUI:
         self._queue = queue.Queue()
         self._latest = None
         self._vision_photo = None
+        self.survey_bridge = survey_bridge
+        self._last_preview_timestamp = -1.0
+        self._preview_popup = None
+        self._popup_label = None
+        self._popup_photo = None
 
         self.root = tk.Tk()
         self.root.title("Final Round 1 V05 - Frontier Exploration")
@@ -180,6 +188,16 @@ class RealtimeMapGUI:
         self.gimbal_var = tk.StringVar(value="Gimbal: --")
         self.vision_var = tk.StringVar(value="Camera: starting...")
         self.target_var = tk.StringVar(value="Targets: 0")
+        self.live_target_var = tk.StringVar(value="Live candidates: --")
+        self.pitch_status_var = tk.StringVar(
+            value="Camera pitch: queued for next stationary scan"
+        )
+        self.camera_pitch_var = tk.DoubleVar(
+            value=(
+                -10.0 if self.survey_bridge is None
+                else self.survey_bridge.get_pitch()
+            )
+        )
         self.moves_var = tk.StringVar(value="Moves: 0")
         self.discovered_var = tk.StringVar(value="Discovered cells: 1")
         self.coverage_var = tk.StringVar(value="Occupancy coverage: 0.00%")
@@ -197,6 +215,7 @@ class RealtimeMapGUI:
             self.gimbal_var,
             self.vision_var,
             self.target_var,
+            self.live_target_var,
             self.moves_var,
             self.discovered_var,
             self.coverage_var,
@@ -215,16 +234,52 @@ class RealtimeMapGUI:
 
         ttk.Label(
             right,
-            text="Camera target detection",
+            text="LIVE Camera target detection",
             font=("Segoe UI", 10, "bold"),
         ).pack(anchor="w", pady=(0, 5))
+
+        ttk.Label(
+            right,
+            text="Camera look-down pitch (applied only while chassis is stopped)",
+            wraplength=280,
+        ).pack(anchor="w")
+        self.camera_pitch_slider = tk.Scale(
+            right,
+            from_=-20,
+            to=10,
+            resolution=1.0,
+            orient="horizontal",
+            variable=self.camera_pitch_var,
+            label="Negative = look down (verify on real camera)",
+        )
+        self.camera_pitch_slider.pack(fill="x")
+        ttk.Button(
+            right,
+            text="APPLY CAMERA PITCH AT NEXT SCAN",
+            command=self._apply_camera_pitch,
+        ).pack(fill="x", pady=(1, 3))
+        ttk.Button(
+            right,
+            text="RESCAN CURRENT CELL",
+            command=self._request_rescan,
+        ).pack(fill="x", pady=(0, 4))
+        ttk.Label(
+            right,
+            textvariable=self.pitch_status_var,
+            wraplength=280,
+        ).pack(anchor="w", pady=(0, 6))
 
         self.vision_preview = ttk.Label(
             right,
             text="Waiting for camera...",
             anchor="center",
         )
-        self.vision_preview.pack(fill="x", pady=(0, 8))
+        self.vision_preview.pack(fill="x", pady=(0, 4))
+        ttk.Button(
+            right,
+            text="ENLARGE LIVE CAMERA",
+            command=self._open_camera_popup,
+        ).pack(fill="x", pady=(0, 8))
 
         ttk.Separator(right, orient="horizontal").pack(fill="x", pady=12)
 
@@ -305,16 +360,43 @@ class RealtimeMapGUI:
             self.root.after(300, self._close_if_finished)
 
     def _poll(self) -> None:
+        has_new_snapshot = False
         try:
             while True:
                 self._latest = self._queue.get_nowait()
+                has_new_snapshot = True
         except queue.Empty:
             pass
 
-        if self._latest is not None:
+        # Redraw the logical map only on new navigation data, not every video
+        # frame. This removes costly repeated canvas/map and full-grid work.
+        if has_new_snapshot and self._latest is not None:
             self._render(self._latest)
 
-        self.root.after(self.refresh_ms, self._poll)
+        # The camera comes straight from an independent latest-frame worker;
+        # scanning, verification and map publication cannot freeze the image.
+        if self.survey_bridge is not None:
+            preview = self.survey_bridge.latest_preview()
+            timestamp = preview["timestamp"]
+            if timestamp > self._last_preview_timestamp:
+                self._last_preview_timestamp = timestamp
+                self._render_vision_preview(
+                    preview["frame"],
+                    preview["frame"] is not None,
+                )
+                self._render_camera_popup(preview["frame"])
+            self.live_target_var.set(
+                "Live candidates: {}  preview {:.1f} FPS".format(
+                    preview["candidate_count"], preview["preview_fps"]
+                )
+            )
+            self.pitch_status_var.set(
+                "{} | selected {:+.0f}°".format(
+                    preview["status"], preview["pitch_deg"]
+                )
+            )
+
+        self.root.after(max(50, min(100, self.refresh_ms)), self._poll)
 
     @staticmethod
     def _display_cell(cell):
@@ -394,7 +476,10 @@ class RealtimeMapGUI:
             "Targets: {}".format(int(snapshot.get("target_count", 0)))
         )
 
-        self._render_vision_preview(snapshot.get("vision_frame"), vision_active)
+        # Live preview is updated separately in _poll; never replace it
+        # with a stale frame carried by a mapping status snapshot.
+        if self.survey_bridge is None:
+            self._render_vision_preview(snapshot.get("vision_frame"), vision_active)
 
         self.moves_var.set("Moves: {}".format(snapshot.get("moves", 0)))
         self.discovered_var.set(
@@ -1103,6 +1188,7 @@ def run_with_gui(
     ep_robot,
 ) -> None:
     stop_event = threading.Event()
+    survey_bridge = LiveSurveyBridge(config)
     gui = RealtimeMapGUI(
         stop_event,
         canvas_px=config.gui_canvas_px,
@@ -1111,6 +1197,7 @@ def run_with_gui(
         auto_save_map=config.gui_auto_save_map,
         export_width_px=config.gui_export_width_px,
         export_height_px=config.gui_export_height_px,
+        survey_bridge=survey_bridge,
     )
 
     def worker():
@@ -1120,6 +1207,7 @@ def run_with_gui(
                 publish=gui.publish,
                 stop_event=stop_event,
                 ep_robot=ep_robot,
+                survey_bridge=survey_bridge,
             )
         except Exception as exc:
             gui.publish({
