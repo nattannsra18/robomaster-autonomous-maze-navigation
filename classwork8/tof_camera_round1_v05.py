@@ -3037,6 +3037,10 @@ def run(
         except Exception:
             pass
 
+        print(
+            "[MISSION] Finish reason: {}".format(finish_reason),
+            flush=True,
+        )
         run_dir = recorder.export(
             grid,
             reason=finish_reason,
@@ -3067,7 +3071,7 @@ def run(
             print("[EXPORT] Final metadata export failed: {}".format(exc), flush=True)
 
         publish_state(
-            status="Finished",
+            status="Finished: {}".format(finish_reason),
             logical_cell=current_cell,
             gimbal_direction=current_gimbal_direction,
             tof_cm=current_tof,
