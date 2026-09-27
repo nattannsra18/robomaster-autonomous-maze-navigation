@@ -174,6 +174,16 @@ class Classwork8Config:
     target_camera_resolution: str = "360p"
     target_camera_start_timeout_sec: float = 5.0
     target_max_frame_age_sec: float = 0.60
+    # Camera looks down only while stopped, after the horizontal ToF ray has
+    # been sampled. Mapping/driving ALWAYS restore gimbal_scan_pitch_deg.
+    target_camera_pitch_deg: float = -10.0
+    target_camera_pitch_min_deg: float = -20.0
+    target_camera_pitch_max_deg: float = 10.0
+    target_camera_pitch_tolerance_deg: float = 1.5
+    target_camera_pitch_timeout_sec: float = 4.5
+    target_camera_settle_sec: float = 0.15
+    target_preview_fps: float = 8.0
+    target_survey_open_directions: bool = True
 
     # Lighting-robust OpenCV detector.
     target_clahe_clip_limit: float = 2.0
@@ -281,6 +291,17 @@ class Classwork8Config:
             raise ValueError("max_moves must be positive")
         if self.target_camera_resolution not in ("360p", "540p", "720p"):
             raise ValueError("target_camera_resolution must be 360p, 540p, or 720p")
+        if not (
+            self.target_camera_pitch_min_deg <= self.target_camera_pitch_deg
+            <= self.target_camera_pitch_max_deg
+        ):
+            raise ValueError("Camera observation pitch is outside its allowed range")
+        if not -25.0 <= self.target_camera_pitch_min_deg < self.target_camera_pitch_max_deg <= 20.0:
+            raise ValueError("Camera pitch limits are invalid")
+        if self.target_camera_pitch_timeout_sec <= 0.0 or self.target_camera_settle_sec < 0.0:
+            raise ValueError("Camera pitch timing is invalid")
+        if self.target_camera_pitch_tolerance_deg <= 0.0 or self.target_preview_fps <= 0.0:
+            raise ValueError("Camera pitch tolerance/preview FPS must be positive")
         if self.target_clahe_clip_limit <= 0.0 or self.target_clahe_grid < 2:
             raise ValueError("target CLAHE configuration is invalid")
         if self.target_morph_kernel < 3:
