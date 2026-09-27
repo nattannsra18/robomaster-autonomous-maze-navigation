@@ -90,6 +90,20 @@ class LiveSurveyTests(unittest.TestCase):
         self.assertEqual(result.shape, frame.shape)
         self.assertFalse(np.array_equal(result, frame))
 
+    def test_quick_settings_change_only_config_no_robot_commands(self):
+        bridge = LiveSurveyBridge(self.config)
+        self.assertTrue(bridge.get_skip_visited_scans())
+        self.assertFalse(bridge.set_skip_visited_scans(False))
+        self.assertFalse(self.config.skip_scanned_visited_cells)
+        self.assertTrue(bridge.set_skip_visited_scans(True))
+        self.assertEqual(bridge.set_yaw_speed(60.0), 60.0)
+        self.assertEqual(self.config.gimbal_yaw_speed_dps, 60.0)
+        self.assertEqual(bridge.set_yaw_speed(300.0), 90.0)
+        bridge.request_rescan()
+        self.assertTrue(bridge.rescan_requested())
+        self.assertTrue(bridge.consume_rescan())
+        self.assertFalse(bridge.rescan_requested())
+
     def test_camera_pitch_motion_never_commands_yaw(self):
         tracker = GimbalTracker()
         tracker.pitch = 0.0
