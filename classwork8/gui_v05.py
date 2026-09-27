@@ -91,9 +91,65 @@ class RealtimeMapGUI:
         left = ttk.Frame(outer)
         left.pack(side="left", fill="both", expand=True)
 
-        right = ttk.Frame(outer, width=340)
-        right.pack(side="right", fill="y", padx=(14, 0))
-        right.pack_propagate(False)
+        # Keep the action buttons outside the scrollable sidebar so they
+        # remain visible at all screen resolutions and Windows DPI scales.
+        right_panel = ttk.Frame(outer, width=340)
+        right_panel.pack(side="right", fill="y", padx=(14, 0))
+        right_panel.pack_propagate(False)
+
+        action_footer = ttk.Frame(right_panel)
+        action_footer.pack(side="bottom", fill="x", pady=(7, 0))
+
+        ttk.Separator(action_footer, orient="horizontal").pack(
+            fill="x", pady=(0, 7)
+        )
+        self.save_map_button = ttk.Button(
+            action_footer,
+            text="SAVE GUI MAP NOW  (Ctrl+S)",
+            command=self._save_gui_map_now,
+        )
+        self.save_map_button.pack(fill="x", pady=(0, 5))
+        self.stop_button = ttk.Button(
+            action_footer,
+            text="STOP & SAVE",
+            command=self._request_stop,
+        )
+        self.stop_button.pack(fill="x", pady=(0, 5))
+        self.root.bind(
+            "<Control-s>",
+            lambda _event: self._save_gui_map_now(),
+            add="+",
+        )
+
+        sidebar_scrollbar = ttk.Scrollbar(right_panel, orient="vertical")
+        sidebar_scrollbar.pack(side="right", fill="y")
+        sidebar_canvas = tk.Canvas(
+            right_panel,
+            width=310,
+            highlightthickness=0,
+            borderwidth=0,
+            background=self.COLOURS["background"],
+            yscrollcommand=sidebar_scrollbar.set,
+        )
+        sidebar_canvas.pack(side="left", fill="both", expand=True)
+        sidebar_scrollbar.configure(command=sidebar_canvas.yview)
+
+        right = ttk.Frame(sidebar_canvas)
+        sidebar_id = sidebar_canvas.create_window(
+            (0, 0), window=right, anchor="nw"
+        )
+        right.bind(
+            "<Configure>",
+            lambda _event: sidebar_canvas.configure(
+                scrollregion=sidebar_canvas.bbox("all")
+            ),
+        )
+        sidebar_canvas.bind(
+            "<Configure>",
+            lambda event: sidebar_canvas.itemconfigure(
+                sidebar_id, width=event.width
+            ),
+        )
 
         self.canvas_px = int(canvas_px)
         self.canvas = tk.Canvas(
@@ -206,31 +262,19 @@ class RealtimeMapGUI:
 
         ttk.Label(
             right,
-            textvariable=self.reason_var,
-            wraplength=280,
-            foreground="#8b0000",
-        ).pack(anchor="w", pady=(14, 8))
-
-        self.save_map_button = ttk.Button(
-            right,
-            text="SAVE GUI MAP NOW",
-            command=self._save_gui_map_now,
-        )
-        self.save_map_button.pack(fill="x", pady=(8, 4))
-
-        self.stop_button = ttk.Button(
-            right,
-            text="STOP & SAVE",
-            command=self._request_stop,
-        )
-        self.stop_button.pack(fill="x", pady=(4, 6))
-
-        ttk.Label(
-            right,
             text="Closing this window requests a safe stop and result export.",
             wraplength=280,
             justify="left",
         ).pack(anchor="w", pady=(8, 0))
+
+        # Status/confirmation belongs in the fixed footer, not below the
+        # long legend, so a Save result is visible without scrolling.
+        ttk.Label(
+            action_footer,
+            textvariable=self.reason_var,
+            wraplength=290,
+            foreground="#8b0000",
+        ).pack(anchor="w", pady=(0, 3))
 
         self.root.after(self.refresh_ms, self._poll)
 
