@@ -119,6 +119,47 @@ class StationaryEscapeHeadingTests(unittest.TestCase):
         self.assertFalse(self.decide([float("nan"), 0.0, 0.0])[0])
 
 
+class FreshAttitudeFrameTests(unittest.TestCase):
+    def test_pose_tracker_exposes_callback_sequence_and_timestamp(self):
+        pose = mission.PoseTracker()
+        initial_yaw, sequence, timestamp = pose.get_yaw_sample()
+        self.assertIsNone(initial_yaw)
+        self.assertEqual(sequence, 0)
+        self.assertIsNone(timestamp)
+        pose.attitude_callback((5.8, 0.0, 0.0))
+        yaw, sequence, timestamp = pose.get_yaw_sample()
+        self.assertAlmostEqual(yaw, 5.8)
+        self.assertEqual(sequence, 1)
+        self.assertIsNotNone(timestamp)
+        pose.attitude_callback((5.7, 0.0, 0.0))
+        self.assertEqual(pose.get_yaw_sample()[1], 2)
+
+    def test_three_repeated_reads_of_one_cached_frame_are_not_fresh(self):
+        class StalePose:
+            def get_yaw_sample(self):
+                return 5.8, 1, mission.time.monotonic()
+        samples = mission._stationary_heading_errors(
+            StalePose(), 0.0, None, max_wait_sec=0.02,
+        )
+        self.assertEqual(samples, [None, None, None])
+        self.assertFalse(stationary_escape_heading_preflight(
+            samples, trigger_deg=4.0, max_stable_offset_deg=8.0,
+            max_spread_deg=0.75,
+        )[0])
+
+    def test_independent_frames_are_counted(self):
+        class FramePose:
+            sequence = 0
+            def get_yaw_sample(self):
+                self.sequence += 1
+                return 5.8, self.sequence, mission.time.monotonic()
+        self.assertEqual(
+            mission._stationary_heading_errors(
+                FramePose(), 0.0, None, max_wait_sec=0.1,
+            ), [5.8, 5.8, 5.8],
+        )
+
+
 class SupervisedRecheckTests(unittest.TestCase):
     def test_stationary_aligned_robot_can_request_fresh_scan(self):
         self.assertEqual(
