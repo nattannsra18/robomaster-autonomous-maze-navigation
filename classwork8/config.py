@@ -313,8 +313,8 @@ class Classwork8Config:
             raise ValueError("midcell_side_max_bias_mps must be 0..0.03")
         if not 0.0 < self.motion_total_lateral_max_mps <= 0.05:
             raise ValueError("motion_total_lateral_max_mps must be 0..0.05")
-        if not 0.0 < self.motion_wall_adjacent_speed_cap_mps <= self.travel_speed_mps:
-            raise ValueError("wall-adjacent speed cap must be >0 and <= travel speed")
+        if not 0.0 < self.motion_wall_adjacent_speed_cap_mps <= 0.25:
+            raise ValueError("wall-adjacent speed cap must be >0 and <=0.25 m/s")
         if not 0.0 < self.motion_cross_track_slow_m < self.motion_cross_track_abort_m < self.cell_size_m / 2.0:
             raise ValueError("cross-track limits must satisfy 0 < slow < abort < half cell size")
         if not 0.0 < self.motion_slow_cross_track_speed_mps <= self.travel_speed_mps:
