@@ -97,6 +97,13 @@ class SideCheckLogicTests(unittest.TestCase):
         self.assertEqual(label, "MIDCELL_BIAS_AWAY_RIGHT")
         self.assertLess(bias, 0.0)
 
+    def test_single_wall_normal_baseline_does_not_blindly_strafe(self):
+        correction, reason = mission._scan_side_guidance_v02(
+            0, {3: 162.8, 1: 14.5}, self.config
+        )
+        self.assertEqual(correction, 0.0)
+        self.assertEqual(reason, "SINGLE_WALL_BASELINE_ONLY")
+
     def test_real_field_14_5_to_14_7_cm_is_stable(self):
         # 2026-09-27 log: start RIGHT 14.5, halfway RIGHT 14.7 cm.
         # It must not be treated as collision solely because it is below
