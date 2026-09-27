@@ -212,7 +212,8 @@ def configure_before_run(config) -> bool:
             add_field(parent, *spec, row=row)
 
     info = ttk.LabelFrame(outer, text="60 cm calibration", padding=10)
-    info.pack(side="bottom", fill="x", pady=(8, 0))
+    # Pack the footer after the action bar is created so the Start button
+    # remains on the bottom edge of the window.
 
     calibration_var = tk.StringVar()
     ttk.Label(
@@ -250,6 +251,7 @@ def configure_before_run(config) -> bool:
 
     button_row = ttk.Frame(outer)
     button_row.pack(side="bottom", fill="x", pady=(8, 0))
+    info.pack(side="bottom", fill="x", pady=(8, 0))
 
     def set_v05_defaults():
         defaults = {
