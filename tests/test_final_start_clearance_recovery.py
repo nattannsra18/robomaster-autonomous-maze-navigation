@@ -22,6 +22,7 @@ from classwork8.motion_safety_v05 import (
     side_start_recovery_preflight,
     heading_alignment_preflight,
     stationary_escape_heading_preflight,
+    stationary_scan_motion,
     supervised_recheck_pose_ok,
 )
 from classwork8 import tof_camera_round1_v05 as mission
@@ -117,6 +118,30 @@ class StationaryEscapeHeadingTests(unittest.TestCase):
         )
         self.assertFalse(self.decide([None, 0.0, 0.0])[0])
         self.assertFalse(self.decide([float("nan"), 0.0, 0.0])[0])
+
+
+class StationaryScanMotionTests(unittest.TestCase):
+    def test_small_gimbal_reaction_is_reported_without_inventing_chassis_commands(self):
+        movement, yaw_delta, warning = stationary_scan_motion(
+            (0.0, 0.0), (0.005, 0.001), 179.8, -179.7,
+        )
+        self.assertAlmostEqual(movement, (0.005 ** 2 + 0.001 ** 2) ** 0.5)
+        self.assertAlmostEqual(yaw_delta, 0.5)
+        self.assertTrue(warning)
+
+    def test_unavailable_pose_is_diagnostic_unknown_not_movement(self):
+        self.assertEqual(
+            stationary_scan_motion(None, (0.0, 0.0), None, 0.0),
+            (None, None, False),
+        )
+
+    def test_subthreshold_chassis_feedback_is_not_warning(self):
+        movement, yaw_delta, warning = stationary_scan_motion(
+            (0.0, 0.0), (0.001, 0.001), 0.0, 0.1,
+        )
+        self.assertFalse(warning)
+        self.assertLess(movement, 0.004)
+        self.assertAlmostEqual(yaw_delta, 0.1)
 
 
 class FreshAttitudeFrameTests(unittest.TestCase):
