@@ -211,6 +211,21 @@ class RealtimeMapGUI:
                 else self.survey_bridge.get_pitch()
             )
         )
+        self.yaw_speed_var = tk.DoubleVar(
+            value=(
+                40.0 if self.survey_bridge is None
+                else self.survey_bridge.get_yaw_speed()
+            )
+        )
+        self.skip_visited_var = tk.BooleanVar(
+            value=(
+                True if self.survey_bridge is None
+                else self.survey_bridge.get_skip_visited_scans()
+            )
+        )
+        self.mission_settings_status_var = tk.StringVar(
+            value="Changes apply at the next scan/checkpoint."
+        )
         self.moves_var = tk.StringVar(value="Moves: 0")
         self.discovered_var = tk.StringVar(value="Discovered cells: 1")
         self.coverage_var = tk.StringVar(value="Occupancy coverage: 0.00%")
@@ -244,6 +259,32 @@ class RealtimeMapGUI:
             ).pack(anchor="w", pady=3)
 
         ttk.Separator(right, orient="horizontal").pack(fill="x", pady=12)
+        ttk.Label(
+            right,
+            text="QUICK MISSION SETTINGS",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 3))
+        self.yaw_speed_slider = tk.Scale(
+            right,
+            from_=15, to=90, resolution=5,
+            orient="horizontal",
+            variable=self.yaw_speed_var,
+            label="Max Gimbal yaw speed (deg/s)",
+            command=self._on_yaw_speed_change,
+        )
+        self.yaw_speed_slider.pack(fill="x")
+        ttk.Checkbutton(
+            right,
+            text="Skip 4-way scan at fully scanned visited cells",
+            variable=self.skip_visited_var,
+            command=self._on_skip_visited_change,
+        ).pack(anchor="w", pady=(2, 3))
+        ttk.Label(
+            right,
+            textvariable=self.mission_settings_status_var,
+            wraplength=285,
+        ).pack(anchor="w", pady=(0, 3))
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=8)
 
         ttk.Label(
             right,
@@ -407,6 +448,26 @@ class RealtimeMapGUI:
         self.pitch_status_var.set(
             "Pitch {:+.0f}° queued; applied at next stopped camera survey "
             "(horizontal ToF remains unchanged).".format(pitch)
+        )
+
+    def _on_yaw_speed_change(self, _value=None) -> None:
+        if self.survey_bridge is None:
+            return
+        value = self.survey_bridge.set_yaw_speed(self.yaw_speed_var.get())
+        self.mission_settings_status_var.set(
+            "Yaw max {:.0f} deg/s, applied at the next scan.".format(value)
+        )
+
+    def _on_skip_visited_change(self) -> None:
+        if self.survey_bridge is None:
+            return
+        enabled = self.survey_bridge.set_skip_visited_scans(
+            self.skip_visited_var.get()
+        )
+        self.mission_settings_status_var.set(
+            "Visited-cell scan reuse {}. Live movement ToF always ON.".format(
+                "ENABLED" if enabled else "DISABLED"
+            )
         )
 
     def _on_roi_bottom_change(self, _value=None) -> None:
