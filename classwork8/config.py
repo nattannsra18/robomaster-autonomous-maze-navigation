@@ -175,8 +175,8 @@ class Classwork8Config:
     target_circle_min_vertices: int = 6
 
     # Candidate confidence + temporal verification.
-    target_min_confidence: float = 0.58
-    target_save_confidence: float = 0.70
+    target_min_confidence: float = 0.50
+    target_save_confidence: float = 0.60
     target_sample_frames: int = 6
     target_verify_frames: int = 4
     target_frame_interval_sec: float = 0.045
