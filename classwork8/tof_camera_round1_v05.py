@@ -1393,7 +1393,10 @@ def _drive_one_cell(
     deadline = time.monotonic() + max(
         7.0,
         (config.exploration_step_m / config.travel_speed_mps) * 3.5
-        + (2.0 * float(config.gimbal_turn_timeout_sec) if checkpoint_enabled else 0.0),
+        + (
+            (len(wall_sides) + 1) * float(config.gimbal_turn_timeout_sec)
+            if checkpoint_enabled else 0.0
+        ),
     )
 
     drive_x_unit, drive_y_unit = DIR_VEC_DRIVE[direction]
