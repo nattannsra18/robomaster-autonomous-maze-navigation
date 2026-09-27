@@ -105,7 +105,7 @@ def configure_before_run(config) -> bool:
             ("gimbal_yaw_speed_dps", "Gimbal yaw max speed (deg/s)", "float", "Default 110 maximum (Kp 2.4); verify stationary sweeps before testing in a maze"),
             ("skip_scanned_visited_cells", "Skip repeat scan at visited cells", "bool", "Reuse 4-way topology only after a complete scan; every move STILL uses fresh ToF"),
             ("midcell_side_check_enabled", "Check side-wall clearance mid-cell", "bool", "Stop at about 0.29m only if mapped wall beside route; re-point ToF forward before moving"),
-            ("wall_follow_recovery_enabled", "Bounded wall-follow recovery", "bool", "At stationary side checkpoints only: verify opposite clearance, then gently bias away from a soft wall approach. Critical range always stops."),
+            ("wall_follow_recovery_enabled", "Bounded wall-follow recovery", "bool", "Only active when Mid-cell physical side check is ON; uses a fresh opposite-side ToF and never bypasses critical stops."),
             ("motion_cross_track_abort_m", "Maximum centreline drift before stop (m)", "float", "Conservative 0.085m; this checks odometry, not unreported mecanum slip"),
             ("target_detection_enabled", "Camera target survey", "bool", "Observe targets in each newly scanned cell"),
             ("target_survey_open_directions", "Detect targets along open corridors", "bool", "Distant signs become unlocalized camera sightings, not false target positions"),
