@@ -359,6 +359,65 @@ class RealtimeMapGUI:
         else:
             self.root.after(300, self._close_if_finished)
 
+    def _apply_camera_pitch(self) -> None:
+        if self.survey_bridge is None:
+            return
+        pitch = self.survey_bridge.set_pitch(self.camera_pitch_var.get())
+        self.camera_pitch_var.set(pitch)
+        self.pitch_status_var.set(
+            "Pitch {:+.0f}° queued; applied at next stopped camera survey "
+            "(horizontal ToF remains unchanged).".format(pitch)
+        )
+
+    def _request_rescan(self) -> None:
+        if self.survey_bridge is None:
+            return
+        self.survey_bridge.request_rescan()
+        self.pitch_status_var.set(
+            "Rescan queued: the robot will finish the active scan then "
+            "inspect this cell again before choosing a movement."
+        )
+
+    def _open_camera_popup(self) -> None:
+        if self._preview_popup is not None:
+            try:
+                if self._preview_popup.winfo_exists():
+                    self._preview_popup.lift()
+                    return
+            except Exception:
+                pass
+
+        popup = self.tk.Toplevel(self.root)
+        popup.title("Final Round 1 - Live Target Camera")
+        popup.geometry("700x470")
+        self._popup_label = self.ttk.Label(
+            popup, text="Waiting for live annotated frame...", anchor="center"
+        )
+        self._popup_label.pack(fill="both", expand=True, padx=8, pady=8)
+        self._preview_popup = popup
+
+        def close_popup():
+            self._preview_popup = None
+            self._popup_label = None
+            self._popup_photo = None
+            popup.destroy()
+
+        popup.protocol("WM_DELETE_WINDOW", close_popup)
+
+    def _render_camera_popup(self, frame) -> None:
+        if frame is None or self._preview_popup is None:
+            return
+        try:
+            if not self._preview_popup.winfo_exists():
+                return
+            image = self.Image.fromarray(frame[:, :, ::-1])
+            image.thumbnail((640, 390), self.Image.Resampling.BILINEAR)
+            photo = self.ImageTk.PhotoImage(image=image)
+            self._popup_photo = photo
+            self._popup_label.configure(image=photo, text="")
+        except Exception:
+            pass
+
     def _poll(self) -> None:
         has_new_snapshot = False
         try:
@@ -858,7 +917,9 @@ class RealtimeMapGUI:
             else:
                 resample = self.Image.LANCZOS
 
-            image.thumbnail((target_w, target_h), resample)
+            # Bilinear is much faster than LANCZOS at 8-10 Hz and is
+            # sufficient for the diagnostic thumbnail.
+            image.thumbnail((target_w, target_h), self.Image.Resampling.BILINEAR if hasattr(self.Image, "Resampling") else self.Image.BILINEAR)
             photo = self.ImageTk.PhotoImage(image=image)
             self._vision_photo = photo
             self.vision_preview.configure(image=photo, text="")
