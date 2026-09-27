@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from .live_survey import LiveSurveyBridge
+from .target_map_visual import target_plot_geometry
 
 
 class RealtimeMapGUI:
@@ -330,8 +331,8 @@ class RealtimeMapGUI:
                 "Blue = realtime odometry trajectory\n"
                 "Light blue = travelled logical path\n"
                 "Purple dashed = planned route to nearest frontier\n"
-                "Colored Txx = wall-range-confirmed target\n"
-                "Txx? = camera-only observation; position needs review\n"
+                "Solid Txx = tentative near-wall estimate\n"
+                "Hollow Txx? LOS = sighting ray, NOT target position\n"
                 "Green S = mission start\n"
                 "Red R = robot\n"
                 "Orange arrow = current ToF/Gimbal direction"
@@ -745,6 +746,17 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
+        for target in snapshot.get("targets") or []:
+            hint, _origin, sighting = target_plot_geometry(
+                target, float(snapshot.get("cell_size_m", 0.60))
+            )
+            if sighting and hint is not None:
+                # Only extend the visual viewport; the observation is NOT a
+                # visited cell and creates no walls in the actual map.
+                display_cells.append((
+                    -round(hint[0] / float(snapshot.get("cell_size_m", 0.60))),
+                    -round(hint[1] / float(snapshot.get("cell_size_m", 0.60))),
+                ))
         min_row = min(r for r, _ in display_cells) - 1
         max_row = max(r for r, _ in display_cells) + 1
         min_col = min(c for _, c in display_cells) - 1
@@ -876,37 +888,45 @@ class RealtimeMapGUI:
             )
 
         target_colours = {
-            "red": "#dc2626",
-            "green": "#16a34a",
-            "blue": "#2563eb",
-            "yellow": "#ca8a04",
+            "red": "#dc2626", "green": "#16a34a",
+            "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
         for target in snapshot.get("targets") or []:
-            xy = target.get("estimated_target_xy_m")
-            if not xy or len(xy) < 2:
+            hint, origin, sighting = target_plot_geometry(
+                target, float(snapshot.get("cell_size_m", 0.60))
+            )
+            if hint is None:
                 continue
-            tx, ty = metric_to_image(float(xy[0]), float(xy[1]))
+            tx, ty = metric_to_image(*hint)
             colour = target_colours.get(
-                str(target.get("color", "")).lower(),
-                "#7c3aed",
+                str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            draw.ellipse(
-                (tx - radius, ty - radius, tx + radius, ty + radius),
-                fill=colour,
-                outline="white",
-                width=2,
-            )
-            target_label = str(target.get("target_id", "T"))
-            if not target.get("range_confirmed_wall", True):
-                target_label += "?"
-            draw.text(
-                (tx - radius * 0.6, ty - 5),
-                target_label,
-                fill="white",
-                font=font,
-            )
+            if sighting:
+                if origin is not None:
+                    oxp, oyp = metric_to_image(*origin)
+                    draw.line(
+                        (oxp, oyp, tx, ty),
+                        fill=colour, width=max(2, int(size * 0.025)),
+                    )
+                draw.ellipse(
+                    (tx - radius, ty - radius, tx + radius, ty + radius),
+                    fill=self.COLOURS["background"],
+                    outline=colour, width=3,
+                )
+                label = str(target.get("target_id", "T")) + "?"
+                draw.text((tx + radius + 2, ty - 5), label, fill=colour, font=font)
+            else:
+                draw.ellipse(
+                    (tx - radius, ty - radius, tx + radius, ty + radius),
+                    fill=colour, outline="white", width=2,
+                )
+                draw.text(
+                    (tx - radius * 0.6, ty - 5),
+                    str(target.get("target_id", "T")),
+                    fill="white", font=font,
+                )
 
         sx, sy = logical_center((0, 0))
         r = max(9.0, size * 0.16)
@@ -1194,41 +1214,47 @@ class RealtimeMapGUI:
         # Camera-confirmed targets.  Use the estimated metric wall position
         # derived from the observing cell + gimbal direction + ToF distance.
         target_colours = {
-            "red": "#dc2626",
-            "green": "#16a34a",
-            "blue": "#2563eb",
-            "yellow": "#ca8a04",
+            "red": "#dc2626", "green": "#16a34a",
+            "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
         for target in snapshot.get("targets") or []:
-            xy = target.get("estimated_target_xy_m")
-            if not xy or len(xy) < 2:
+            hint, origin, sighting = target_plot_geometry(
+                target, float(snapshot.get("cell_size_m", 0.60))
+            )
+            if hint is None:
                 continue
-            tx, ty = metric_to_canvas(float(xy[0]), float(xy[1]))
+            tx, ty = metric_to_canvas(*hint)
             colour = target_colours.get(
-                str(target.get("color", "")).lower(),
-                "#7c3aed",
+                str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            canvas.create_oval(
-                tx - radius,
-                ty - radius,
-                tx + radius,
-                ty + radius,
-                fill=colour,
-                outline="white",
-                width=2,
-            )
-            target_label = str(target.get("target_id", "T"))
-            if not target.get("range_confirmed_wall", True):
-                target_label += "?"
-            canvas.create_text(
-                tx,
-                ty,
-                text=target_label,
-                fill="white",
-                font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
-            )
+            if sighting:
+                if origin is not None:
+                    oxp, oyp = metric_to_canvas(*origin)
+                    canvas.create_line(
+                        oxp, oyp, tx, ty, fill=colour, width=2,
+                        dash=(4, 4),
+                    )
+                canvas.create_oval(
+                    tx - radius, ty - radius, tx + radius, ty + radius,
+                    fill=colours["background"], outline=colour, width=3,
+                )
+                canvas.create_text(
+                    tx + radius + 4, ty, anchor="w",
+                    text=str(target.get("target_id", "T")) + "? LOS",
+                    fill=colour, font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
+                )
+            else:
+                canvas.create_oval(
+                    tx - radius, ty - radius, tx + radius, ty + radius,
+                    fill=colour, outline="white", width=2,
+                )
+                canvas.create_text(
+                    tx, ty, text=str(target.get("target_id", "T")),
+                    fill="white",
+                    font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
+                )
 
         # Start marker.
         sx, sy = logical_center((0, 0))
