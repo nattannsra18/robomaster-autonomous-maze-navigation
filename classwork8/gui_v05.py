@@ -355,15 +355,27 @@ class RealtimeMapGUI:
 
         direction_name = snapshot.get("gimbal_direction_name", "--")
         gimbal_yaw = snapshot.get("gimbal_yaw_deg")
-        if gimbal_yaw is None:
-            self.gimbal_var.set("Gimbal: {}".format(direction_name))
-        else:
-            self.gimbal_var.set(
-                "Gimbal: {} ({:+.1f}°)".format(
-                    direction_name,
-                    float(gimbal_yaw),
-                )
+        gimbal_pitch = snapshot.get("gimbal_pitch_deg")
+        scan_pitch = float(snapshot.get("gimbal_scan_pitch_target_deg", 0.0))
+        yaw_label = (
+            "--" if gimbal_yaw is None else "{:+.1f}".format(float(gimbal_yaw))
+        )
+        pitch_label = (
+            "--" if gimbal_pitch is None
+            else "{:+.1f}".format(float(gimbal_pitch))
+        )
+        warning = ""
+        if gimbal_pitch is not None and abs(float(gimbal_pitch) - scan_pitch) > 2.0:
+            warning = " (PITCH NOT LEVEL)"
+        self.gimbal_var.set(
+            "Gimbal: {}  yaw={}°  pitch={}°  target={}°{}".format(
+                direction_name,
+                yaw_label,
+                pitch_label,
+                "{:+.1f}".format(scan_pitch),
+                warning,
             )
+        )
 
         vision_active = bool(snapshot.get("vision_active"))
         target_active = bool(snapshot.get("target_detection_active"))
