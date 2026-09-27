@@ -1650,6 +1650,7 @@ def _drive_one_cell(
     # at the side angle. A sustained 6.5 cm still blocks movement until the
     # operator has physically checked the chassis/wall clearance.
     move_side_baselines = dict(scan_ranges or {})
+    recovered_start_side = False
     for side in sorted(wall_sides):
         baseline = move_side_baselines.get(side)
         if baseline is None or float(baseline) <= 0.0 or float(baseline) > float(
@@ -1716,7 +1717,31 @@ def _drive_one_cell(
             flush=True,
         )
         if not cleared:
-            return False, "{}_{}".format(diagnostic, DIR_NAME[side]), 0.0
+            if (
+                diagnostic == "SIDE_START_CRITICAL_CONFIRMED"
+                and config.side_start_auto_recovery_enabled
+                and confirmed is not None
+            ):
+                recovered, recovery_reason, recovered_cm = (
+                    _recover_critical_start_side(
+                        chassis, gimbal, pose, sensors, gimbal_tracker,
+                        recorder, config, side, direction, current_cell,
+                        start_x, start_y, start_yaw_deg, float(confirmed),
+                        stop_event,
+                    )
+                )
+                recorder.event(
+                    time.monotonic(), "SIDE_START_AUTORECOVERY", recovery_reason,
+                    logical_node=current_cell, destination=target_cell,
+                    direction=DIR_NAME[side], recovered=bool(recovered),
+                    final_side_cm=recovered_cm,
+                )
+                if not recovered:
+                    return False, recovery_reason + "_" + DIR_NAME[side], 0.0
+                confirmed = recovered_cm
+                recovered_start_side = True
+            else:
+                return False, "{}_{}".format(diagnostic, DIR_NAME[side]), 0.0
 
         move_side_baselines[side] = confirmed
         if not _point_gimbal(
@@ -1750,6 +1775,20 @@ def _drive_one_cell(
     # finish.  This prevents mecanum slip from accumulating cell after cell.
     target_map_x = float(target_cell[0]) * config.cell_size_m
     target_map_y = float(target_cell[1]) * config.cell_size_m
+    if recovered_start_side:
+        # A recovery nudge has moved the robot away from an actual nearby
+        # wall. Do not let the ordinary centreline controller immediately
+        # undo that safe offset by steering BACK into the same wall.
+        if direction in (0, 2):
+            target_map_y = float(start_map_y)
+        else:
+            target_map_x = float(start_map_x)
+        recorder.event(
+            time.monotonic(), "RECOVERY_LATERAL_GOAL",
+            "hold safer perpendicular offset for this one-cell leg",
+            logical_node=current_cell, destination=target_cell,
+            target_xy_m=[round(target_map_x, 4), round(target_map_y, 4)],
+        )
 
     checkpoint_enabled = bool(
         config.midcell_side_check_enabled and wall_sides
