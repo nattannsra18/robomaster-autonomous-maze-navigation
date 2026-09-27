@@ -22,6 +22,7 @@ from robomaster_mission.mission import (
 
 from .camera_service import CameraService
 from .live_survey import LiveSurveyBridge
+from .motion_safety_v05 import adjacent_wall_sides, side_checkpoint_decision
 from .config import Classwork8Config
 from .occupancy_grid import OccupancyGrid
 from .reporting import RunRecorder
@@ -1120,6 +1121,43 @@ def _scan_four_directions(
         )
         yaw = pose.get_yaw()
 
+        # An actual wall along this leg can be closer than wheel odometry
+        # reports. At the halfway point, pause, look sideways while stopped,
+        # and restore forward ToF before any new chassis translation.
+        if (
+            checkpoint_enabled
+            and not checkpoint_done
+            and progress >= (
+                float(config.cell_size_m) * float(config.midcell_side_check_ratio)
+            )
+        ):
+            checkpoint_done = True
+            ok_side, side_reason, mid_bias = _midcell_wall_checkpoint(
+                chassis, gimbal, sensors, gimbal_tracker, recorder, config,
+                direction, wall_sides, current_cell, target_cell,
+                progress, stop_event,
+            )
+            if not ok_side:
+                stop_chassis(chassis)
+                return False, side_reason, moved
+
+            # Replace the initial stopped-scan bias with the more recent
+            # mid-cell side-distance correction; never sum stale+fresh bias.
+            scan_side_correction = mid_bias
+            scan_side_progress_origin = max(0.0, float(progress))
+            publish_state(
+                status="Side clearance verified at {:.2f} m: {}".format(
+                    progress, side_reason
+                ),
+                logical_cell=current_cell,
+                gimbal_direction=direction,
+                tof_cm=sensors.get_front_cm(),
+                moves=moves,
+                force=True,
+            )
+            # Reacquire fresh pose, heading and forward ToF after the pause.
+            continue
+
         if rel_x is not None and rel_y is not None:
             _update_tof_ray(
                 grid,
@@ -1171,6 +1209,119 @@ def _scan_four_directions(
     return ranges, open_dirs
 
 
+def _midcell_wall_checkpoint(
+    chassis,
+    gimbal,
+    sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker,
+    recorder: RunRecorder,
+    config: Classwork8Config,
+    direction: int,
+    wall_sides: Set[int],
+    current_cell: Tuple[int, int],
+    target_cell: Tuple[int, int],
+    progress_m: float,
+    stop_event: Optional[threading.Event],
+) -> Tuple[bool, str, float]:
+    """Stop and briefly measure confirmed side walls at a mid-cell point.
+
+    The gimbal-mounted ToF cannot face forward and sideways simultaneously:
+    no side sweeps are made while driving. After a successful stationary side
+    check, point it back along travel and require a fresh forward measurement.
+    The returned bias is bounded and based ONLY on this new, stationary scan.
+    """
+    stop_chassis(chassis)
+    ranges: Dict[int, Optional[float]] = {}
+
+    for side in (
+        (int(direction) - 1) % 4,
+        (int(direction) + 1) % 4,
+    ):
+        if side not in wall_sides:
+            continue
+
+        if stop_event is not None and stop_event.is_set():
+            return False, "USER_STOP", 0.0
+        if not _point_gimbal(gimbal, sensors, tracker, side, config, stop_event):
+            return False, "MIDCELL_SIDE_GIMBAL_FAILED", 0.0
+
+        value = _sample_tof(sensors, config, stop_event)
+        pitch = tracker.get_pitch()
+        if (
+            value is None
+            or pitch is None
+            or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
+            > float(config.gimbal_pitch_tolerance_deg)
+        ):
+            print(
+                "[SIDE_CHECK] Missing or unlevel ToF at {}. Staying stopped.".format(
+                    DIR_NAME[side]
+                ),
+                flush=True,
+            )
+            return False, "MIDCELL_SIDE_TOF_UNAVAILABLE", 0.0
+
+        ranges[side] = float(value)
+        print(
+            "[SIDE_CHECK] {} {:.1f} cm at progress {:.2f} m".format(
+                DIR_NAME[side], float(value), float(progress_m)
+            ),
+            flush=True,
+        )
+
+        if float(value) <= float(config.midcell_side_hard_stop_cm):
+            recorder.event(
+                time.monotonic(),
+                "SIDE_CLEARANCE_LOW",
+                "confirmed side wall is too close; stopping without sideways motion",
+                logical_node=current_cell,
+                destination=target_cell,
+                progress_m=round(float(progress_m), 3),
+                direction=DIR_NAME[side],
+                tof_cm=float(value),
+            )
+            return False, "SIDE_CLEARANCE_LOW_{}".format(DIR_NAME[side]), 0.0
+
+    can_continue, label, bias = side_checkpoint_decision(
+        direction,
+        wall_sides,
+        ranges,
+        hard_stop_cm=config.midcell_side_hard_stop_cm,
+        soft_margin_cm=config.midcell_side_soft_margin_cm,
+        wall_max_cm=config.scan_side_wall_max_cm,
+        gain_mps_per_cm=config.scan_side_kp_mps_per_cm,
+        max_bias_mps=config.midcell_side_max_bias_mps,
+    )
+    if not can_continue:
+        return False, label, 0.0
+
+    if not _point_gimbal(gimbal, sensors, tracker, direction, config, stop_event):
+        return False, "MIDCELL_FORWARD_GIMBAL_FAILED", 0.0
+
+    forward_cm = _wait_for_move_tof_v03(sensors, config, stop_event)
+    if forward_cm is None:
+        return False, "MIDCELL_FORWARD_TOF_STALE", 0.0
+
+    recorder.event(
+        time.monotonic(),
+        "MIDCELL_SIDE_CHECK",
+        label,
+        logical_node=current_cell,
+        destination=target_cell,
+        progress_m=round(float(progress_m), 3),
+        readings_cm={DIR_NAME[side]: value for side, value in ranges.items()},
+        correction_mps=round(float(bias), 4),
+        fresh_forward_cm=round(float(forward_cm), 2),
+    )
+    print(
+        "[SIDE_CHECK] {} -> bias {:+.3f} m/s; forward ToF {:.1f} cm.".format(
+            label, float(bias), float(forward_cm)
+        ),
+        flush=True,
+    )
+    return True, label, float(bias)
+
+
 def _drive_one_cell(
     chassis,
     gimbal,
@@ -1189,6 +1340,7 @@ def _drive_one_cell(
     current_cell: Tuple[int, int],
     target_cell: Tuple[int, int],
     scan_ranges: Optional[Dict[int, Optional[float]]],
+    wall_sides: Set[int],
     moves: int,
     stop_event: Optional[threading.Event],
     publish_state: Callable[..., None],
@@ -1234,12 +1386,18 @@ def _drive_one_cell(
     target_map_x = float(target_cell[0]) * config.cell_size_m
     target_map_y = float(target_cell[1]) * config.cell_size_m
 
+    checkpoint_enabled = bool(
+        config.midcell_side_check_enabled and wall_sides
+    )
     deadline = time.monotonic() + max(
         7.0,
-        (config.exploration_step_m / config.travel_speed_mps) * 3.5,
+        (config.exploration_step_m / config.travel_speed_mps) * 3.5
+        + (2.0 * float(config.gimbal_turn_timeout_sec) if checkpoint_enabled else 0.0),
     )
 
     drive_x_unit, drive_y_unit = DIR_VEC_DRIVE[direction]
+    checkpoint_done = False
+    scan_side_progress_origin = 0.0
 
     scan_side_correction, scan_side_mode = _scan_side_guidance_v02(
         direction,
@@ -1267,6 +1425,9 @@ def _drive_one_cell(
         if raw_x is None or raw_y is None:
             stop_chassis(chassis)
             return False, "ODOMETRY_LOST", 0.0
+        if config.heading_hold_enabled and yaw is None:
+            stop_chassis(chassis)
+            return False, "HEADING_FEEDBACK_LOST", 0.0
 
         rel_x, rel_y = _map_xy_from_raw(
             float(raw_x),
@@ -1296,6 +1457,25 @@ def _drive_one_cell(
             cross_track = rel_x - target_map_x
 
         progress = config.cell_size_m - max(0.0, remaining)
+
+        if abs(cross_track) >= float(config.motion_cross_track_abort_m):
+            stop_chassis(chassis)
+            recorder.event(
+                time.monotonic(),
+                "CROSS_TRACK_LIMIT",
+                "odometry reports unsafe drift; stopping rather than chasing a wall",
+                logical_node=current_cell,
+                destination=target_cell,
+                cross_track_m=round(float(cross_track), 4),
+                progress_m=round(float(progress), 3),
+            )
+            print(
+                "[MOVE] CROSS_TRACK_LIMIT {}: error={:+.3f} m, progress={:.3f} m".format(
+                    DIR_NAME[direction], float(cross_track), float(progress)
+                ),
+                flush=True,
+            )
+            return False, "CROSS_TRACK_LIMIT", moved
 
         # During translation, a tilted gimbal no longer measures the obstacle
         # along the travel direction. Stop immediately and restore BOTH axes
@@ -1418,6 +1598,8 @@ def _drive_one_cell(
             front_cm = confirmed_cm if confirmed_cm is not None else front_cm
 
         speed = config.travel_speed_mps
+        if abs(cross_track) >= float(config.motion_cross_track_slow_m):
+            speed = min(speed, float(config.motion_slow_cross_track_speed_mps))
         if front_cm < config.slow_front_cm:
             span = max(1.0, config.slow_front_cm - config.stop_front_cm)
             ratio = (front_cm - config.stop_front_cm) / span
@@ -1455,7 +1637,10 @@ def _drive_one_cell(
             # Apply its bias strongly only at the beginning of the cell and
             # fade it out after ~35 cm so it cannot push across the corridor.
             fade_distance = max(0.10, min(config.cell_size_m, 0.35))
-            fade = max(0.0, min(1.0, 1.0 - progress / fade_distance))
+            fade = max(
+                0.0,
+                min(1.0, 1.0 - max(0.0, progress - scan_side_progress_origin) / fade_distance),
+            )
             applied_scan_side = scan_side_correction * fade
             right_x_unit, right_y_unit = DIR_RIGHT_VEC_DRIVE[direction]
             x_cmd += right_x_unit * applied_scan_side
@@ -2582,6 +2767,9 @@ def run(
                 current_cell,
                 next_cell,
                 ranges,
+                adjacent_wall_sides(
+                    move_direction, current_cell, next_cell, edge_states
+                ),
                 moves,
                 stop_event,
                 publish_state,
