@@ -3743,6 +3743,12 @@ def run(
                     survey_bridge,
                 )
                 if scan is None:
+                    if (
+                        not stop_event.is_set()
+                        and config.supervised_hold_on_safety_dead_end
+                        and await_supervised_recheck("GIMBAL_SCAN_FAILED")
+                    ):
+                        continue
                     finish_reason = (
                         "USER_STOP"
                         if stop_event.is_set()
@@ -3888,6 +3894,16 @@ def run(
                     else "FRONTIER_SCAN_UNCERTAIN" if incomplete_scan
                     else "FRONTIER_EXPLORATION_COMPLETE"
                 )
+                if (
+                    config.supervised_hold_on_safety_dead_end
+                    and (safety_deferred_edges or incomplete_scan)
+                    and not stop_event.is_set()
+                ):
+                    if await_supervised_recheck(finish_reason):
+                        finish_reason = "UNKNOWN"
+                        continue
+                    finish_reason = "USER_STOP" if stop_event.is_set() else finish_reason
+                    break
                 recorder.event(
                     time.monotonic(),
                     "FINISH",
@@ -4100,6 +4116,26 @@ def run(
                     )
                     continue
 
+            # This is NOT a reason to keep issuing blind speed commands.
+            # Keep the GUI/mapping session alive and permit a fresh operator
+            # rescan, while motors remain at zero after the rejected move.
+            # Manual Stop & Save and genuine completion still export normally.
+            recoverable_pause = (
+                reason != "USER_STOP"
+                and (
+                    reason.startswith("RECOVERY_")
+                    or reason.startswith("SIDE_START_")
+                    or reason.startswith("HEADING_RECOVERY_")
+                    or reason.startswith("GIMBAL_")
+                    or reason in ("TOF_STALE", "ODOMETRY_UNAVAILABLE")
+                )
+            )
+            if config.supervised_hold_on_safety_dead_end and recoverable_pause:
+                if await_supervised_recheck(reason):
+                    continue
+                if stop_event.is_set():
+                    finish_reason = "USER_STOP"
+                    break
             finish_reason = (
                 "FRONTIER_RELOCATE_{}".format(reason)
                 if not is_new
