@@ -620,6 +620,25 @@ class TargetRegistry:
             (None, None) if target_xy is None else target_xy
         )
 
+        # With a valid distant wall range, the last cell BEFORE the measured
+        # wall plane is only a *candidate* cell along the sighting ray. It is
+        # not a localization result: monocular image centroids can be off-axis,
+        # and horizontal ToF may hit a different surface from a low sign.
+        sighting_cell_hint = None
+        if not range_confirmed_wall and tof_cm is not None and float(tof_cm) > 0.0:
+            steps = max(
+                1,
+                int(
+                    (float(tof_cm) / 100.0)
+                    / max(1e-6, float(self.config.cell_size_m))
+                ),
+            )
+            dx, dy = DIR_VEC[int(direction) % 4]
+            sighting_cell_hint = [
+                int(approach_cell[0] + dx * steps),
+                int(approach_cell[1] + dy * steps),
+            ]
+
         observation = {
             "t_monotonic": time.monotonic(),
             "color": detection.color,
@@ -638,6 +657,7 @@ class TargetRegistry:
             "line_of_sight_end_xy_m": (
                 None if sighting_xy is None else list(sighting_xy)
             ),
+            "sighting_cell_hint": sighting_cell_hint,
             "localization_status": (
                 "NEAR_WALL_ESTIMATE" if range_confirmed_wall
                 else "SIGHTING_ONLY"
@@ -697,6 +717,7 @@ class TargetRegistry:
                 "line_of_sight_end_xy_m": (
                     None if sighting_xy is None else list(sighting_xy)
                 ),
+                "sighting_cell_hint": sighting_cell_hint,
                 "observation_cells": [list(observation["approach_cell"])],
                 "approach_cells": (
                     [list(observation["approach_cell"])]
@@ -740,6 +761,8 @@ class TargetRegistry:
                     ]
             if sighting_xy is not None:
                 match["line_of_sight_end_xy_m"] = list(sighting_xy)
+            if sighting_cell_hint is not None and not match.get("range_confirmed_wall"):
+                match["sighting_cell_hint"] = sighting_cell_hint
             match["observations"] = count + 1
             if list(observation["approach_cell"]) not in match["observation_cells"]:
                 match["observation_cells"].append(list(observation["approach_cell"]))
