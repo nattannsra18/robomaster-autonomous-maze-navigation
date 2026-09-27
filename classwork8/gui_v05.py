@@ -680,8 +680,9 @@ class RealtimeMapGUI:
             self.vision_var.set("Camera: unavailable; ToF mapping continues")
 
         self.target_var.set(
-            "Target records: {} | distant sightings: {} | near-wall candidates: {}".format(
+            "Verified: {} | provisional (needs recheck): {} | distant: {} | near-wall: {}".format(
                 int(snapshot.get("target_count", 0)),
+                int(snapshot.get("target_pending_count", 0)),
                 int(snapshot.get("target_sighting_count", 0)),
                 int(snapshot.get("target_position_candidate_count", 0)),
             )
@@ -990,7 +991,10 @@ class RealtimeMapGUI:
                     fill=self.COLOURS["background"],
                     outline=colour, width=3,
                 )
-                label = str(target.get("target_id", "T")) + "?"
+                pending = target.get("status") == "PENDING_RECHECK"
+                label = str(target.get("target_id", "T")) + (
+                    "? CHECK" if pending else "? LOS"
+                )
                 draw.text((tx + radius + 2, ty - 5), label, fill=colour, font=font)
             else:
                 draw.ellipse(
@@ -1338,7 +1342,10 @@ class RealtimeMapGUI:
                 )
                 canvas.create_text(
                     tx + radius + 4, ty, anchor="w",
-                    text=str(target.get("target_id", "T")) + "? LOS",
+                    text=str(target.get("target_id", "T")) + (
+                        "? CHECK" if target.get("status") == "PENDING_RECHECK"
+                        else "? LOS"
+                    ),
                     fill=colour, font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
                 )
             else:
