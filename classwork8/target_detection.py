@@ -754,9 +754,8 @@ class TargetRegistry:
                 float(verified.confidence),
             )
 
-            if list(observation["approach_cell"]) not in match["approach_cells"]:
-                match["approach_cells"].append(list(observation["approach_cell"]))
-
+            # Do NOT add an open-corridor observing cell to approach_cells:
+            # only a later range-qualified near-wall view can populate it.
             if int(direction) % 4 not in match["view_directions"]:
                 match["view_directions"].append(int(direction) % 4)
                 match["view_direction_names"].append(
