@@ -139,6 +139,77 @@ def _sleep_interruptible(seconds: float, stop_event: Optional[threading.Event]) 
     return True
 
 
+def _fresh_yaw_now(pose, max_age_sec: float = 0.40) -> Optional[float]:
+    """Read a non-stale attitude callback when the tracker supports metadata."""
+    sampler = getattr(pose, "get_yaw_sample", None)
+    if callable(sampler):
+        yaw, _sequence, received_at = sampler()
+        if yaw is None or received_at is None:
+            return None
+        age = time.monotonic() - float(received_at)
+        if not 0.0 <= age <= float(max_age_sec):
+            return None
+    else:
+        # Legacy/fake trackers retain their original get_yaw interface.
+        yaw = pose.get_yaw()
+    if yaw is None or not math.isfinite(float(yaw)):
+        return None
+    return float(yaw)
+
+
+def _stationary_heading_errors(
+    pose,
+    mission_start_yaw_deg: float,
+    stop_event: Optional[threading.Event],
+    *,
+    count: int = 3,
+    max_wait_sec: float = 0.75,
+) -> List[Optional[float]]:
+    """Collect DISTINCT fresh attitude frames, not repeated cached yaw values.
+
+    Production PoseTracker has callback sequence/timestamp. Test doubles and
+    older tracker objects use the legacy polling fallback. Missing callback
+    frames become None and block the heading preflight; no motor command here.
+    """
+    errors: List[Optional[float]] = []
+    sampler = getattr(pose, "get_yaw_sample", None)
+    if callable(sampler):
+        _yaw, last_sequence, _received_at = sampler()
+        deadline = time.monotonic() + max(0.0, float(max_wait_sec))
+        while len(errors) < count and time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                break
+            yaw, sequence, received_at = sampler()
+            if sequence > last_sequence:
+                last_sequence = sequence
+                now = time.monotonic()
+                if (
+                    received_at is None
+                    or not 0.0 <= now - float(received_at) <= 0.40
+                    or yaw is None
+                    or not math.isfinite(float(yaw))
+                ):
+                    errors.append(None)
+                else:
+                    errors.append(normalize_angle_deg(
+                        float(yaw) - float(mission_start_yaw_deg)
+                    ))
+            if len(errors) < count:
+                time.sleep(0.015)
+    else:
+        for _ in range(count):
+            if stop_event is not None and stop_event.is_set():
+                break
+            yaw = _fresh_yaw_now(pose)
+            errors.append(
+                normalize_angle_deg(yaw - float(mission_start_yaw_deg))
+                if yaw is not None else None
+            )
+            if not _sleep_interruptible(0.035, stop_event):
+                break
+    return errors + [None] * max(0, count - len(errors))
+
+
 def _map_xy_from_raw(
     raw_x: float,
     raw_y: float,
@@ -1852,17 +1923,11 @@ def _recover_critical_start_side(
         for stationary_check in range(2):
             if not _sleep_interruptible(0.12, stop_event):
                 return False, "USER_STOP", current_side
-            stopped_errors = []
-            for _ in range(3):
-                if stop_event is not None and stop_event.is_set():
-                    return False, "USER_STOP", current_side
-                sample = pose.get_yaw()
-                stopped_errors.append(
-                    normalize_angle_deg(float(sample) - float(start_yaw_deg))
-                    if sample is not None else None
-                )
-                if not _sleep_interruptible(0.035, stop_event):
-                    return False, "USER_STOP", current_side
+            stopped_errors = _stationary_heading_errors(
+                pose, start_yaw_deg, stop_event,
+            )
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP", current_side
             allowed, pre_pulse_label, pre_pulse_reference = (
                 stationary_escape_heading_preflight(
                     stopped_errors,
@@ -1904,7 +1969,7 @@ def _recover_critical_start_side(
                     break
                 live_cm = sensors.get_front_cm()
                 pitch, yaw = tracker.get_angles()
-                robot_yaw = pose.get_yaw()
+                robot_yaw = _fresh_yaw_now(pose)
                 raw_x, raw_y = pose.get_xy()
                 if live_cm is None:
                     reason = "RECOVERY_TOF_STALE_DURING_NUDGE"
@@ -1998,18 +2063,11 @@ def _recover_critical_start_side(
                 return False, "USER_STOP", current_side
             if not _sleep_interruptible(0.15, stop_event):
                 return False, "USER_STOP", current_side
-            stopped_errors = []
-            for _ in range(3):
-                if stop_event is not None and stop_event.is_set():
-                    return False, "USER_STOP", current_side
-                stopped_yaw = pose.get_yaw()
-                if stopped_yaw is None:
-                    break
-                stopped_errors.append(normalize_angle_deg(
-                    float(stopped_yaw) - float(start_yaw_deg)
-                ))
-                if not _sleep_interruptible(0.035, stop_event):
-                    return False, "USER_STOP", current_side
+            stopped_errors = _stationary_heading_errors(
+                pose, start_yaw_deg, stop_event,
+            )
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP", current_side
             allowed_stopped, stopped_label, stopped_reference = (
                 stationary_escape_heading_preflight(
                     stopped_errors,
@@ -2133,23 +2191,24 @@ def _recover_critical_start_side(
             # A 2.5 cm no-turn escape is NOT permission for normal full-cell
             # travel. That controller may issue yaw correction, sweeping the
             # corners toward the wall. Require stable near-start heading first.
+            aligned = False
             final_errors = []
-            for _ in range(3):
+            for _settle_attempt in range(2):
+                if not _sleep_interruptible(0.15, stop_event):
+                    return False, "USER_STOP", current_side
+                final_errors = _stationary_heading_errors(
+                    pose, start_yaw_deg, stop_event,
+                )
                 if stop_event is not None and stop_event.is_set():
                     return False, "USER_STOP", current_side
-                yaw_now = pose.get_yaw()
-                final_errors.append(
-                    normalize_angle_deg(float(yaw_now) - float(start_yaw_deg))
-                    if yaw_now is not None else None
+                aligned, _, _ = stationary_escape_heading_preflight(
+                    final_errors,
+                    trigger_deg=config.heading_recover_release_deg,
+                    max_stable_offset_deg=config.heading_recover_release_deg,
+                    max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
                 )
-                if not _sleep_interruptible(0.035, stop_event):
-                    return False, "USER_STOP", current_side
-            aligned, _, _ = stationary_escape_heading_preflight(
-                final_errors,
-                trigger_deg=config.heading_recover_release_deg,
-                max_stable_offset_deg=config.heading_recover_release_deg,
-                max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
-            )
+                if aligned:
+                    break
             if not aligned:
                 recorder.event(
                     time.monotonic(), "CLEARANCE_HEADING",
