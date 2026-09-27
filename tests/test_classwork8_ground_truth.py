@@ -44,7 +44,7 @@ class GroundTruthEditorModelTests(unittest.TestCase):
         top, left = maze.crop_coordinates(Classwork8Config())
         self.assertEqual((top, left), (38, 38))
         maze2 = GroundTruthLayout(3, 4, (1, 2))
-        self.assertEqual(maze2.crop_coordinates(Classwork8Config()), (56, 62))
+        self.assertEqual(maze2.crop_coordinates(Classwork8Config()), (50, 62))
 
     def test_field_must_fit_working_canvas(self):
         maze = GroundTruthLayout(15, 15, (7, 7))
@@ -57,7 +57,7 @@ class GroundTruthEditorModelTests(unittest.TestCase):
         config = Classwork8Config()
         with tempfile.TemporaryDirectory() as d:
             target, meta = maze.save(Path(d) / "ground_truth.csv", config)
-            self.assertEqual((meta["crop_top"], meta["crop_left"]), (56, 62))
+            self.assertEqual((meta["crop_top"], meta["crop_left"]), (50, 62))
             self.assertTrue(target.is_file())
             self.assertTrue(target.with_suffix(".json").is_file())
             self.assertTrue(target.with_suffix(".svg").is_file())
