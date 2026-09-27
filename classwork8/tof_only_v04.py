@@ -1530,7 +1530,7 @@ def run(
                     config.closed_maze_perimeter_wall_ratio,
                 )
             ),
-            "run_dir": run_dir,
+            "run_dir": run_dir or str(recorder.run_dir),
             "gimbal_direction": current_gimbal_direction,
             "gimbal_direction_name": DIR_NAME[current_gimbal_direction],
             "gimbal_yaw_deg": gimbal_tracker.get_yaw(),
