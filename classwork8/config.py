@@ -162,6 +162,11 @@ class Classwork8Config:
     scan_hard_wall_cm: float = 25.0
     scan_ambiguous_retries: int = 1
     scan_ambiguous_retry_settle_sec: float = 0.10
+    # A long echo over a low foam wall cannot independently authorize an
+    # OPEN edge. Require two separated stationary medians and reject mixed
+    # near/long returns rather than mapping the exterior as a new cell.
+    scan_open_confirm_samples: int = 2
+    scan_open_max_spread_cm: float = 35.0
     scan_samples: int = 5
     scan_sample_interval_sec: float = 0.06
     max_moves: int = 500
@@ -318,6 +323,10 @@ class Classwork8Config:
             raise ValueError("ToF mapping range is invalid")
         if self.tof_open_cm <= self.stop_front_cm:
             raise ValueError("tof_open_cm must be greater than stop_front_cm")
+        if not 2 <= int(self.scan_open_confirm_samples) <= 4:
+            raise ValueError("scan_open_confirm_samples must be 2..4")
+        if not 0.0 < float(self.scan_open_max_spread_cm) <= 50.0:
+            raise ValueError("scan_open_max_spread_cm must be >0 and <=50")
         if self.travel_speed_mps <= 0.0:
             raise ValueError("travel_speed_mps must be positive")
         if self.odom_scale_x <= 0.0 or self.odom_scale_y <= 0.0:
