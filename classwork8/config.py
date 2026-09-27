@@ -98,7 +98,7 @@ class Classwork8Config:
     side_start_escape_max_stable_yaw_deg: float = 8.0
     side_start_escape_max_yaw_spread_deg: float = 0.75
     side_start_escape_max_in_pulse_drift_deg: float = 1.0
-    side_start_recovery_opposite_min_cm: float = 25.0
+    side_start_recovery_opposite_min_cm: float = 20.0
     side_start_recovery_max_center_offset_m: float = 0.085
     side_start_release_margin_cm: float = 2.0
     side_start_recheck_max_spread_cm: float = 2.0
@@ -138,9 +138,9 @@ class Classwork8Config:
     # Turn slowly with YAW ONLY; restore level PITCH after yaw finishes.
     # The observed transient yaw/pitch excursion is logged, but ToF is sampled
     # only AFTER both axes settle to their configured scan angles.
-    gimbal_yaw_speed_dps: float = 110.0
-    gimbal_min_yaw_speed_dps: float = 14.0
-    gimbal_yaw_kp: float = 2.4
+    gimbal_yaw_speed_dps: float = 120.0
+    gimbal_min_yaw_speed_dps: float = 28.0
+    gimbal_yaw_kp: float = 4.8
     gimbal_tolerance_deg: float = 2.5
     gimbal_stable_samples: int = 3
     gimbal_turn_timeout_sec: float = 10.0
@@ -240,7 +240,7 @@ class Classwork8Config:
     target_max_frame_age_sec: float = 0.60
     # Camera looks down only while stopped, after the horizontal ToF ray has
     # been sampled. Mapping/driving ALWAYS restore gimbal_scan_pitch_deg.
-    target_camera_pitch_deg: float = -15.0
+    target_camera_pitch_deg: float = -20.0
     target_camera_pitch_min_deg: float = -20.0
     target_camera_pitch_max_deg: float = 10.0
     target_camera_pitch_tolerance_deg: float = 1.5
