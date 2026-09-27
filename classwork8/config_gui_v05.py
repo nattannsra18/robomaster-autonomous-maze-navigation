@@ -53,7 +53,7 @@ def configure_before_run(config) -> bool:
     tabs = {}
     tab_canvases = {}
     tab_names = (
-        "Motion", "ToF / Safety", "Mapping",
+        "Mission Settings", "Motion", "ToF / Safety", "Mapping",
         "Target Detection", "Completion / Export",
     )
     for name in tab_names:
@@ -98,6 +98,19 @@ def configure_before_run(config) -> bool:
     root.bind("<Button-5>", _scroll_current_tab, add="+")
 
     field_specs: Dict[str, List[Tuple[str, str, str, str]]] = {
+        # Quick settings appear FIRST. Advanced tabs reuse the same Tk
+        # variables, so changing one control updates its duplicate instantly.
+        "Mission Settings": [
+            ("travel_speed_mps", "Robot travel speed (m/s)", "float", "Begin with the measured-safe 0.10 m/s"),
+            ("gimbal_yaw_speed_dps", "Gimbal yaw max speed (deg/s)", "float", "Default 40; trial 50-60 only after stationary checking"),
+            ("skip_scanned_visited_cells", "Skip repeat scan at visited cells", "bool", "Reuse 4-way topology only after a complete scan; every move STILL uses fresh ToF"),
+            ("target_detection_enabled", "Camera target survey", "bool", "Observe targets in each newly scanned cell"),
+            ("target_survey_open_directions", "Detect targets along open corridors", "bool", "Distant signs become unlocalized camera sightings, not false target positions"),
+            ("target_camera_pitch_deg", "Camera look-down pitch (deg)", "float", "Applied only while chassis is stopped"),
+            ("target_roi_bottom_ratio", "Target ROI bottom (0-1)", "float", "Low signs may need 0.94 to 0.99"),
+            ("closed_maze_auto_stop", "Closed-maze auto completion", "bool", "Uses the discovered closed rectangle; verify with your field"),
+            ("gui_auto_save_map", "Auto-export GUI map PNG", "bool", "Writes gui_map.png alongside mission logs"),
+        ],
         "Motion": [
             ("cell_size_m", "Cell size (m)", "float", "Physical maze cell; assignment default = 0.60"),
             ("step_tolerance_m", "Cell stop tolerance (m)", "float", "0.005 means stop around 59.5 cm in calibrated odometry"),
@@ -124,6 +137,7 @@ def configure_before_run(config) -> bool:
             ("scan_samples", "Scan samples", "int", "Median samples per gimbal direction"),
             ("scan_sample_interval_sec", "Scan sample interval (s)", "float", "Delay between ToF samples"),
             ("front_block_confirm_samples", "Blocked confirmation samples", "int", "Consecutive low readings before declaring blocked"),
+            ("skip_scanned_visited_cells", "Skip already scanned visited cells", "bool", "No repeat four-way scan when cached OPEN/WALL edges are complete; live movement ToF stays on"),
             ("scan_side_guidance_enabled", "Use scan-side centering", "bool", "Small temporary correction from the stopped 4-way scan"),
             ("scan_side_max_correction_mps", "Max scan-side correction (m/s)", "float", "Keep conservative without live side sensors"),
             ("gimbal_yaw_speed_dps", "Yaw max speed (deg/s)", "float", "V05 staged yaw-only default 40; slower for smooth diagnostic turns"),
@@ -189,12 +203,21 @@ def configure_before_run(config) -> bool:
         )
 
         current = getattr(config, attr)
+        if attr in variables:
+            var, previous_kind = variables[attr]
+            if previous_kind != kind:
+                raise ValueError("Conflicting GUI field type for {}".format(attr))
+        else:
+            var = (
+                tk.BooleanVar(value=bool(current))
+                if kind == "bool"
+                else tk.StringVar(value=str(current))
+            )
+            variables[attr] = (var, kind)
 
         if kind == "bool":
-            var = tk.BooleanVar(value=bool(current))
             widget = ttk.Checkbutton(parent, variable=var)
         elif kind == "choice":
-            var = tk.StringVar(value=str(current))
             widget = ttk.Combobox(
                 parent,
                 textvariable=var,
@@ -203,10 +226,7 @@ def configure_before_run(config) -> bool:
                 width=18,
             )
         else:
-            var = tk.StringVar(value=str(current))
             widget = ttk.Entry(parent, textvariable=var, width=20)
-
-        variables[attr] = (var, kind)
         widget.grid(row=row, column=1, sticky="ew", pady=5)
 
         help_label = ttk.Label(
@@ -293,6 +313,7 @@ def configure_before_run(config) -> bool:
             "scan_samples": 5,
             "scan_sample_interval_sec": 0.06,
             "front_block_confirm_samples": 4,
+            "skip_scanned_visited_cells": True,
             "scan_side_guidance_enabled": True,
             "scan_side_max_correction_mps": 0.015,
             "gimbal_yaw_speed_dps": 40.0,
