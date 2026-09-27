@@ -149,18 +149,27 @@ class CameraService:
 
         self._running = False
 
-    def latest(self, max_age_sec: float = 0.6) -> Optional[np.ndarray]:
+    def latest_with_timestamp(
+        self,
+        max_age_sec: float = 0.6,
+    ) -> Optional[tuple]:
+        """Return (frame, capture timestamp) from one consistent snapshot.
+
+        Temporal target verification must not count the same cached camera
+        frame multiple times while the capture thread is updating.
+        """
         with self._lock:
             frame = self._latest_frame
             timestamp = self._latest_timestamp
+            if frame is None:
+                return None
+            if time.monotonic() - timestamp > float(max_age_sec):
+                return None
+            return frame.copy(), float(timestamp)
 
-        if frame is None:
-            return None
-
-        if time.monotonic() - timestamp > float(max_age_sec):
-            return None
-
-        return frame.copy()
+    def latest(self, max_age_sec: float = 0.6) -> Optional[np.ndarray]:
+        item = self.latest_with_timestamp(max_age_sec=max_age_sec)
+        return None if item is None else item[0]
 
     def stop(self) -> None:
         self._stop.set()
