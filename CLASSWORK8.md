@@ -343,7 +343,7 @@ physical field's evaluation area.
 Run the evaluator's offline regression tests:
 
 ```powershell
-python -m unittest tests.test_classwork8_evaluation -v
+python -m unittest discover -s tests -p "test_classwork8_evaluation.py" -v
 ```
 
 ## V03: configurable GUI + nearest-frontier exploration
