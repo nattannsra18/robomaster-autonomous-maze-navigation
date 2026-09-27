@@ -193,7 +193,7 @@ class Classwork8Config:
     # Conservative mecanum translation. No 90-degree chassis scan turns.
     # Requested open-route ceiling. Mapped wall-adjacent legs remain speed-capped.
     travel_speed_mps: float = 0.20
-    stop_front_cm: float = 18.0
+    stop_front_cm: float = 13.0
     slow_front_cm: float = 35.0
     drive_timeout_sec: float = 0.15
     loop_delay_sec: float = 0.04
