@@ -169,6 +169,7 @@ class Classwork8Config:
     vision_max_corridor_width_ratio: float = 1.10
 
     # Final Assignment Round 1 - camera target survey.
+    skip_scanned_visited_cells: bool = True
     target_detection_enabled: bool = True
     target_camera_resolution: str = "360p"
     target_camera_start_timeout_sec: float = 5.0
@@ -264,8 +265,8 @@ class Classwork8Config:
             raise ValueError("gimbal pitch unsafe angle must exceed tolerance")
         if self.gimbal_yaw_pitch_guard_deg <= self.gimbal_pitch_tolerance_deg:
             raise ValueError("gimbal yaw pitch guard must exceed pitch tolerance")
-        if not 0.0 < self.gimbal_min_yaw_speed_dps <= self.gimbal_yaw_speed_dps:
-            raise ValueError("gimbal yaw speed limits are invalid")
+        if not 0.0 < self.gimbal_min_yaw_speed_dps <= self.gimbal_yaw_speed_dps <= 120.0:
+            raise ValueError("gimbal yaw speed must be above minimum and at most 120 deg/s")
         if self.gimbal_turn_timeout_sec <= 0.0:
             raise ValueError("gimbal turn timeout must be positive")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
