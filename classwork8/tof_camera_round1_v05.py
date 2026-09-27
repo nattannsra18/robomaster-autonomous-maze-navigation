@@ -97,6 +97,14 @@ class GimbalTracker:
         with self._lock:
             return self.yaw
 
+    def get_pitch(self) -> Optional[float]:
+        with self._lock:
+            return self.pitch
+
+    def get_angles(self) -> Tuple[Optional[float], Optional[float]]:
+        with self._lock:
+            return self.pitch, self.yaw
+
 
 def _sleep_interruptible(seconds: float, stop_event: Optional[threading.Event]) -> bool:
     deadline = time.monotonic() + max(0.0, float(seconds))
@@ -249,55 +257,105 @@ def _point_gimbal(
     config: Classwork8Config,
     stop_event: Optional[threading.Event],
 ) -> bool:
-    """Point ToF using closed-loop relative gimbal yaw feedback."""
+    """Point ToF by closed-loop yaw AND keep pitch horizontal.
+
+    The old yaw-only controller sent pitch_speed=0, which merely requests
+    zero pitch velocity; it does not correct an already tilted gimbal.
+    No ToF measurement is accepted until both reported axes are stable.
+    """
     if stop_event is not None and stop_event.is_set():
         return False
 
-    target = float(config.gimbal_yaw_for_direction(direction))
+    target_yaw = float(config.gimbal_yaw_for_direction(direction))
+    target_pitch = float(config.gimbal_scan_pitch_deg)
     started = time.monotonic()
     stable = 0
 
-    while time.monotonic() - started < config.gimbal_turn_timeout_sec:
+    while time.monotonic() - started < float(config.gimbal_turn_timeout_sec):
         if stop_event is not None and stop_event.is_set():
             gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
             return False
 
-        current = tracker.get_yaw()
-        if current is None:
+        pitch, yaw = tracker.get_angles()
+        if pitch is None or yaw is None:
             time.sleep(0.03)
             continue
 
-        # Gimbal yaw is a mechanically limited absolute axis (about -250..250),
-        # not an unlimited circular heading.  Do NOT wrap the error here.
-        # Example: from BACK +180 deg to LEFT -90 deg, the safe move is -270 deg
-        # through 0. Wrapping would incorrectly command +90 deg toward +270,
-        # which hits the mechanical yaw limit and makes the scan time out.
-        error = target - float(current)
-        if abs(error) <= config.gimbal_tolerance_deg:
+        # Absolute mechanical yaw: never wrap +180 -> -90 through the limit.
+        yaw_error = target_yaw - float(yaw)
+        pitch_error = target_pitch - float(pitch)
+        yaw_ready = abs(yaw_error) <= float(config.gimbal_tolerance_deg)
+        pitch_ready = abs(pitch_error) <= float(config.gimbal_pitch_tolerance_deg)
+
+        if yaw_ready and pitch_ready:
             stable += 1
             gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
-            if stable >= config.gimbal_stable_samples:
-                sensors.reset_filters()
-                return _sleep_interruptible(config.gimbal_settle_sec, stop_event)
-        else:
-            stable = 0
+            if stable >= int(config.gimbal_stable_samples):
+                if not _sleep_interruptible(config.gimbal_settle_sec, stop_event):
+                    return False
+
+                final_pitch, final_yaw = tracker.get_angles()
+                if (
+                    final_pitch is not None
+                    and final_yaw is not None
+                    and abs(target_pitch - float(final_pitch))
+                    <= float(config.gimbal_pitch_tolerance_deg)
+                    and abs(target_yaw - float(final_yaw))
+                    <= float(config.gimbal_tolerance_deg)
+                ):
+                    sensors.reset_filters()
+                    return True
+
+                # Feedback moved again during the settle period; reacquire.
+                stable = 0
+            continue
+
+        stable = 0
+        yaw_speed = 0.0
+        pitch_speed = 0.0
+
+        if not yaw_ready:
             speed = max(
-                config.gimbal_min_yaw_speed_dps,
+                float(config.gimbal_min_yaw_speed_dps),
                 min(
-                    config.gimbal_yaw_speed_dps,
-                    abs(error) * config.gimbal_yaw_kp,
+                    float(config.gimbal_yaw_speed_dps),
+                    abs(yaw_error) * float(config.gimbal_yaw_kp),
                 ),
             )
-            gimbal.drive_speed(
-                pitch_speed=0.0,
-                yaw_speed=math.copysign(speed, error),
+            yaw_speed = math.copysign(speed, yaw_error)
+
+        if not pitch_ready:
+            speed = max(
+                float(config.gimbal_pitch_min_speed_dps),
+                min(
+                    float(config.gimbal_pitch_max_speed_dps),
+                    abs(pitch_error) * float(config.gimbal_pitch_kp),
+                ),
+            )
+            pitch_speed = (
+                math.copysign(speed, pitch_error)
+                * float(config.gimbal_pitch_drive_sign)
             )
 
+        gimbal.drive_speed(
+            pitch_speed=pitch_speed,
+            yaw_speed=yaw_speed,
+        )
         time.sleep(0.03)
 
     gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+    pitch, yaw = tracker.get_angles()
+    print(
+        "[GIMBAL] Orientation not reached: desired pitch={:+.1f} yaw={:+.1f}; "
+        "measured pitch={} yaw={}".format(
+            target_pitch,
+            target_yaw,
+            "---" if pitch is None else "{:+.1f}".format(float(pitch)),
+            "---" if yaw is None else "{:+.1f}".format(float(yaw)),
+        ),
+        flush=True,
+    )
     return False
-
 
 def _sample_tof(
     sensors: ToFOnlySensorManager,
@@ -557,14 +615,51 @@ def _scan_four_directions(
             return None
 
         print(
-            "[SCAN] Gimbal {} ready at {:+.1f} deg.".format(
+            "[SCAN] Gimbal {} ready: yaw={:+.1f} pitch={:+.1f} deg.".format(
                 DIR_NAME[direction],
                 float(gimbal_tracker.get_yaw()),
+                float(gimbal_tracker.get_pitch()),
             ),
             flush=True,
         )
 
         distance_cm = _sample_tof(sensors, config, stop_event)
+
+        # Do not classify an edge using an upward/downward-tilted ToF ray.
+        # Check again AFTER the sample interval, not only when yaw settled.
+        pitch_after_sample = gimbal_tracker.get_pitch()
+        if (
+            pitch_after_sample is None
+            or abs(
+                float(pitch_after_sample) - float(config.gimbal_scan_pitch_deg)
+            ) > float(config.gimbal_pitch_tolerance_deg)
+        ):
+            print(
+                "[SCAN] {} pitch drift after ToF sampling (pitch={}); "
+                "stop and retry orientation once.".format(
+                    DIR_NAME[direction],
+                    "---" if pitch_after_sample is None
+                    else "{:+.1f}".format(float(pitch_after_sample)),
+                ),
+                flush=True,
+            )
+            if not _point_gimbal(
+                gimbal, sensors, gimbal_tracker, direction, config, stop_event
+            ):
+                return None
+            distance_cm = _sample_tof(sensors, config, stop_event)
+            final_pitch = gimbal_tracker.get_pitch()
+            if (
+                final_pitch is None
+                or abs(
+                    float(final_pitch) - float(config.gimbal_scan_pitch_deg)
+                ) > float(config.gimbal_pitch_tolerance_deg)
+            ):
+                print(
+                    "[SCAN] Unsafe pitch after retry; refusing ToF/map update.",
+                    flush=True,
+                )
+                return None
 
         # V02: readings between a definite near wall and the normal OPEN
         # threshold are ambiguous.  A foam edge / floor reflection can create
@@ -845,6 +940,32 @@ def _drive_one_cell(
             cross_track = rel_x - target_map_x
 
         progress = config.cell_size_m - max(0.0, remaining)
+
+        # During translation, a tilted gimbal no longer measures the obstacle
+        # along the travel direction. Stop immediately and restore BOTH axes
+        # before allowing the next movement command or ray update.
+        live_pitch = gimbal_tracker.get_pitch()
+        if (
+            live_pitch is None
+            or abs(
+                float(live_pitch) - float(config.gimbal_scan_pitch_deg)
+            ) > float(config.gimbal_pitch_unsafe_deg)
+        ):
+            stop_chassis(chassis)
+            print(
+                "[MOVE] Unsafe gimbal pitch={} during {}; correcting while stopped.".format(
+                    "---" if live_pitch is None else "{:+.1f}".format(float(live_pitch)),
+                    DIR_NAME[direction],
+                ),
+                flush=True,
+            )
+            if not _point_gimbal(
+                gimbal, sensors, gimbal_tracker, direction, config, stop_event
+            ):
+                return False, "GIMBAL_PITCH_DRIFT", moved
+            front_cm = _wait_for_move_tof_v03(sensors, config, stop_event)
+            if front_cm is None:
+                return False, "TOF_STALE_AFTER_GIMBAL", moved
 
         if rel_x is not None and rel_y is not None:
             _update_tof_ray(
@@ -1625,6 +1746,8 @@ def run(
             "gimbal_direction": current_gimbal_direction,
             "gimbal_direction_name": DIR_NAME[current_gimbal_direction],
             "gimbal_yaw_deg": gimbal_tracker.get_yaw(),
+            "gimbal_pitch_deg": gimbal_tracker.get_pitch(),
+            "gimbal_scan_pitch_target_deg": float(config.gimbal_scan_pitch_deg),
             "tof_cm": tof_cm,
             "moves": int(moves),
             "coverage": grid.coverage_percent(),
