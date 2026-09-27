@@ -404,22 +404,21 @@ class TargetDetector:
             1,
             cv2.LINE_AA,
         )
-        for detection in kept:
+        for index, detection in enumerate(kept, 1):
             colour = DRAW_COLOURS.get(detection.color, (255, 255, 255))
             cv2.drawContours(debug, [detection.contour], -1, colour, 2)
             x, y, w, h = detection.bbox
             cv2.rectangle(debug, (x, y), (x + w, y + h), colour, 2)
             cv2.circle(debug, detection.centroid, 4, colour, -1)
+            # Full color/shape labels overlap badly when many signs share
+            # one foam-wall strip. Keep numbered markers here and put a
+            # matching detailed legend in the stationary camera-test window.
             cv2.putText(
                 debug,
-                "{} {} {:.2f}".format(
-                    detection.color.upper(),
-                    detection.shape.upper(),
-                    detection.confidence,
-                ),
+                "#{}".format(index),
                 (x, max(18, y - 7)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
+                0.42,
                 colour,
                 1,
                 cv2.LINE_AA,
