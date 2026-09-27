@@ -11,6 +11,7 @@ from classwork8.target_detection import (
     TargetRegistry,
     VerifiedTarget,
 )
+from classwork8.target_map_visual import target_plot_geometry
 
 
 class FinalTargetDetectionTests(unittest.TestCase):
@@ -174,6 +175,70 @@ class FinalTargetDetectionTests(unittest.TestCase):
             item.detection.color == "green"
             for item in verified
         ))
+
+    def test_far_sign_is_a_sighting_not_an_observer_cell_target(self):
+        frame = np.full((360, 640, 3), 110, dtype=np.uint8)
+        cv2.rectangle(frame, (275, 214), (315, 254), (0, 0, 215), -1)
+        detections, _debug = self.detector.detect(frame)
+        sign = next(item for item in detections
+                    if item.color == "red" and item.shape == "square")
+        verified = VerifiedTarget(
+            detection=sign, verified_frames=4,
+            confidence=max(0.80, sign.confidence),
+        )
+        registry = TargetRegistry(self.config)
+        far = registry.add_verified(
+            verified, (0, 0), 3, 136.0,
+            range_confirmed_wall=False, camera_pitch_deg=-10.0,
+        )
+
+        self.assertEqual(far["status"], "SIGHTING_ONLY")
+        self.assertIsNone(far["estimated_target_xy_m"])
+        self.assertEqual(far["approach_cells"], [])
+        self.assertEqual(far["observation_cells"], [[0, 0]])
+        self.assertFalse(far["round2_position_ready"])
+        hint, source, sighting = target_plot_geometry(
+            far, self.config.cell_size_m
+        )
+        self.assertTrue(sighting)
+        self.assertEqual(source, (0.0, 0.0))
+        self.assertGreater(hint[1], self.config.cell_size_m)
+
+        with tempfile.TemporaryDirectory() as folder:
+            registry.save(Path(folder))
+            import json
+            saved = json.loads(Path(folder, "targets.json").read_text(
+                encoding="utf-8"
+            ))
+            self.assertIsNone(
+                saved["targets"][0]["estimated_target_xy_m"]
+            )
+
+    def test_same_view_close_observation_upgrades_sighting_tentatively(self):
+        frame = np.full((360, 640, 3), 110, dtype=np.uint8)
+        cv2.rectangle(frame, (275, 214), (315, 254), (0, 0, 215), -1)
+        detections, _debug = self.detector.detect(frame)
+        sign = next(item for item in detections
+                    if item.color == "red" and item.shape == "square")
+        verified = VerifiedTarget(
+            detection=sign, verified_frames=4,
+            confidence=max(0.80, sign.confidence),
+        )
+        registry = TargetRegistry(self.config)
+        far = registry.add_verified(
+            verified, (0, 0), 3, 135.0,
+            range_confirmed_wall=False,
+        )
+        near = registry.add_verified(
+            verified, (0, 0), 3, 29.0,
+            range_confirmed_wall=True,
+        )
+        self.assertEqual(far["target_id"], near["target_id"])
+        self.assertEqual(len(registry.targets), 1)
+        self.assertEqual(near["status"], "POSITION_CANDIDATE")
+        self.assertEqual(near["approach_cells"], [[0, 0]])
+        self.assertIsNotNone(near["estimated_target_xy_m"])
+        self.assertFalse(near["round2_position_ready"])
 
     def test_registry_merges_repeat_observations(self):
         frame = np.full((360, 640, 3), 100, dtype=np.uint8)
