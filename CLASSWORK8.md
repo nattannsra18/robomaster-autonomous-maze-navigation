@@ -581,3 +581,74 @@ python -u final_gimbal_pitch_test.py
 The stationary diagnostic prints the pitch min/max and peak error even if a
 yaw-only drift guard stops the sequence; no chassis travel occurs. Do not
 increase the guard threshold just to make a failed test pass.
+
+
+### V05 low floor target survey and genuinely live GUI
+
+The 27 Sep V05 field experiment completed a 3x3 logical map but exported
+\`target_count=0\` despite physical signs on the floor. The previous camera
+survey used pitch zero and only ran when horizontal ToF read <55 cm; the Tk
+preview was an old frame copied into a map status snapshot.
+
+**Updated flow at each stopped cell/direction:**
+
+1. Level gimbal pitch at the normal horizontal mapping angle (default 0).
+2. Record and validate the ToF ray for navigation/map evidence.
+3. If target survey is enabled, change pitch with **yaw stopped** to the
+   independently adjustable camera survey angle (default -10 deg).
+4. Perform multi-frame color + shape verification; record verified targets.
+5. Restore the horizontal ToF angle, checking actual pitch/yaw feedback.
+6. Only then can another ToF scan or cell movement happen.
+
+The V05 GUI shows **live annotated target detection** at a separate
+\`target_preview_fps\` cadence (8 FPS by default). Target preview runs in its
+own worker and never opens an extra video stream. Navigation map snapshots
+no longer carry the unused 160x160 matrix or a stale image, and Tk redraws
+the map only when new navigation data arrives.
+
+Runtime controls include:
+- camera observation pitch slider, -20 through +10 degrees;
+- Apply camera pitch at next scan;
+- Rescan current cell: safely finishes the active scan, then repeats it from
+  the same logical cell before moving, using the currently selected pitch;
+- Enlarge Live Camera;
+- Save Raw + Detected Camera Frame (for diagnosing missing target candidates);
+- Save GUI Map Now / Ctrl+S and Stop & Save remain fixed in the footer.
+
+The GUI NEVER commands gimbal motors directly: a requested pitch is queued
+and physically applied only by the explorer worker while chassis motion is
+stopped. Negative pitch is intended to look lower, but check the actual
+direction on the physical RoboMaster camera before starting the maze.
+
+\`target_survey_open_directions=True\` enables looking for low signs even when
+a horizontal ToF ray reports an open corridor. Such observations are exported
+with \`status=NEEDS_RANGE_REVIEW\` and \`range_confirmed_wall=false\`, since the
+camera alone does not prove the target's physical wall range. The GUI adds
+a \`?\` suffix to these estimated target markers. A target with a confirmed
+near-wall ToF ray retains \`status=DETECTED\`.
+
+The survey log now records \`TARGET_SURVEY\` for each attempted camera
+direction, including current candidates, verified target count, pitch and
+whether a wall range was confirmed. This differentiates missed field-of-view
+targets from temporal verification failures. Full-map autonomous target
+navigation must not trust \`NEEDS_RANGE_REVIEW\` positions without another
+observation.
+
+**Pull and check offline syntax/tests:**
+
+\`\`\`powershell
+git pull origin classwork8-slam-exploration
+python -m py_compile classwork8\live_survey.py classwork8\tof_camera_round1_v05.py classwork8\gui_v05.py classwork8\config.py classwork8\config_gui_v05.py classwork8\target_detection.py
+python -m unittest tests.test_final_live_survey tests.test_final_target_detection -v
+\`\`\`
+
+**Small maze hardware test:** keep the original navigation settings, use a
+camera pitch of -10 degrees initially, and test one floor sign. Open the
+enlarged live camera window. If the sign is still near/below the ROI, adjust
+the slider, apply, then press Rescan Current Cell. Review \`TARGET_SURVEY\`
+events and \`targets.json\` before starting a full 7x7 run.
+
+Full four-direction camera survey adds physical pitch movements and multiple
+vision samples; measure its impact on the total 15-minute limit before the
+exam and disable survey of open directions if the actual signs can be
+reliably observed at nearby walls.
