@@ -2290,6 +2290,28 @@ def run(
                 ranges_cm={str(k): v for k, v in sorted(ranges.items())},
             )
 
+            # The operator can adjust the camera observation pitch from Tk
+            # while exploration is running. At a safe stationary checkpoint,
+            # repeat this cell's scan once instead of driving away from a
+            # low target that the previous pitch might have missed.
+            if survey_bridge.consume_rescan() and not stop_event.is_set():
+                recorder.event(
+                    time.monotonic(),
+                    "TARGET_RESCAN_REQUESTED",
+                    "Operator requested another survey of current cell",
+                    logical_node=current_cell,
+                    camera_pitch_deg=survey_bridge.get_pitch(),
+                )
+                publish_state(
+                    status="Rescanning current cell with updated camera pitch",
+                    logical_cell=current_cell,
+                    gimbal_direction=current_gimbal_direction,
+                    tof_cm=sensors.get_front_cm(),
+                    moves=moves,
+                    force=True,
+                )
+                continue
+
             completion_status = _closed_maze_completion_v04(
                 visited,
                 edge_states,
