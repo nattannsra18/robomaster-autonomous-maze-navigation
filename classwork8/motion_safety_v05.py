@@ -222,3 +222,42 @@ def side_start_recovery_preflight(
     if float(fresh_opposite_cm) < required:
         return False, "RECOVERY_OPPOSITE_TOO_CLOSE"
     return True, "RECOVERY_SAFE_OPPOSITE_RAY"
+
+
+def heading_alignment_preflight(
+    yaw_error_deg: Optional[float],
+    side_ranges_cm: Dict[int, Optional[float]],
+    critical_side: int,
+    *,
+    min_error_deg: float,
+    max_step_deg: float,
+    max_initial_error_deg: float,
+    critical_side_min_cm: float,
+    other_side_min_cm: float,
+) -> Tuple[bool, str, float]:
+    """Plan only a small correction toward mission-start heading, never a guess.
+
+    These are *central ToF rays*, not physical chassis-corner clearance. A
+    verified chassis-swept envelope and attended field test are also required
+    before enabling automatic chassis rotation in a narrow real maze.
+    """
+    if yaw_error_deg is None:
+        return False, "HEADING_RECOVERY_NO_YAW", 0.0
+    error = float(yaw_error_deg)
+    if abs(error) < float(min_error_deg):
+        return False, "HEADING_RECOVERY_ALREADY_ALIGNED", 0.0
+    if abs(error) > float(max_initial_error_deg):
+        return False, "HEADING_RECOVERY_YAW_TOO_LARGE", 0.0
+    for direction in range(4):
+        value = side_ranges_cm.get(direction)
+        if value is None or float(value) <= 0.0:
+            return False, "HEADING_RECOVERY_RANGE_UNAVAILABLE", 0.0
+        required = (
+            float(critical_side_min_cm)
+            if direction == int(critical_side) % 4
+            else float(other_side_min_cm)
+        )
+        if float(value) < required:
+            return False, "HEADING_RECOVERY_NO_ROTATION_CLEARANCE_" + str(direction), 0.0
+    correction = max(-float(max_step_deg), min(float(max_step_deg), error))
+    return True, "HEADING_RECOVERY_SMALL_CORRECTION", correction
