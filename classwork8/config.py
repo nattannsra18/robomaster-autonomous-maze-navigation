@@ -90,10 +90,13 @@ class Classwork8Config:
     # A positive pitch speed should increase SDK pitch feedback; reverse
     # gimbal_pitch_drive_sign only if a stationary hardware test proves otherwise.
     gimbal_scan_pitch_deg: float = 0.0
-    gimbal_pitch_kp: float = 1.6
-    gimbal_pitch_min_speed_dps: float = 4.0
-    gimbal_pitch_max_speed_dps: float = 24.0
-    gimbal_pitch_tolerance_deg: float = 2.0
+    # The 27 Sep stationary log alternated around -1.7 / +1.7 deg because
+    # the old 2 deg tolerance accepted both endpoints. Slow correction near
+    # level and use a tighter acceptance window; do not force a 4 deg/s pulse.
+    gimbal_pitch_kp: float = 0.9
+    gimbal_pitch_min_speed_dps: float = 1.5
+    gimbal_pitch_max_speed_dps: float = 10.0
+    gimbal_pitch_tolerance_deg: float = 0.8
     gimbal_pitch_unsafe_deg: float = 6.0
     gimbal_pitch_drive_sign: float = 1.0
 
