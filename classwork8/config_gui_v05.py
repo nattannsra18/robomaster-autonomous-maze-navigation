@@ -342,7 +342,7 @@ def configure_before_run(config) -> bool:
             "heading_recover_max_z_dps": 24.0,
             "tof_open_cm": 55.0,
             "scan_hard_wall_cm": 25.0,
-            "stop_front_cm": 18.0,
+            "stop_front_cm": 13.0,
             "slow_front_cm": 35.0,
             "tof_recovery_wait_sec": 1.20,
             "tof_recovery_retries": 2,
