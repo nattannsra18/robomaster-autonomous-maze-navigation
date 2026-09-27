@@ -67,6 +67,7 @@ class Classwork8Config:
     midcell_side_hard_stop_cm: float = 22.0
     midcell_side_soft_margin_cm: float = 28.0
     midcell_side_max_bias_mps: float = 0.012
+    motion_total_lateral_max_mps: float = 0.028
     # Abort if wheel odometry reports excessive departure from the planned
     # logical cell centreline; it cannot detect unreported wheel slip.
     motion_cross_track_abort_m: float = 0.085
@@ -307,6 +308,8 @@ class Classwork8Config:
             raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
         if not 0.0 <= self.midcell_side_max_bias_mps <= 0.03:
             raise ValueError("midcell_side_max_bias_mps must be 0..0.03")
+        if not 0.0 < self.motion_total_lateral_max_mps <= 0.05:
+            raise ValueError("motion_total_lateral_max_mps must be 0..0.05")
         if not 0.0 < self.motion_cross_track_slow_m < self.motion_cross_track_abort_m < self.cell_size_m / 2.0:
             raise ValueError("cross-track limits must satisfy 0 < slow < abort < half cell size")
         if not 0.0 < self.motion_slow_cross_track_speed_mps <= self.travel_speed_mps:
