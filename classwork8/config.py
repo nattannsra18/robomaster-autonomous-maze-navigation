@@ -75,6 +75,10 @@ class Classwork8Config:
     side_start_recheck_enabled: bool = True
     # Independent of the optional halfway checkpoint: stop, scan opposite,
     # and permit only short, odometry-checked moves AWAY from a start-side wall.
+    # Keep the mission alive at an exhausted/no-safe-frontier situation for
+    # supervised correction and explicit RESCAN, instead of auto Stop & Save.
+    # Motion safety and the operator Stop & Save remain fully active.
+    supervised_hold_on_safety_dead_end: bool = False
     side_start_auto_recovery_enabled: bool = False
     # Optional experimental: align chassis with mission-start yaw by <=1 deg
     # ONLY after fresh four-way rays pass the clearance gate. A single ToF
