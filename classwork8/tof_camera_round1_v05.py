@@ -3961,15 +3961,24 @@ def run(
                     reason.startswith("RECOVERY_OPPOSITE_TOO_CLOSE")
                     or reason.startswith("RECOVERY_CELL_OFFSET_LIMIT")
                     or reason.startswith("RECOVERY_ATTEMPT_LIMIT")
+                    or reason.startswith("RECOVERY_HEADING_RETRY_LIMIT")
                 )
             )
             if reroutable_recovery:
+                live_yaw = pose.get_yaw()
+                stable_heading = (
+                    live_yaw is not None
+                    and abs(normalize_angle_deg(
+                        float(live_yaw) - float(raw_start_yaw)
+                    )) <= float(config.heading_recover_release_deg)
+                )
                 rel_x, rel_y = _relative_xy(
                     pose, float(raw_start_x), float(raw_start_y),
                     float(raw_start_yaw), config
                 )
                 safe_pose = (
-                    rel_x is not None and rel_y is not None
+                    stable_heading
+                    and rel_x is not None and rel_y is not None
                     and abs(float(rel_x) - float(current_cell[0]) * float(config.cell_size_m))
                         <= float(config.side_start_recovery_max_center_offset_m) + 0.005
                     and abs(float(rel_y) - float(current_cell[1]) * float(config.cell_size_m))
