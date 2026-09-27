@@ -29,6 +29,7 @@ from .motion_safety_v05 import (
     side_start_recovery_preflight,
     heading_alignment_preflight,
     stationary_escape_heading_preflight,
+    stationary_scan_motion,
     supervised_recheck_pose_ok,
     side_checkpoint_decision,
 )
@@ -890,6 +891,7 @@ def _flanked_by_confirmed_walls(
 
 
 def _scan_four_directions(
+    chassis,
     gimbal,
     pose: PoseTracker,
     sensors: ToFOnlySensorManager,
@@ -924,11 +926,23 @@ def _scan_four_directions(
     ranges: Dict[int, Optional[float]] = {}
     open_dirs: Set[int] = set()
 
-    stop_chassis_fn_called = False
+    # Reissue zero chassis velocity before scanning. A completed drive-speed
+    # command is not a position brake; allow the wheel/attitude feedback to
+    # settle rather than interpreting post-drive wobble as scan motion.
+    stop_chassis(chassis)
+    if not _sleep_interruptible(0.25, stop_event):
+        return None
 
     for direction in order:
         if stop_event is not None and stop_event.is_set():
             return None
+
+        # No chassis translation or rotation is commanded during this
+        # gimbal-only stage. Keep a measured before/after trace to distinguish
+        # an apparent camera tilt from actual reported chassis drift.
+        stop_chassis(chassis)
+        scan_before_xy = pose.get_xy()
+        scan_before_yaw = _fresh_yaw_now(pose)
 
         print(
             "[SCAN] Pointing Gimbal {} (target {:+.0f} deg)...".format(
@@ -1447,6 +1461,29 @@ def _scan_four_directions(
             None,
             None,
             "GIMBAL_SCAN_{}".format(DIR_NAME[direction]),
+        )
+
+        scan_after_xy = pose.get_xy()
+        scan_after_yaw = _fresh_yaw_now(pose)
+        drift_m, drift_yaw, drift_warn = stationary_scan_motion(
+            scan_before_xy, scan_after_xy,
+            scan_before_yaw, scan_after_yaw,
+        )
+        if drift_warn:
+            print(
+                "[SCAN_CHASSIS_DRIFT] {} reported displacement={}m yaw_delta={}deg; "
+                "chassis motor command is zero during scanning.".format(
+                    DIR_NAME[direction],
+                    "---" if drift_m is None else "{:.4f}".format(drift_m),
+                    "---" if drift_yaw is None else "{:+.2f}".format(drift_yaw),
+                ), flush=True,
+            )
+        recorder.event(
+            time.monotonic(), "SCAN_CHASSIS_STABILITY",
+            "ODOM_DRIFT_WARNING" if drift_warn else "NO_REPORTED_DRIFT",
+            logical_node=current_cell, direction=DIR_NAME[direction],
+            chassis_displacement_m=drift_m,
+            chassis_yaw_delta_deg=drift_yaw,
         )
 
         publish_state(
@@ -3881,6 +3918,7 @@ def run(
                 )
             else:
                 scan = _scan_four_directions(
+                    chassis,
                     gimbal,
                     pose,
                     sensors,
