@@ -201,19 +201,19 @@ class RealtimeMapGUI:
         )
         self.roi_bottom_var = tk.DoubleVar(
             value=(
-                0.94 if self.survey_bridge is None
+                0.96 if self.survey_bridge is None
                 else self.survey_bridge.get_roi_bottom()
             )
         )
         self.camera_pitch_var = tk.DoubleVar(
             value=(
-                -10.0 if self.survey_bridge is None
+                -15.0 if self.survey_bridge is None
                 else self.survey_bridge.get_pitch()
             )
         )
         self.yaw_speed_var = tk.DoubleVar(
             value=(
-                40.0 if self.survey_bridge is None
+                90.0 if self.survey_bridge is None
                 else self.survey_bridge.get_yaw_speed()
             )
         )
