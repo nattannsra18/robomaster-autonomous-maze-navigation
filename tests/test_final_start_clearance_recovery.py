@@ -18,7 +18,10 @@ if "libmedia_codec" not in sys.modules:
     sys.modules["libmedia_codec"] = media
 
 from classwork8.config import Classwork8Config
-from classwork8.motion_safety_v05 import side_start_recovery_preflight
+from classwork8.motion_safety_v05 import (
+    side_start_recovery_preflight,
+    heading_alignment_preflight,
+)
 from classwork8 import tof_camera_round1_v05 as mission
 
 
@@ -39,6 +42,48 @@ class PreflightTests(unittest.TestCase):
             side_start_recovery_preflight(6.5, 30.0, **dict(args, step_m=0.0)),
             (False, "RECOVERY_INVALID_STEP"),
         )
+
+
+class HeadingAlignmentDecisionTests(unittest.TestCase):
+    def rays(self, critical=10.7, opposite=30.0):
+        return {0: opposite, 1: 32.0, 2: critical, 3: 35.0}
+
+    def plan(self, yaw_error, rays):
+        return heading_alignment_preflight(
+            yaw_error, rays, 2,
+            min_error_deg=1.5, max_step_deg=1.0,
+            max_initial_error_deg=8.0,
+            critical_side_min_cm=10.0,
+            other_side_min_cm=22.0,
+        )
+
+    def test_right_lean_corrects_only_towards_original_heading(self):
+        valid, status, correction = self.plan(4.5, self.rays())
+        self.assertTrue(valid, status)
+        self.assertEqual(correction, 1.0)
+        valid, status, correction = self.plan(-4.5, self.rays())
+        self.assertTrue(valid, status)
+        self.assertEqual(correction, -1.0)
+
+    def test_real_front_back_tight_log_forbids_rotation(self):
+        valid, status, correction = self.plan(
+            4.5, self.rays(critical=10.7, opposite=15.8),
+        )
+        self.assertFalse(valid)
+        self.assertEqual(status, "HEADING_RECOVERY_NO_ROTATION_CLEARANCE_0")
+        self.assertEqual(correction, 0.0)
+
+    def test_no_critical_clearance_or_stale_ray_forbids_rotation(self):
+        self.assertFalse(self.plan(4.0, self.rays(critical=9.0))[0])
+        rays = self.rays()
+        rays[1] = None
+        self.assertEqual(self.plan(4.0, rays)[1],
+                         "HEADING_RECOVERY_RANGE_UNAVAILABLE")
+
+    def test_peak_error_is_not_live_error(self):
+        valid, status, _ = self.plan(0.6, self.rays())
+        self.assertFalse(valid)
+        self.assertEqual(status, "HEADING_RECOVERY_ALREADY_ALIGNED")
 
 
 class FakePose:
