@@ -1033,21 +1033,35 @@ def _scan_four_directions(
                 )
                 return None
 
+            live_preview_status = survey_bridge.latest_preview()
             recorder.event(
                 time.monotonic(),
                 "TARGET_SURVEY",
-                "{} at {:+.1f} deg: {} verified, wall_range_confirmed={}".format(
+                "{} at {:+.1f} deg: {} verified / {} current candidates, "
+                "wall_range_confirmed={}".format(
                     DIR_NAME[direction],
                     selected_pitch,
                     len(verified_targets),
+                    live_preview_status["candidate_count"],
                     near_wall,
                 ),
                 logical_node=current_cell,
                 direction=DIR_NAME[direction],
                 verified_targets=len(verified_targets),
+                live_candidate_count=live_preview_status["candidate_count"],
                 camera_pitch_deg=selected_pitch,
                 range_confirmed_wall=near_wall,
                 tof_cm=distance_cm,
+            )
+            print(
+                "[TARGET_SURVEY] {} pitch={:+.1f} candidates={} verified={} wall={}".format(
+                    DIR_NAME[direction],
+                    selected_pitch,
+                    live_preview_status["candidate_count"],
+                    len(verified_targets),
+                    near_wall,
+                ),
+                flush=True,
             )
         elif camera_service is not None and camera_service.running:
             recorder.event(
