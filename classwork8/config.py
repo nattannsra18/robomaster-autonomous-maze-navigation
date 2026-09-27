@@ -269,6 +269,15 @@ class Classwork8Config:
     gui_export_width_px: int = 1200
     gui_export_height_px: int = 900
 
+    # Optional automatic assignment evaluation when maps are saved.
+    # A separately measured ground_truth.csv must use the occupancy grid's
+    # resolution/orientation. -1 means no explicit crop (same-size maps).
+    auto_evaluate_on_save: bool = True
+    ground_truth_csv: str = "ground_truth.csv"
+    evaluation_crop_top: int = -1
+    evaluation_crop_left: int = -1
+    evaluation_rotate_deg: int = 0
+
     output_dir: str = "classwork8_output"
 
     def validate(self) -> None:
@@ -387,6 +396,12 @@ class Classwork8Config:
             raise ValueError("closed_maze_min_rows/cols must be >= 1")
         if self.gui_export_width_px < 320 or self.gui_export_height_px < 240:
             raise ValueError("GUI export size is too small")
+        if self.evaluation_rotate_deg not in (0, 90, 180, 270):
+            raise ValueError("evaluation_rotate_deg must be 0, 90, 180, or 270")
+        if self.evaluation_crop_top < -1 or self.evaluation_crop_left < -1:
+            raise ValueError("evaluation crop coordinates must be -1 or nonnegative")
+        if (self.evaluation_crop_top == -1) != (self.evaluation_crop_left == -1):
+            raise ValueError("Set BOTH evaluation crop coordinates, or leave both -1")
         if self.vision_resolution not in ("360p", "540p", "720p"):
             raise ValueError("vision_resolution must be 360p, 540p, or 720p")
         if self.vision_blur_kernel < 3 or self.vision_blur_kernel % 2 == 0:
