@@ -21,6 +21,7 @@ from robomaster_mission.mission import (
 )
 
 from .camera_service import CameraService
+from .live_survey import LiveSurveyBridge
 from .config import Classwork8Config
 from .occupancy_grid import OccupancyGrid
 from .reporting import RunRecorder
@@ -736,6 +737,7 @@ def _scan_four_directions(
     target_detector: Optional[TargetDetector],
     target_registry: TargetRegistry,
     target_debug_holder: List[object],
+    survey_bridge: LiveSurveyBridge,
 ) -> Optional[Tuple[Dict[int, Optional[float]], Set[int]]]:
     # Sweep in the direction that is closest to the current gimbal endpoint.
     # This avoids a large BACK(+180) -> LEFT(-90) wrap across the +250 deg
@@ -1775,8 +1777,10 @@ def run(
     publish: Optional[Callable[[dict], None]] = None,
     stop_event: Optional[threading.Event] = None,
     ep_robot=None,
+    survey_bridge: Optional[LiveSurveyBridge] = None,
 ) -> Path:
     config = config or Classwork8Config()
+    survey_bridge = survey_bridge or LiveSurveyBridge(config)
     config.validate()
     stop_event = stop_event or threading.Event()
 
@@ -1897,22 +1901,13 @@ def run(
         camera_active = bool(
             camera_service is not None and camera_service.running
         )
-        target_preview = target_debug_holder[0]
-        if target_preview is None and camera_active:
-            try:
-                target_preview = camera_service.latest(max_age_sec=1.0)
-            except Exception:
-                target_preview = None
-
         publish({
             "status": status,
             "reason": reason,
             "finished": bool(finished),
-            "matrix": grid.matrix(),
-            "rows": grid.rows,
-            "cols": grid.cols,
-            "origin_x_m": grid.origin_x_m,
-            "origin_y_m": grid.origin_y_m,
+            # The runtime logical GUI does not read the 160x160 matrix.
+            # Avoid allocating it at every pose refresh; export still writes
+            # the full occupancy grid from the mapper itself.
             "resolution_m": grid.resolution_m,
             "cell_size_m": config.cell_size_m,
             "trajectory": recorder.trajectory_xy(),
@@ -1960,7 +1955,9 @@ def run(
             "vision_steering_enabled": False,
             "vision_error": None,
             "vision_confidence": 0.0,
-            "vision_frame": target_preview,
+            # The annotated image is polled directly from LiveSurveyBridge by
+            # Tk at preview cadence, never copied into every map snapshot.
+            "vision_frame": None,
             "target_detection_active": bool(
                 camera_active and target_detector is not None
             ),
@@ -2098,6 +2095,10 @@ def run(
                 start_timeout_sec=config.target_camera_start_timeout_sec,
             )
             camera_ok = camera_service.start()
+            if camera_ok:
+                survey_bridge.attach_camera(camera_service)
+            else:
+                survey_bridge.set_status("Camera stream could not start")
 
         print(
             "[CAMERA] Round-1 target survey: {}".format(
@@ -2169,6 +2170,7 @@ def run(
                 target_detector,
                 target_registry,
                 target_debug_holder,
+                survey_bridge,
             )
             if scan is None:
                 finish_reason = (
@@ -2444,6 +2446,9 @@ def run(
         raise
 
     finally:
+        # The preview worker must stop before CameraService releases the
+        # shared OpenCV stream; it never issues robot commands.
+        survey_bridge.stop()
         if chassis is not None:
             try:
                 stop_chassis(chassis)
