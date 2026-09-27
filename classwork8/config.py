@@ -85,6 +85,18 @@ class Classwork8Config:
     gimbal_turn_timeout_sec: float = 7.0
     gimbal_settle_sec: float = 0.20
 
+    # V05 ToF/camera both share the gimbal: yaw-only control does not keep
+    # pitch level. Hold the horizontal mission scan pitch using feedback.
+    # A positive pitch speed should increase SDK pitch feedback; reverse
+    # gimbal_pitch_drive_sign only if a stationary hardware test proves otherwise.
+    gimbal_scan_pitch_deg: float = 0.0
+    gimbal_pitch_kp: float = 1.6
+    gimbal_pitch_min_speed_dps: float = 4.0
+    gimbal_pitch_max_speed_dps: float = 24.0
+    gimbal_pitch_tolerance_deg: float = 2.0
+    gimbal_pitch_unsafe_deg: float = 6.0
+    gimbal_pitch_drive_sign: float = 1.0
+
     # Occupancy evidence
     free_delta: int = -2
     occupied_delta: int = 5
@@ -219,6 +231,18 @@ class Classwork8Config:
             raise ValueError("cell/step size must be positive")
         if abs(self.cell_size_m - self.exploration_step_m) > 1e-9:
             raise ValueError("this classwork mode expects one move per physical cell")
+        if not -20.0 <= self.gimbal_scan_pitch_deg <= 20.0:
+            raise ValueError("gimbal_scan_pitch_deg must be between -20 and 20")
+        if self.gimbal_pitch_drive_sign not in (-1.0, 1.0):
+            raise ValueError("gimbal_pitch_drive_sign must be -1.0 or +1.0")
+        if self.gimbal_pitch_min_speed_dps <= 0.0 or (
+            self.gimbal_pitch_max_speed_dps < self.gimbal_pitch_min_speed_dps
+        ):
+            raise ValueError("gimbal pitch speeds are invalid")
+        if self.gimbal_pitch_kp <= 0.0 or self.gimbal_pitch_tolerance_deg <= 0.0:
+            raise ValueError("gimbal pitch gain/tolerance must be positive")
+        if self.gimbal_pitch_unsafe_deg <= self.gimbal_pitch_tolerance_deg:
+            raise ValueError("gimbal pitch unsafe angle must exceed tolerance")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
             raise ValueError("ToF mapping range is invalid")
         if self.tof_open_cm <= self.stop_front_cm:
