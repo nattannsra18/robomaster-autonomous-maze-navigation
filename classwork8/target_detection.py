@@ -604,10 +604,20 @@ class TargetRegistry:
         camera_pitch_deg: Optional[float] = None,
     ) -> dict:
         detection = verified.detection
-        target_x, target_y = self._estimate_target_xy(
-            approach_cell,
-            direction,
-            tof_cm,
+        # A distant sign is a bearing observation, NOT a target at the
+        # observing cell. Horizontal ToF measures one ray and may hit a
+        # different surface than a low camera target. Keep its end point only
+        # as an explicitly unconfirmed line-of-sight hint.
+        sighting_xy = (
+            None if tof_cm is None else self._estimate_target_xy(
+                approach_cell, direction, tof_cm
+            )
+        )
+        target_xy = (
+            sighting_xy if range_confirmed_wall else None
+        )
+        target_x, target_y = (
+            (None, None) if target_xy is None else target_xy
         )
 
         observation = {
@@ -622,7 +632,16 @@ class TargetRegistry:
             "camera_pitch_deg": (
                 None if camera_pitch_deg is None else float(camera_pitch_deg)
             ),
-            "estimated_target_xy_m": [target_x, target_y],
+            "estimated_target_xy_m": (
+                None if target_xy is None else [target_x, target_y]
+            ),
+            "line_of_sight_end_xy_m": (
+                None if sighting_xy is None else list(sighting_xy)
+            ),
+            "localization_status": (
+                "NEAR_WALL_ESTIMATE" if range_confirmed_wall
+                else "SIGHTING_ONLY"
+            ),
             "centroid_px": [
                 int(detection.centroid[0]),
                 int(detection.centroid[1]),
@@ -672,8 +691,22 @@ class TargetRegistry:
                 "target_id": "T{:02d}".format(self._next_id),
                 "color": detection.color,
                 "shape": detection.shape,
-                "estimated_target_xy_m": [target_x, target_y],
-                "approach_cells": [list(observation["approach_cell"])],
+                "estimated_target_xy_m": (
+                    None if target_xy is None else [target_x, target_y]
+                ),
+                "line_of_sight_end_xy_m": (
+                    None if sighting_xy is None else list(sighting_xy)
+                ),
+                "observation_cells": [list(observation["approach_cell"])],
+                "approach_cells": (
+                    [list(observation["approach_cell"])]
+                    if range_confirmed_wall else []
+                ),
+                "localization_status": (
+                    "NEAR_WALL_ESTIMATE" if range_confirmed_wall
+                    else "SIGHTING_ONLY"
+                ),
+                "round2_position_ready": False,
                 "view_directions": [int(direction) % 4],
                 "view_direction_names": [DIR_NAME[int(direction) % 4]],
                 "reference_views": [{
@@ -685,23 +718,37 @@ class TargetRegistry:
                 "confidence": float(verified.confidence),
                 "range_confirmed_wall": bool(range_confirmed_wall),
                 "status": (
-                    "DETECTED" if range_confirmed_wall else "NEEDS_RANGE_REVIEW"
+                    "POSITION_CANDIDATE" if range_confirmed_wall
+                    else "SIGHTING_ONLY"
                 ),
             }
             self._next_id += 1
             self.targets.append(match)
         else:
             count = int(match["observations"])
-            old_x, old_y = match["estimated_target_xy_m"]
-
-            match["estimated_target_xy_m"] = [
-                (old_x * count + target_x) / float(count + 1),
-                (old_y * count + target_y) / float(count + 1),
-            ]
+            old_xy = match.get("estimated_target_xy_m")
+            if target_xy is not None:
+                if old_xy is None:
+                    match["estimated_target_xy_m"] = [target_x, target_y]
+                else:
+                    # Repeat views at this SAME cell/direction may smooth the
+                    # range estimate. Never average an unlocated far sighting
+                    # into a physical target coordinate.
+                    match["estimated_target_xy_m"] = [
+                        (float(old_xy[0]) * count + target_x) / (count + 1),
+                        (float(old_xy[1]) * count + target_y) / (count + 1),
+                    ]
+            if sighting_xy is not None:
+                match["line_of_sight_end_xy_m"] = list(sighting_xy)
             match["observations"] = count + 1
+            if list(observation["approach_cell"]) not in match["observation_cells"]:
+                match["observation_cells"].append(list(observation["approach_cell"]))
             if range_confirmed_wall:
                 match["range_confirmed_wall"] = True
-                match["status"] = "DETECTED"
+                match["localization_status"] = "NEAR_WALL_ESTIMATE"
+                match["status"] = "POSITION_CANDIDATE"
+                if list(observation["approach_cell"]) not in match["approach_cells"]:
+                    match["approach_cells"].append(list(observation["approach_cell"]))
             match["confidence"] = max(
                 float(match["confidence"]),
                 float(verified.confidence),
@@ -724,8 +771,13 @@ class TargetRegistry:
     def save(self, run_dir: Path) -> None:
         run_dir = Path(run_dir)
         payload = {
-            "version": 1,
+            "version": 2,
             "target_count": len(self.targets),
+            "localization_note": (
+                "SIGHTING_ONLY is a camera bearing, not a target coordinate. "
+                "NEAR_WALL_ESTIMATE is a tentative ToF wall-surface projection; "
+                "Round 2 must revalidate position from a close observation."
+            ),
             "targets": self.targets,
             "observations": self.observations,
         }
