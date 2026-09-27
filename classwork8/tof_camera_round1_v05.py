@@ -26,6 +26,7 @@ from .motion_safety_v05 import (
     adjacent_wall_sides,
     bound_travel_lateral,
     critical_start_side_recheck,
+    side_start_recovery_preflight,
     side_checkpoint_decision,
 )
 from .config import Classwork8Config
@@ -1373,6 +1374,231 @@ def _midcell_wall_checkpoint(
         flush=True,
     )
     return True, label, float(bias)
+
+
+def _recover_critical_start_side(
+    chassis,
+    gimbal,
+    pose: PoseTracker,
+    sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker,
+    recorder: RunRecorder,
+    config: Classwork8Config,
+    side: int,
+    travel_direction: int,
+    current_cell: Tuple[int, int],
+    start_x: float,
+    start_y: float,
+    start_yaw_deg: float,
+    confirmed_side_cm: float,
+    stop_event: Optional[threading.Event],
+) -> Tuple[bool, str, Optional[float]]:
+    """Short, measured clearance nudges AWAY from a confirmed starting side wall.
+
+    A single gimbal ToF cannot see both directions simultaneously. Therefore:
+    stop, confirm the opposite ray while stationary, face ToF in the actual
+    movement direction for each tiny pulse, stop and re-check the original
+    wall after every pulse. Never use an old scan as a permission to move.
+    Do not change logical cell/map topology based on these pulses.
+    """
+    stop_chassis(chassis)
+    if not config.side_start_auto_recovery_enabled:
+        return False, "SIDE_START_AUTORECOVERY_DISABLED", confirmed_side_cm
+
+    away = (int(side) + 2) % 4
+    current_side = float(confirmed_side_cm)
+    unit_x, unit_y = DIR_VEC_DRIVE[away]
+    map_dx, map_dy = DIR_VEC_MAP[away]
+    step = float(config.side_start_recovery_step_m)
+    max_offset = float(config.side_start_recovery_max_center_offset_m)
+    center_x = float(current_cell[0]) * float(config.cell_size_m)
+    center_y = float(current_cell[1]) * float(config.cell_size_m)
+
+    for attempt in range(1, int(config.side_start_recovery_max_attempts) + 1):
+        if stop_event is not None and stop_event.is_set():
+            return False, "USER_STOP", current_side
+        rel_x, rel_y = _relative_xy(
+            pose, start_x, start_y, start_yaw_deg, config
+        )
+        if rel_x is None or rel_y is None:
+            return False, "RECOVERY_ODOMETRY_UNAVAILABLE", current_side
+
+        # Do not step outside the current logical cell's safe centre region.
+        expected_x = float(rel_x) + map_dx * step
+        expected_y = float(rel_y) + map_dy * step
+        if (
+            abs(expected_x - center_x) > max_offset
+            or abs(expected_y - center_y) > max_offset
+        ):
+            return False, "RECOVERY_CELL_OFFSET_LIMIT", current_side
+
+        if not _point_gimbal(
+            gimbal, sensors, tracker, away, config, stop_event
+        ):
+            return False, "RECOVERY_OPPOSITE_GIMBAL_FAILED", current_side
+
+        opposite_values = []
+        for _ in range(2):
+            sensors.reset_filters()
+            opposite_values.append(
+                _wait_for_fresh_tof(sensors, config.tof_recovery_wait_sec, stop_event)
+            )
+        if any(value is None for value in opposite_values):
+            return False, "RECOVERY_OPPOSITE_TOF_STALE", current_side
+        if abs(float(opposite_values[0]) - float(opposite_values[1])) > float(
+            config.side_start_recheck_max_spread_cm
+        ):
+            return False, "RECOVERY_OPPOSITE_RANGE_INCONSISTENT", current_side
+
+        opposite_cm = min(float(value) for value in opposite_values)
+        can_nudge, label = side_start_recovery_preflight(
+            current_side,
+            opposite_cm,
+            hard_stop_cm=config.midcell_side_hard_stop_cm,
+            release_margin_cm=config.side_start_release_margin_cm,
+            opposite_min_cm=config.side_start_recovery_opposite_min_cm,
+            step_m=step,
+        )
+        recorder.event(
+            time.monotonic(), "CLEARANCE_PREFLIGHT", label,
+            logical_node=current_cell,
+            wall_direction=DIR_NAME[side],
+            escape_direction=DIR_NAME[away],
+            wall_cm=round(current_side, 2),
+            opposite_cm=round(opposite_cm, 2),
+            attempt=attempt,
+        )
+        if not can_nudge:
+            return False, label, current_side
+
+        # ToF is now facing the ACTUAL translation direction, not the wall
+        # behind the robot. Check its age and stop after the tiny odom step.
+        x0, y0 = pose.get_xy()
+        if x0 is None or y0 is None:
+            return False, "RECOVERY_ODOMETRY_UNAVAILABLE", current_side
+        x0, y0 = float(x0), float(y0)
+        speed = float(config.side_start_recovery_speed_mps)
+        pulse_deadline = time.monotonic() + min(1.5, 0.35 + 2.0 * step / speed)
+        travelled = 0.0
+        reason = "RECOVERY_PULSE_TIMEOUT"
+
+        try:
+            while time.monotonic() < pulse_deadline:
+                if stop_event is not None and stop_event.is_set():
+                    reason = "USER_STOP"
+                    break
+                live_cm = sensors.get_front_cm()
+                pitch, yaw = tracker.get_angles()
+                robot_yaw = pose.get_yaw()
+                raw_x, raw_y = pose.get_xy()
+                if live_cm is None:
+                    reason = "RECOVERY_TOF_STALE_DURING_NUDGE"
+                    break
+                if float(live_cm) <= float(config.stop_front_cm):
+                    reason = "RECOVERY_OBSTACLE_IN_ESCAPE_DIRECTION"
+                    break
+                if (
+                    pitch is None or yaw is None
+                    or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
+                        > float(config.gimbal_pitch_unsafe_deg)
+                    or abs(float(yaw) - float(config.gimbal_yaw_for_direction(away)))
+                        > float(config.gimbal_tolerance_deg) + 2.0
+                ):
+                    reason = "RECOVERY_GIMBAL_DIRECTION_LOST"
+                    break
+                if robot_yaw is None or abs(
+                    normalize_angle_deg(float(robot_yaw) - float(start_yaw_deg))
+                ) > float(config.heading_recover_trigger_deg):
+                    reason = "RECOVERY_HEADING_LOST"
+                    break
+                if raw_x is None or raw_y is None:
+                    reason = "RECOVERY_ODOMETRY_LOST"
+                    break
+                new_x, new_y = _map_xy_from_raw(
+                    float(raw_x), float(raw_y), start_x, start_y, start_yaw_deg,
+                    config.odom_scale_x, config.odom_scale_y,
+                )
+                moved_x, moved_y = _map_xy_from_raw(
+                    x0, y0, start_x, start_y, start_yaw_deg,
+                    config.odom_scale_x, config.odom_scale_y,
+                )
+                travelled = (
+                    (float(new_x) - float(moved_x)) * map_dx
+                    + (float(new_y) - float(moved_y)) * map_dy
+                )
+                cross_error = abs(
+                    (float(new_x) - float(moved_x)) * map_dy
+                    - (float(new_y) - float(moved_y)) * map_dx
+                )
+                if (
+                    abs(float(new_x) - center_x) > max_offset + 0.005
+                    or abs(float(new_y) - center_y) > max_offset + 0.005
+                    or cross_error > 0.025
+                    or travelled < -0.01
+                ):
+                    reason = "RECOVERY_ODOMETRY_GUARD"
+                    break
+                if travelled >= step:
+                    reason = "RECOVERY_PULSE_COMPLETE"
+                    break
+                chassis.drive_speed(
+                    x=unit_x * speed, y=unit_y * speed, z=0.0,
+                    timeout=config.drive_timeout_sec,
+                )
+                time.sleep(min(0.04, float(config.loop_delay_sec)))
+        finally:
+            stop_chassis(chassis)
+
+        recorder.event(
+            time.monotonic(), "CLEARANCE_NUDGE", reason,
+            logical_node=current_cell,
+            escape_direction=DIR_NAME[away],
+            attempt=attempt, travelled_m=round(float(travelled), 4),
+        )
+        if reason != "RECOVERY_PULSE_COMPLETE":
+            return False, reason, current_side
+        if travelled < 0.012:
+            return False, "RECOVERY_NO_ODOMETRY_PROGRESS", current_side
+
+        # Reconfirm the original wall after the chassis has stopped. Never
+        # trust the pre-nudge wall reading as proof that clearance improved.
+        if not _point_gimbal(
+            gimbal, sensors, tracker, side, config, stop_event
+        ):
+            return False, "RECOVERY_WALL_GIMBAL_FAILED", current_side
+        side_values = []
+        for _ in range(2):
+            sensors.reset_filters()
+            side_values.append(
+                _wait_for_fresh_tof(sensors, config.tof_recovery_wait_sec, stop_event)
+            )
+        if any(value is None for value in side_values):
+            return False, "RECOVERY_WALL_TOF_STALE", current_side
+        if abs(float(side_values[0]) - float(side_values[1])) > float(
+            config.side_start_recheck_max_spread_cm
+        ):
+            return False, "RECOVERY_WALL_RANGE_INCONSISTENT", current_side
+
+        new_side = min(float(value) for value in side_values)
+        if new_side < current_side + 0.6:
+            return False, "RECOVERY_WALL_DISTANCE_NOT_INCREASING", new_side
+        current_side = new_side
+        released = all(
+            float(value) >= float(config.midcell_side_hard_stop_cm)
+                + float(config.side_start_release_margin_cm)
+            for value in side_values
+        )
+        print(
+            "[CLEARANCE_RECOVERY] {} away={} attempt={} range={:.1f}cm "
+            "moved={:.3f}m released={}".format(
+                DIR_NAME[side], DIR_NAME[away], attempt, current_side,
+                travelled, released,
+            ), flush=True,
+        )
+        if released:
+            return True, "RECOVERY_CLEARANCE_CONFIRMED", current_side
+
+    return False, "RECOVERY_ATTEMPT_LIMIT", current_side
 
 
 def _drive_one_cell(
