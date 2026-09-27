@@ -47,8 +47,9 @@ class FinalTargetDetectionTests(unittest.TestCase):
         self.assertTrue(matches)
 
     def test_floor_reflection_is_outside_configured_target_roi(self):
-        # Reproduce the user's real sample geometry without committing their
-        # private camera photo into the repository.
+        # Wall-target profile: retain the narrower 0.82 ROI for the earlier
+        # white-foam-wall sample. Ground-sign mode intentionally uses 0.94.
+        self.config.target_roi_bottom_ratio = 0.82
         frame = np.full((360, 640, 3), 130, dtype=np.uint8)
         cv2.rectangle(frame, (274, 230), (316, 271), (0, 190, 0), -1)
         cv2.rectangle(frame, (277, 313), (309, 328), (0, 220, 220), -1)
