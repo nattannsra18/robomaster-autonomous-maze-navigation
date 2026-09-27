@@ -58,6 +58,21 @@ def target_plot_geometry(target: dict, cell_size_m: float):
     return endpoint, origin, True
 
 
+def confirmed_map_targets(targets):
+    """Return only camera-confirmed signs for map rendering/export.
+
+    PENDING_RECHECK is useful for internal revisit logic and targets.json,
+    but is not a confirmed sign and must not clutter the logical map.
+    Confirmed SIGHTING_ONLY observations remain visible as hollow bearing
+    markers; their position is not represented as a verified coordinate.
+    """
+    return [
+        target for target in (targets or [])
+        if target.get("status") != "PENDING_RECHECK"
+        and target.get("confirmed") is not False
+    ]
+
+
 def target_marker_offsets(targets, cell_size_m: float):
     """Pure display-only offsets, in logical-cell widths, for shared ToF rays.
 
