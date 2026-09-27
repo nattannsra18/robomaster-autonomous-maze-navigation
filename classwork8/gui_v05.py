@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import queue
+import time
 import threading
 import traceback
 from datetime import datetime
@@ -81,6 +82,7 @@ class RealtimeMapGUI:
         self._vision_photo = None
         self.survey_bridge = survey_bridge
         self._last_preview_timestamp = -1.0
+        self._last_map_render_timestamp = 0.0
         self._preview_visible = False
         self._preview_popup = None
         self._popup_label = None
@@ -193,6 +195,15 @@ class RealtimeMapGUI:
         self.pitch_status_var = tk.StringVar(
             value="Camera pitch: queued for next stationary scan"
         )
+        self.roi_status_var = tk.StringVar(
+            value="ROI: adjust bottom line to include the full floor sign"
+        )
+        self.roi_bottom_var = tk.DoubleVar(
+            value=(
+                0.94 if self.survey_bridge is None
+                else self.survey_bridge.get_roi_bottom()
+            )
+        )
         self.camera_pitch_var = tk.DoubleVar(
             value=(
                 -10.0 if self.survey_bridge is None
@@ -254,6 +265,27 @@ class RealtimeMapGUI:
             label="Negative = look down (verify on real camera)",
         )
         self.camera_pitch_slider.pack(fill="x")
+        ttk.Label(
+            right,
+            text="Target ROI lower boundary (0.70-0.99): include low signs, exclude unwanted floor reflections",
+            wraplength=285,
+        ).pack(anchor="w", pady=(5, 0))
+        self.roi_bottom_slider = tk.Scale(
+            right,
+            from_=0.70,
+            to=0.99,
+            resolution=0.01,
+            orient="horizontal",
+            variable=self.roi_bottom_var,
+            label="Live detection region bottom",
+            command=self._on_roi_bottom_change,
+        )
+        self.roi_bottom_slider.pack(fill="x")
+        ttk.Label(
+            right,
+            textvariable=self.roi_status_var,
+            wraplength=280,
+        ).pack(anchor="w", pady=(0, 4))
         ttk.Button(
             right,
             text="APPLY CAMERA PITCH AT NEXT SCAN",
@@ -376,10 +408,21 @@ class RealtimeMapGUI:
             "(horizontal ToF remains unchanged).".format(pitch)
         )
 
+    def _on_roi_bottom_change(self, _value=None) -> None:
+        if self.survey_bridge is None:
+            return
+        actual = self.survey_bridge.set_roi_bottom(self.roi_bottom_var.get())
+        self.roi_status_var.set(
+            "Live ROI bottom: {:.0f}% (no gimbal movement)".format(
+                actual * 100.0
+            )
+        )
+
     def _request_rescan(self) -> None:
         if self.survey_bridge is None:
             return
         self._apply_camera_pitch()
+        self._on_roi_bottom_change()
         self.survey_bridge.request_rescan()
         self.pitch_status_var.set(
             "Rescan queued: the robot will finish the active scan then "
@@ -452,10 +495,19 @@ class RealtimeMapGUI:
         except queue.Empty:
             pass
 
-        # Redraw the logical map only on new navigation data, not every video
-        # frame. This removes costly repeated canvas/map and full-grid work.
-        if has_new_snapshot and self._latest is not None:
+        # Keep annotated video responsive even when the navigation worker
+        # publishes pose/map snapshots rapidly. Always render a final snapshot.
+        now = time.monotonic()
+        if (
+            has_new_snapshot
+            and self._latest is not None
+            and (
+                self._latest.get("finished")
+                or now - self._last_map_render_timestamp >= 0.25
+            )
+        ):
             self._render(self._latest)
+            self._last_map_render_timestamp = now
 
         # The camera comes straight from an independent latest-frame worker;
         # scanning, verification and map publication cannot freeze the image.
@@ -472,8 +524,15 @@ class RealtimeMapGUI:
                 self._render_camera_popup(preview["frame"])
                 self._preview_visible = True
             self.live_target_var.set(
-                "Live candidates: {}  preview {:.1f} FPS".format(
-                    preview["candidate_count"], preview["preview_fps"]
+                "Live candidates: {} (unverified) | {:.1f} FPS | age {:.0f} ms".format(
+                    preview["candidate_count"],
+                    preview["preview_fps"],
+                    min(9999.0, float(preview["age_sec"]) * 1000.0),
+                )
+            )
+            self.roi_status_var.set(
+                "ROI bottom: {:.0f}% | candidates are NOT saved until verified".format(
+                    preview["roi_bottom"] * 100.0
                 )
             )
             self.pitch_status_var.set(
