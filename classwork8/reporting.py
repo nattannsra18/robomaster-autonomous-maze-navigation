@@ -121,6 +121,32 @@ class RunRecorder:
             start_xy=None if start_pose is None else start_pose[:2],
             end_xy=None if end_pose is None else end_pose[:2],
         )
+        evaluation = None
+        if self.config.auto_evaluate_on_save:
+            try:
+                from .evaluate import auto_evaluate_saved_map
+                evaluation = auto_evaluate_saved_map(
+                    self.run_dir / "map.csv",
+                    self.run_dir / "evaluation",
+                    self.config,
+                )
+                print(
+                    "[EVALUATION] {} | saved: {}".format(
+                        evaluation["evaluation_status"],
+                        self.run_dir / "evaluation",
+                    ),
+                    flush=True,
+                )
+            except Exception as exc:
+                # Saving an assessment must never prevent the map/log/trajectory
+                # from being retained when there is no GT or invalid metadata.
+                evaluation = {
+                    "evaluation_status": "evaluation_error",
+                    "map_accuracy_percent": None,
+                    "coverage_percent": None,
+                    "error": str(exc),
+                }
+                print("[EVALUATION] Failed: {}".format(exc), flush=True)
         summary = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "reason": reason,
@@ -131,8 +157,11 @@ class RunRecorder:
             "total_cells": grid.rows * grid.cols,
             "working_canvas_coverage_percent": round(grid.coverage_percent(), 3),
             "coverage_note": "For the final classwork Coverage, align/crop map.csv to the Ground Truth evaluation area and run classwork8.evaluate.",
-            "map_accuracy_percent": None,
-            "map_accuracy_note": "Provide a same-size ground_truth.csv and run classwork8.evaluate to calculate this value.",
+            "map_accuracy_percent": None if evaluation is None else evaluation.get("map_accuracy_percent"),
+            "assignment_coverage_percent": None if evaluation is None else evaluation.get("coverage_percent"),
+            "evaluation_status": "disabled" if evaluation is None else evaluation.get("evaluation_status"),
+            "evaluation_output_dir": None if evaluation is None else str(self.run_dir / "evaluation"),
+            "map_accuracy_note": "Assignment accuracy/coverage require an independently measured Ground Truth and calibrated alignment; see evaluation/evaluation.json.",
             "config": self.config.to_dict(),
         }
         (self.run_dir / "summary.json").write_text(
