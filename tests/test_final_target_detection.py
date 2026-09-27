@@ -123,6 +123,57 @@ class FinalTargetDetectionTests(unittest.TestCase):
         verified, _debug = self.detector.verify_latest(FrozenCamera())
         self.assertEqual(verified, [])
 
+    def test_ground_level_sign_roi_can_be_adjusted_live(self):
+        # A sign near the image bottom was invisible in the 0.82 wall ROI.
+        frame = np.full((360, 640, 3), 110, dtype=np.uint8)
+        cv2.rectangle(frame, (250, 300), (303, 326), (0, 180, 0), -1)
+
+        self.config.target_roi_bottom_ratio = 0.82
+        narrow, _ = self.detector.detect(frame)
+        self.assertFalse(any(item.color == "green" for item in narrow))
+
+        self.config.target_roi_bottom_ratio = 0.94
+        extended, debug = self.detector.detect(frame)
+        self.assertTrue(any(
+            item.color == "green" and item.shape == "rectangle"
+            for item in extended
+        ))
+        self.assertEqual(debug.shape, frame.shape)
+
+    def test_verification_skips_old_frames_from_previous_camera_pitch(self):
+        frame = np.full((360, 640, 3), 110, dtype=np.uint8)
+        cv2.rectangle(frame, (250, 205), (301, 254), (0, 180, 0), -1)
+        self.config.target_sample_frames = 4
+        self.config.target_verify_frames = 3
+        self.config.target_frame_interval_sec = 0.005
+        self.config.target_min_confidence = 0.40
+        self.config.target_save_confidence = 0.55
+
+        class TimedCamera:
+            def __init__(self):
+                self.items = [
+                    (frame, 100.0), (frame, 101.0),
+                    (frame, 102.0), (frame, 103.0),
+                    (frame, 104.0),
+                ]
+                self.index = 0
+
+            def latest_with_timestamp(self, max_age_sec=0.6):
+                if self.index >= len(self.items):
+                    return None
+                result = self.items[self.index]
+                self.index += 1
+                return result
+
+        # Ignore the cached frame at timestamp 100 (before pitch settled).
+        verified, _ = self.detector.verify_latest(
+            TimedCamera(), not_before=100.0
+        )
+        self.assertTrue(any(
+            item.detection.color == "green"
+            for item in verified
+        ))
+
     def test_registry_merges_repeat_observations(self):
         frame = np.full((360, 640, 3), 100, dtype=np.uint8)
         cv2.rectangle(frame, (250, 110), (390, 250), (0, 190, 0), -1)
