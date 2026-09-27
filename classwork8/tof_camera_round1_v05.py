@@ -251,6 +251,8 @@ def _update_tof_ray(
     rel_y: float,
     direction: int,
     distance_cm: Optional[float],
+    *,
+    mapped_until_m: Optional[float] = None,
 ) -> None:
     if distance_cm is None or distance_cm < config.mapping_min_cm:
         return
@@ -258,16 +260,47 @@ def _update_tof_ray(
     angle = _direction_angle_rad(direction)
     origin_x = rel_x + math.cos(angle) * config.tof_forward_offset_m
     origin_y = rel_y + math.sin(angle) * config.tof_forward_offset_m
-    hit = distance_cm < config.tof_max_mapping_cm - 1.0
-
+    physical_range_m = float(distance_cm) / 100.0
+    allowed_m = float(config.tof_max_mapping_cm) / 100.0
+    if mapped_until_m is not None:
+        allowed_m = min(allowed_m, max(0.0, float(mapped_until_m)))
+    if allowed_m <= 0.0:
+        return
+    # A long ToF return may be the wall BEHIND a low foam boundary. Only
+    # rasterize space in the current or actually-entered logical cell, never
+    # mark distant exterior space FREE merely because a single ray went long.
+    hit = (
+        physical_range_m <= allowed_m
+        and distance_cm < config.tof_max_mapping_cm - 1.0
+    )
     grid.update_ray(
         origin_x,
         origin_y,
         angle,
-        float(distance_cm) / 100.0,
-        max_range_m=config.tof_max_mapping_cm / 100.0,
+        physical_range_m,
+        max_range_m=allowed_m,
         hit=hit,
     )
+
+
+def _ray_limit_to_cell_face(
+    config: Classwork8Config,
+    origin_cell: Tuple[int, int],
+    rel_x: float,
+    rel_y: float,
+    direction: int,
+) -> float:
+    """Distance from ToF emitter to the far face of the authorized cell.
+
+    For stationary surveys this is the current cell; while driving it is
+    the destination cell. A long echo cannot paint beyond that face.
+    """
+    direction = int(direction) % 4
+    axis, sign = ((0, 1), (1, -1), (0, -1), (1, 1))[direction]
+    face = (float(origin_cell[axis]) + 0.5 * sign) * float(config.cell_size_m)
+    sensor_axis = (float(rel_x), float(rel_y))[axis] + sign * float(config.tof_forward_offset_m)
+    return max(0.0, (face - sensor_axis) * sign + 0.01)
+
 
 
 def _point_gimbal(
@@ -1188,6 +1221,9 @@ def _scan_four_directions(
                 rel_y,
                 direction,
                 distance_cm,
+                mapped_until_m=_ray_limit_to_cell_face(
+                    config, current_cell, rel_x, rel_y, direction,
+                ),
             )
 
         edge_key = _canonical_edge(current_cell, direction)
@@ -2001,6 +2037,9 @@ def _drive_one_cell(
                 rel_y,
                 direction,
                 front_cm,
+                mapped_until_m=_ray_limit_to_cell_face(
+                    config, target_cell, rel_x, rel_y, direction,
+                ),
             )
 
         if (
