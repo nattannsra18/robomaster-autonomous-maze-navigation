@@ -2038,7 +2038,13 @@ def _drive_one_cell(
                 direction,
                 front_cm,
                 mapped_until_m=_ray_limit_to_cell_face(
-                    config, target_cell, rel_x, rel_y, direction,
+                    # Do not paint a speculative target cell just because
+                    # ToF sees through/over a low boundary: the chassis must
+                    # physically cross that cell face first.
+                    config,
+                    target_cell if progress >= 0.5 * float(config.cell_size_m)
+                    else current_cell,
+                    rel_x, rel_y, direction,
                 ),
             )
 
