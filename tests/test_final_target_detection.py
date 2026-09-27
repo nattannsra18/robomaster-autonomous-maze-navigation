@@ -46,6 +46,83 @@ class FinalTargetDetectionTests(unittest.TestCase):
         ]
         self.assertTrue(matches)
 
+    def test_floor_reflection_is_outside_configured_target_roi(self):
+        # Reproduce the user's real sample geometry without committing their
+        # private camera photo into the repository.
+        frame = np.full((360, 640, 3), 130, dtype=np.uint8)
+        cv2.rectangle(frame, (274, 230), (316, 271), (0, 190, 0), -1)
+        cv2.rectangle(frame, (277, 313), (309, 328), (0, 220, 220), -1)
+
+        detections, _debug = self.detector.detect(frame)
+
+        self.assertTrue(any(
+            item.color == "green" and item.shape == "square"
+            for item in detections
+        ))
+        self.assertFalse(any(item.centroid[1] >= 300 for item in detections))
+
+    def test_wide_green_sign_is_rectangle_not_square(self):
+        frame = np.full((360, 640, 3), 130, dtype=np.uint8)
+        # Similar proportions to the user's rightmost green sign: 48 x 36.
+        cv2.rectangle(frame, (565, 232), (612, 267), (0, 190, 0), -1)
+
+        detections, _debug = self.detector.detect(frame)
+
+        self.assertTrue(any(
+            item.color == "green" and item.shape == "rectangle"
+            for item in detections
+        ))
+        self.assertFalse(any(
+            item.color == "green" and item.shape == "square"
+            for item in detections
+        ))
+
+    def test_two_same_color_same_shape_on_one_wall_keep_separate_ids(self):
+        frame = np.full((360, 640, 3), 130, dtype=np.uint8)
+        cv2.rectangle(frame, (230, 227), (271, 267), (0, 0, 210), -1)
+        cv2.rectangle(frame, (405, 230), (443, 269), (0, 0, 210), -1)
+
+        detections, _debug = self.detector.detect(frame)
+        squares = [
+            item for item in detections
+            if item.color == "red" and item.shape == "square"
+        ]
+        self.assertEqual(len(squares), 2)
+
+        registry = TargetRegistry(self.config)
+        for item in squares:
+            registry.add_verified(
+                VerifiedTarget(
+                    detection=item,
+                    verified_frames=4,
+                    confidence=max(0.80, item.confidence),
+                ),
+                approach_cell=(2, -1),
+                direction=0,
+                tof_cm=29.0,
+            )
+
+        self.assertEqual(len(registry.targets), 2)
+        self.assertNotEqual(
+            registry.targets[0]["target_id"],
+            registry.targets[1]["target_id"],
+        )
+
+    def test_cached_same_frame_does_not_count_as_temporal_verification(self):
+        frame = np.full((360, 640, 3), 130, dtype=np.uint8)
+        cv2.rectangle(frame, (270, 220), (311, 262), (0, 190, 0), -1)
+
+        class FrozenCamera:
+            def latest_with_timestamp(self, max_age_sec=0.6):
+                return frame, 123.0
+
+        self.config.target_sample_frames = 4
+        self.config.target_verify_frames = 3
+        self.config.target_frame_interval_sec = 0.005
+
+        verified, _debug = self.detector.verify_latest(FrozenCamera())
+        self.assertEqual(verified, [])
+
     def test_registry_merges_repeat_observations(self):
         frame = np.full((360, 640, 3), 100, dtype=np.uint8)
         cv2.rectangle(frame, (250, 110), (390, 250), (0, 190, 0), -1)
