@@ -21,8 +21,9 @@ if "libmedia_codec" not in sys.modules:
 from classwork8.config import Classwork8Config
 from classwork8.occupancy_grid import OccupancyGrid, FREE, UNKNOWN
 from classwork8.tof_camera_round1_v05 import (
-    _closed_maze_completion_v04, _plan_frontier_move,
-    _ray_limit_to_cell_face, _set_edge_state, _update_tof_ray,
+    _closed_maze_completion_v04, _flanked_by_confirmed_walls,
+    _plan_frontier_move, _ray_limit_to_cell_face,
+    _set_edge_state, _update_tof_ray,
 )
 
 
@@ -109,6 +110,19 @@ class CompletionAndRouteTests(unittest.TestCase):
             {deferred}
         )
         self.assertFalse(result["complete"])
+
+    def test_stable_far_echo_cannot_open_continuous_observed_wall(self):
+        visited = {(0, 0), (0, 1), (0, -1)}
+        edges = {}
+        _set_edge_state(edges, (0, 1), 0, "WALL")
+        _set_edge_state(edges, (0, -1), 0, "WALL")
+        self.assertTrue(_flanked_by_confirmed_walls(
+            (0, 0), 0, visited, edges,
+        ))
+        # One missing flank must not invent a wall.
+        self.assertFalse(_flanked_by_confirmed_walls(
+            (0, 0), 0, visited - {(0, -1)}, edges,
+        ))
 
     def test_confirmed_open_neighbor_still_plannable(self):
         _set_edge_state(self.edges, (1, 0), 0, "OPEN")
