@@ -652,3 +652,56 @@ Full four-direction camera survey adds physical pitch movements and multiple
 vision samples; measure its impact on the total 15-minute limit before the
 exam and disable survey of open directions if the actual signs can be
 reliably observed at nearby walls.
+
+
+### V05: ground-level signs, live annotated preview, runtime ROI
+
+The 27 Sep Round-1 run completed its 3x3 mapping mission but produced an empty
+\`targets.json\`. The physical signs had been mounted near the floor. The
+original ROI stopped at image-height ratio 0.82 and the normal horizontal
+ToF ray could not by itself prove or reject a low sign.
+
+The target-observation default now uses pitch -10 degrees **only at stopped
+camera survey checkpoints**, and its ROI is 0.18..0.94 by default (previously
+0.18..0.82). A broader ROI can also detect floor reflections; it must be
+calibrated from the live preview on the real field, not treated as a guaranteed
+improvement for every scene. The horizontal ToF scan and driving orientation
+are restored before navigation proceeds. The mapping planner, motor control
+and emergency stop thresholds are unchanged.
+
+The GUI's target panel now includes:
+- a live camera overlay with numbered contours plus a matching color/shape/
+  confidence legend, rather than an occasional snapshot from map publication;
+- a **Camera look-down pitch** slider, which queues a new pitch for the next
+  stopped survey; it never directly moves the gimbal while driving;
+- a **Live detection region bottom** slider (0.70-0.99), immediately updating
+  both live preview and scan-time target detection without commanding motors;
+- **RESCAN CURRENT CELL** to recheck the current cell with the updated pitch
+  and ROI before the next navigation decision;
+- a larger camera popup and **SAVE RAW + DETECTED CAMERA FRAME** button;
+- independent preview refresh, actual processing FPS and preview-frame age.
+  The map drawing is limited to ~4Hz so it does not block video redraws.
+
+The GUI shows **LIVE CANDIDATES (unverified)** separately from **Targets: N**.
+Only stationary survey observations that pass 4 of 6 *distinct new* frames
+after the camera pitch has settled are added to \`targets.json\`.
+
+Start at pitch -10 degrees and ROI bottom 0.94. Inspect the overlay; if a
+floor-level sign is cropped by the horizontal ROI line, raise the bottom ROI
+toward 0.96-0.99 or slightly adjust the look-down pitch, then press RESCAN.
+If a floor object or reflection gets detected, narrow the ROI again and
+capture raw/debug samples. Not all lighting or sign placement is solved by
+one set of thresholds.
+
+Offline tests (do not connect to RoboMaster):
+
+\`\`\`powershell
+python -m unittest tests.test_final_target_detection tests.test_final_live_survey -v
+python -u final_target_image_test.py --roi-bottom 0.82
+python -u final_target_image_test.py --roi-bottom 0.94
+\`\`\`
+
+The old seven-sign *wall* sample may acquire an extra floor-object candidate
+under the broader floor-sign profile; compare both ROI outputs, rather than
+interpreting the difference as a navigation failure. For a genuine floor-sign
+test, capture a NEW raw image at the look-down angle and compare both ROIs.
