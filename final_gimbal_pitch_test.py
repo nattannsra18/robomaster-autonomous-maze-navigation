@@ -115,14 +115,9 @@ def main():
         for direction in (0, 1, 2, 1, 0, 3, 0):
             print("[TEST] Pointing {}...".format(DIR_NAME[direction]), flush=True)
             sweep_started = time.monotonic()
-            if not _point_gimbal(
+            reached = _point_gimbal(
                 gimbal, sensors, tracker, direction, config, None
-            ):
-                raise RuntimeError(
-                    "Gimbal did not reach both angles at {}".format(
-                        DIR_NAME[direction]
-                    )
-                )
+            )
             pitch_samples = tracker.pitch_samples_since(sweep_started)
             if pitch_samples:
                 low, high = min(pitch_samples), max(pitch_samples)
@@ -141,9 +136,23 @@ def main():
                     ),
                     flush=True,
                 )
+            if not reached:
+                print(
+                    "[TEST] YAW-ONLY FAILED at {}; chassis remains stopped. "
+                    "The SWEEP above shows whether pitch drift persisted "
+                    "without simultaneous pitch commands.".format(
+                        DIR_NAME[direction]
+                    ),
+                    flush=True,
+                )
+                raise RuntimeError(
+                    "Gimbal yaw-only/level sequence failed at {}".format(
+                        DIR_NAME[direction]
+                    )
+                )
             pitch, yaw = tracker.get_angles()
             print(
-                "[TEST] {} yaw={:+.1f} pitch={:+.1f}".format(
+                "[TEST] {} yaw={:+.1f} pitch={:+.1f}".format
                     DIR_NAME[direction],
                     float(yaw),
                     float(pitch),
