@@ -156,7 +156,7 @@ class RunRecorder:
             "explored_cells": grid.explored_count(),
             "total_cells": grid.rows * grid.cols,
             "working_canvas_coverage_percent": round(grid.coverage_percent(), 3),
-            "coverage_note": "For the final classwork Coverage, align/crop map.csv to the Ground Truth evaluation area and run classwork8.evaluate.",
+            "coverage_note": "Diagnostic full working-canvas coverage only; see evaluation/evaluation.json for the automatically computed assignment Coverage when Ground Truth is available.",
             "map_accuracy_percent": None if evaluation is None else evaluation.get("map_accuracy_percent"),
             "assignment_coverage_percent": None if evaluation is None else evaluation.get("coverage_percent"),
             "evaluation_status": "disabled" if evaluation is None else evaluation.get("evaluation_status"),
