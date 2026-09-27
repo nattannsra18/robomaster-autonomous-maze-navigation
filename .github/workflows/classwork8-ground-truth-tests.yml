@@ -1,0 +1,25 @@
+name: Classwork 8 evaluation tests
+
+on:
+  push:
+    branches: [classwork8-slam-exploration]
+  workflow_dispatch:
+
+jobs:
+  evaluation:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check Python syntax
+        run: python -m compileall -q classwork8/ground_truth_editor.py classwork8/config_gui_v04.py classwork8/config.py classwork8/evaluate.py classwork8/reporting.py classwork8/gui_v04.py classwork8/tof_only_v04.py
+      - name: Run offline map and Ground Truth regression tests
+        run: |
+          python -m unittest discover -s tests -p 'test_classwork8_mapping.py' -v
+          python -m unittest discover -s tests -p 'test_classwork8_evaluation.py' -v
+          python -m unittest discover -s tests -p 'test_classwork8_ground_truth.py' -v
