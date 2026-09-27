@@ -55,6 +55,7 @@ def _defaults(config: Classwork8Config) -> None:
     config.odom_scale_y = 1.00
     config.travel_speed_mps = 0.20
     config.midcell_side_check_enabled = False  # opt in through the GUI
+    config.side_start_auto_recovery_enabled = True  # guarded 2.5 cm nudges; ToF + odometry
 
     config.tof_recovery_wait_sec = 1.20
     config.tof_recovery_retries = 2
