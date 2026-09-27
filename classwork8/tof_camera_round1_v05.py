@@ -3050,10 +3050,9 @@ def run(
                 1 for item in target_registry.targets
                 if item.get("localization_status") == "NEAR_WALL_ESTIMATE"
             ),
-            "targets": (
-                target_registry.public_targets()
-                + target_registry.public_pending_targets()
-            ),
+            # GUI/map snapshots show verified signs only. Preserve tentative
+            # sightings in registry/targets.json for subsequent rechecks.
+            "targets": target_registry.public_targets(),
         })
 
     try:
