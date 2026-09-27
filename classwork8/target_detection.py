@@ -736,6 +736,7 @@ class TargetRegistry:
                     "centroid_px": list(observation["centroid_px"]),
                 }],
                 "observations": 1,
+                "range_observations": 1 if range_confirmed_wall else 0,
                 "confidence": float(verified.confidence),
                 "range_confirmed_wall": bool(range_confirmed_wall),
                 "status": (
@@ -747,18 +748,21 @@ class TargetRegistry:
             self.targets.append(match)
         else:
             count = int(match["observations"])
+            range_count = int(match.get("range_observations", 0))
             old_xy = match.get("estimated_target_xy_m")
             if target_xy is not None:
-                if old_xy is None:
+                if old_xy is None or range_count == 0:
                     match["estimated_target_xy_m"] = [target_x, target_y]
                 else:
-                    # Repeat views at this SAME cell/direction may smooth the
-                    # range estimate. Never average an unlocated far sighting
-                    # into a physical target coordinate.
+                    # Average ONLY near-wall range observations. A prior far
+                    # sighting has no physical XY and must not add weight.
                     match["estimated_target_xy_m"] = [
-                        (float(old_xy[0]) * count + target_x) / (count + 1),
-                        (float(old_xy[1]) * count + target_y) / (count + 1),
+                        (float(old_xy[0]) * range_count + target_x)
+                        / (range_count + 1),
+                        (float(old_xy[1]) * range_count + target_y)
+                        / (range_count + 1),
                     ]
+                match["range_observations"] = range_count + 1
             if sighting_xy is not None:
                 match["line_of_sight_end_xy_m"] = list(sighting_xy)
             if sighting_cell_hint is not None and not match.get("range_confirmed_wall"):
