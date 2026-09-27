@@ -45,21 +45,16 @@ def target_plot_geometry(target: dict, cell_size_m: float):
     )
     direction_list = target.get("view_directions") or [0]
     direction = int(direction_list[0]) % 4
-    # A distant wall's candidate cell is the last cell before its measured
-    # range plane. Show an OPEN circle at its centre (not as a confirmed target).
-    # Retain actual ToF ray end in targets.json for later geometric validation.
-    cell_hint = target.get("sighting_cell_hint")
-    if cell_hint is not None and len(cell_hint) == 2:
-        endpoint = (
-            float(cell_hint[0]) * float(cell_size_m),
-            float(cell_hint[1]) * float(cell_size_m),
-        )
-    else:
-        dx, dy = _DIR_VEC[direction]
-        endpoint = (
-            origin[0] + dx * float(cell_size_m),
-            origin[1] + dy * float(cell_size_m),
-        )
+    # A SIGHTING_ONLY bearing has NO physical position. Low foam walls can
+    # let ToF see far beyond the arena, so drawing its distant range-derived
+    # cell hint as a target creates a false exterior map marker. Keep the
+    # original hint in targets.json, but put a hollow '?' inside the observed
+    # cell at its visible edge. A real close-wall recheck can localize it later.
+    dx, dy = _DIR_VEC[direction]
+    endpoint = (
+        origin[0] + dx * float(cell_size_m) * 0.45,
+        origin[1] + dy * float(cell_size_m) * 0.45,
+    )
     return endpoint, origin, True
 
 
