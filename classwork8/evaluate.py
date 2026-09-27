@@ -12,7 +12,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 from xml.sax.saxutils import escape
 
 UNKNOWN, FREE, WALL = -1, 0, 100
@@ -43,8 +43,8 @@ def align_to_truth(
     predicted: Sequence[Sequence[int]],
     truth: Sequence[Sequence[int]],
     *,
-    top: int | None = None,
-    left: int | None = None,
+    top: Optional[int] = None,
+    left: Optional[int] = None,
 ) -> List[List[int]]:
     p_rows, p_cols = len(predicted), len(predicted[0])
     t_rows, t_cols = len(truth), len(truth[0])
@@ -137,8 +137,8 @@ def evaluate(
     truth_path: Path,
     output_dir: Path,
     *,
-    top: int | None = None,
-    left: int | None = None,
+    top: Optional[int] = None,
+    left: Optional[int] = None,
     rotate: int = 0,
 ) -> dict:
     predicted = rotate_clockwise(read_map(predicted_path), rotate)
