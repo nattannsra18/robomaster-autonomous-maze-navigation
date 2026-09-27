@@ -299,7 +299,10 @@ def _ray_limit_to_cell_face(
     axis, sign = ((0, 1), (1, -1), (0, -1), (1, 1))[direction]
     face = (float(origin_cell[axis]) + 0.5 * sign) * float(config.cell_size_m)
     sensor_axis = (float(rel_x), float(rel_y))[axis] + sign * float(config.tof_forward_offset_m)
-    return max(0.0, (face - sensor_axis) * sign + 0.01)
+    # Stay INSIDE the cell face by at least half an occupancy pixel, rather
+    # than letting raster rounding paint a free pixel across a foam boundary.
+    inset = max(0.02, float(config.resolution_m) * 0.5)
+    return max(0.0, (face - sensor_axis) * sign - inset)
 
 
 
