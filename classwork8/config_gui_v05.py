@@ -16,8 +16,14 @@ def configure_before_run(config) -> bool:
 
     root = tk.Tk()
     root.title("Classwork 8 V05 - Mission Configuration")
-    root.geometry("860x720")
-    root.minsize(760, 620)
+    # Fit short laptop screens and Windows display scaling. The action bar
+    # stays anchored below a scrollable parameter notebook.
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    window_w = max(560, min(920, screen_w - 64))
+    window_h = max(460, min(720, screen_h - 100))
+    root.geometry("{}x{}".format(window_w, window_h))
+    root.minsize(min(650, window_w), min(460, window_h))
 
     accepted = {"value": False}
     variables: Dict[str, object] = {}
@@ -41,13 +47,55 @@ def configure_before_run(config) -> bool:
     ).pack(anchor="w", pady=(2, 10))
 
     notebook = ttk.Notebook(outer)
-    notebook.pack(fill="both", expand=True)
 
+    # Each tab has its own vertical scrollbar. A long Target Detection tab
+    # must never push the bottom Start/Cancel buttons outside the screen.
     tabs = {}
-    for name in ("Motion", "ToF / Safety", "Mapping", "Target Detection", "Completion / Export"):
-        frame = ttk.Frame(notebook, padding=12)
-        notebook.add(frame, text=name)
-        tabs[name] = frame
+    tab_canvases = {}
+    tab_names = (
+        "Motion", "ToF / Safety", "Mapping",
+        "Target Detection", "Completion / Export",
+    )
+    for name in tab_names:
+        tab_container = ttk.Frame(notebook)
+        notebook.add(tab_container, text=name)
+        canvas = tk.Canvas(tab_container, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(
+            tab_container, orient="vertical", command=canvas.yview
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = ttk.Frame(canvas, padding=12)
+        content_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _update_scrollregion(_event, active_canvas=canvas):
+            active_canvas.configure(scrollregion=active_canvas.bbox("all"))
+
+        def _fit_content(event, active_canvas=canvas, item_id=content_id):
+            active_canvas.itemconfigure(item_id, width=event.width)
+
+        content.bind("<Configure>", _update_scrollregion)
+        canvas.bind("<Configure>", _fit_content)
+        tabs[name] = content
+        tab_canvases[name] = canvas
+
+    def _scroll_current_tab(event):
+        try:
+            name = tab_names[notebook.index(notebook.select())]
+            delta = getattr(event, "delta", 0)
+            if delta:
+                steps = -max(1, abs(int(delta / 120))) if delta > 0 else max(1, abs(int(delta / 120)))
+            else:
+                steps = -1 if getattr(event, "num", 0) == 4 else 1
+            tab_canvases[name].yview_scroll(steps, "units")
+        except Exception:
+            pass
+
+    root.bind("<MouseWheel>", _scroll_current_tab, add="+")
+    root.bind("<Button-4>", _scroll_current_tab, add="+")
+    root.bind("<Button-5>", _scroll_current_tab, add="+")
 
     field_specs: Dict[str, List[Tuple[str, str, str, str]]] = {
         "Motion": [
@@ -164,7 +212,7 @@ def configure_before_run(config) -> bool:
             add_field(parent, *spec, row=row)
 
     info = ttk.LabelFrame(outer, text="60 cm calibration", padding=10)
-    info.pack(fill="x", pady=(10, 0))
+    info.pack(side="bottom", fill="x", pady=(8, 0))
 
     calibration_var = tk.StringVar()
     ttk.Label(
@@ -201,7 +249,7 @@ def configure_before_run(config) -> bool:
     refresh_calibration_text()
 
     button_row = ttk.Frame(outer)
-    button_row.pack(fill="x", pady=(12, 0))
+    button_row.pack(side="bottom", fill="x", pady=(8, 0))
 
     def set_v05_defaults():
         defaults = {
@@ -265,6 +313,8 @@ def configure_before_run(config) -> bool:
         }
 
         for attr, value in defaults.items():
+            if attr not in variables:
+                continue
             var, kind = variables[attr]
             if kind == "bool":
                 var.set(bool(value))
@@ -322,6 +372,9 @@ def configure_before_run(config) -> bool:
         command=apply_and_start,
     ).pack(side="right")
 
+    # Packing this last leaves the button and calibration footer permanently
+    # visible, while the selected tab receives the remaining height.
+    notebook.pack(side="top", fill="both", expand=True)
     root.protocol("WM_DELETE_WINDOW", cancel)
     root.mainloop()
 
