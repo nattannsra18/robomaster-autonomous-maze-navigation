@@ -275,8 +275,9 @@ def _point_gimbal(
     The real stationary hardware test showed up to 24 degrees transient pitch
     error during the old simultaneous pitch/yaw controller even though every
     final endpoint was level.  Never send nonzero pitch and yaw simultaneously.
-    A large pitch excursion DURING yaw-only travel is a safety diagnostic:
-    stop and refuse to classify an unlevel ToF ray.
+    Pitch can transiently move DURING the yaw sweep without a ToF reading.
+    Report the excursion but only accept a ray after the gimbal has stopped
+    and BOTH axes have been brought back to their horizontal scan targets.
     """
     target_yaw = float(config.gimbal_yaw_for_direction(direction))
     target_pitch = float(config.gimbal_scan_pitch_deg)
@@ -366,24 +367,11 @@ def _point_gimbal(
         pitch_error = abs(float(pitch) - target_pitch)
         max_pitch_during_yaw = max(max_pitch_during_yaw, pitch_error)
 
-        # If yaw-only motion also produces pitching, software cannot claim
-        # that a dual-axis controller caused the entire problem. Stop the
-        # scan before publishing misleading OPEN/WALL occupancy evidence.
-        if pitch_error > float(config.gimbal_yaw_pitch_guard_deg):
-            _stop_axes()
-            print(
-                "[GIMBAL] YAW_ONLY_PITCH_DRIFT {}: pitch={:+.1f}, "
-                "peak_error={:.1f} deg, yaw={:+.1f}. Stopping scan; "
-                "inspect gimbal/cables/mode.".format(
-                    DIR_NAME[int(direction) % 4],
-                    float(pitch),
-                    max_pitch_during_yaw,
-                    float(yaw),
-                ),
-                flush=True,
-            )
-            return False
-
+        # This is a TRANSIENT diagnostic, not a mapping failure: the robot
+        # is stationary and no ToF ray is sampled during the yaw movement.
+        # The final level/pitch checks below still reject an unlevel ray.
+        # An earlier field run aborted at 6.1 deg while the endpoint was
+        # about to be reached; that premature abort produced targets.json=0.
         yaw_error = target_yaw - float(yaw)
         if abs(yaw_error) <= float(config.gimbal_tolerance_deg):
             _stop_axes()
@@ -451,6 +439,15 @@ def _point_gimbal(
         return False
 
     samples = tracker.pitch_samples_since(started_yaw)
+    if max_pitch_during_yaw > float(config.gimbal_yaw_pitch_guard_deg):
+        print(
+            "[GIMBAL] TRANSIENT_PITCH_WARNING {}: peak={:.1f} deg while yaw "
+            "was turning. Final pitch/yaw are verified level; no ToF was "
+            "sampled during the sweep.".format(
+                DIR_NAME[int(direction) % 4], max_pitch_during_yaw
+            ),
+            flush=True,
+        )
     print(
         "[GIMBAL] {} yaw-only sweep finished; peak pitch error={:.1f} deg "
         "({} feedback samples).".format(
