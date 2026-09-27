@@ -1838,7 +1838,6 @@ def _recover_critical_start_side(
             return False, "RECOVERY_ODOMETRY_UNAVAILABLE", current_side
         x0, y0 = float(x0), float(y0)
         speed = float(config.side_start_recovery_speed_mps)
-        pulse_deadline = time.monotonic() + min(1.5, 0.35 + 2.0 * step / speed)
         travelled = 0.0
         reason = "RECOVERY_PULSE_TIMEOUT"
         heading_loss_error_deg = None
@@ -1895,6 +1894,9 @@ def _recover_critical_start_side(
             ), flush=True,
         )
 
+        # Stationary retries consume their own time budget: start the pulse
+        # timeout only AFTER fresh heading permission was granted.
+        pulse_deadline = time.monotonic() + min(1.5, 0.35 + 2.0 * step / speed)
         try:
             while time.monotonic() < pulse_deadline:
                 if stop_event is not None and stop_event.is_set():
@@ -2055,7 +2057,8 @@ def _recover_critical_start_side(
                 logical_node=current_cell, attempt=attempt,
                 observed_yaw_error_deg=heading_loss_error_deg,
                 stopped_yaw_errors_deg=[
-                    round(value, 3) for value in stopped_errors
+                    None if value is None else round(value, 3)
+                    for value in stopped_errors
                 ],
                 position_ok=position_ok, progress_m=round(travelled, 4),
             )
@@ -2065,7 +2068,8 @@ def _recover_critical_start_side(
                     attempt,
                     None if heading_loss_error_deg is None
                     else round(heading_loss_error_deg, 2),
-                    [round(value, 2) for value in stopped_errors],
+                    [None if value is None else round(value, 2)
+                     for value in stopped_errors],
                     settled, position_ok,
                 ), flush=True,
             )
