@@ -705,3 +705,36 @@ The old seven-sign *wall* sample may acquire an extra floor-object candidate
 under the broader floor-sign profile; compare both ROI outputs, rather than
 interpreting the difference as a navigation failure. For a genuine floor-sign
 test, capture a NEW raw image at the look-down angle and compare both ROIs.
+
+
+### V05 correction: transient yaw pitch must not prematurely end Round 1
+
+The 27 Sep 20:04 run exported prematurely while RIGHT yaw was near its
+endpoint (actual +84.4 deg) because the interim pitch reading was +6.1 deg,
+just above the former 6.0 deg *in-motion* cutoff. During the earlier
+stationary test, the same hardware had reached correct pitch after far
+larger **transient** excursions. The in-motion limit alone was therefore an
+over-sensitive stop condition; it was not evidence that maze exploration
+completed or failed to detect any actual target.
+
+The scanner still uses staged pitch -> yaw-only -> pitch, with the same speed,
+gain, target, and tolerances. The old \`gimbal_yaw_pitch_guard_deg\` setting
+now triggers \`TRANSIENT_PITCH_WARNING\` during stationary yaw motion rather
+than aborting immediately. No ToF mapping ray is recorded during a yaw turn,
+and navigation is not resumed unless final yaw/pitch both settle and
+independent checks after the ToF sampling period also pass. Failure to
+re-level still stops exploration and exports a partial result.
+
+Use the offline regression and then a short real run:
+
+\`\`\`powershell
+python -m unittest tests.test_final_gimbal_pitch_v05 -v
+python -u final_round1_tof_camera_01.py
+\`\`\`
+
+The first interrupted run surveyed LEFT and FRONT only, both reporting zero
+camera candidates. That does not establish that all other directions had no
+targets; RIGHT/BACK were not completed. Before the next run, use the
+independent annotated preview and **SAVE RAW + DETECTED CAMERA FRAME** at a
+direction with a visible real low sign, and inspect the 0.94 ROI boundary,
+camera pitch and confidence.
