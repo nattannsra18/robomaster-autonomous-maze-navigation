@@ -858,3 +858,45 @@ python -m unittest tests.test_final_motion_safety_v05 tests.test_final_scan_reus
 On a real test, look for \`[SIDE_CHECK]\` at a wall-adjacent cell,
 \`[MOVE] Reached ... peak cross=... yaw_error=...\`, and export
 \`exploration_log.csv\` to compare physical and reported drift.
+
+
+### V05 27 September hotfix: scan NameError, faster default scan, lower signs
+
+A prior automated edit inserted the *movement-only* mid-cell checkpoint inside
+\`_scan_four_directions\`, even though that function has no
+\`checkpoint_enabled\` variable. This terminated Round 1 at its first
+stationary scan with \`NameError\` and still exported partial files. The
+checkpoint now exists exclusively in \`_drive_one_cell\`; the scan only surveys
+ToF/camera and updates topology. Offline test
+\`test_checkpoint_code_is_only_inside_drive_not_four_way_scan\` prevents that
+scope mistake recurring.
+
+Requested new initial settings: yaw max 90 deg/s, yaw Kp 2.0, minimum yaw
+12 deg/s, final yaw tolerance 2.5 deg; pitch Kp 1.5, pitch rate 3..24 deg/s.
+The staged pitch -> yaw-only -> pitch sequence and final level safety guard
+remain. The previously attached run ended with yaw +2.2 deg, just above the
+old +/-2.0 deg final tolerance; the slightly wider 2.5 deg threshold avoids
+that specific marginal stop, while still requiring final angle feedback.
+
+For low floor signs, the camera survey now defaults to -15 degrees (formerly
+-10), ROI bottom 0.96, and eight *new* frames with four consecutive required
+for verification. A target that passes four consecutive frames is preserved
+if later samples are lost to glare. These changes can also admit more floor
+reflections, so compare live raw/annotated images and tune HSV/ROI under the
+exam lighting. No direct autonomous chassis camera steering was enabled.
+
+The requested 0.25 m/s value is the **open-route travel ceiling**, not a
+blanket speed in narrow corridors. A leg with a confirmed wall at either side
+is independently capped at 0.12 m/s, then front-range and lateral-drift
+slowdown can lower it further. Mid-cell side-check and emergency front stop
+remain enabled. For the very first physical trial after this change, lower
+travel speed to 0.08-0.10 m/s in Mission Settings and use a short unobstructed
+test; do not begin with a full 7x7 run.
+
+Test offline on the user's Windows/Python 3.8 environment:
+
+\`\`\`powershell
+git pull origin classwork8-slam-exploration
+python -m py_compile classwork8\config.py classwork8\config_gui_v05.py classwork8\gui_v05.py classwork8\target_detection.py classwork8\tof_camera_round1_v05.py
+python -m unittest tests.test_final_motion_safety_v05 tests.test_final_target_detection tests.test_final_gimbal_pitch_v05 tests.test_final_scan_reuse tests.test_final_live_survey -v
+\`\`\`
