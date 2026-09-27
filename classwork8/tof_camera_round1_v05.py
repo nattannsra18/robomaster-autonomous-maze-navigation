@@ -269,64 +269,128 @@ def _point_gimbal(
     config: Classwork8Config,
     stop_event: Optional[threading.Event],
 ) -> bool:
-    """Point ToF by closed-loop yaw AND keep pitch horizontal.
+    """Staged, single-axis mapping scan: level pitch -> yaw only -> level pitch.
 
-    The old yaw-only controller sent pitch_speed=0, which merely requests
-    zero pitch velocity; it does not correct an already tilted gimbal.
-    No ToF measurement is accepted until both reported axes are stable.
+    The real stationary hardware test showed up to 24 degrees transient pitch
+    error during the old simultaneous pitch/yaw controller even though every
+    final endpoint was level.  Never send nonzero pitch and yaw simultaneously.
+    A large pitch excursion DURING yaw-only travel is a safety diagnostic:
+    stop and refuse to classify an unlevel ToF ray.
     """
-    if stop_event is not None and stop_event.is_set():
-        return False
-
     target_yaw = float(config.gimbal_yaw_for_direction(direction))
     target_pitch = float(config.gimbal_scan_pitch_deg)
-    started = time.monotonic()
-    stable = 0
+    deadline = time.monotonic() + float(config.gimbal_turn_timeout_sec)
 
-    while time.monotonic() - started < float(config.gimbal_turn_timeout_sec):
-        if stop_event is not None and stop_event.is_set():
-            gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+    def _stopped() -> bool:
+        return stop_event is not None and stop_event.is_set()
+
+    def _stop_axes() -> None:
+        gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+
+    def _level_pitch(stage: str) -> bool:
+        """Pitch moves only while yaw_speed is exactly zero."""
+        stable = 0
+        while time.monotonic() < deadline:
+            if _stopped():
+                _stop_axes()
+                return False
+
+            pitch, yaw = tracker.get_angles()
+            if pitch is None or yaw is None:
+                _stop_axes()
+                time.sleep(0.03)
+                continue
+
+            error = target_pitch - float(pitch)
+            if abs(error) <= float(config.gimbal_pitch_tolerance_deg):
+                _stop_axes()
+                stable += 1
+                if stable >= int(config.gimbal_stable_samples):
+                    return True
+            else:
+                stable = 0
+                speed = max(
+                    float(config.gimbal_pitch_min_speed_dps),
+                    min(
+                        float(config.gimbal_pitch_max_speed_dps),
+                        abs(error) * float(config.gimbal_pitch_kp),
+                    ),
+                )
+                gimbal.drive_speed(
+                    pitch_speed=(
+                        math.copysign(speed, error)
+                        * float(config.gimbal_pitch_drive_sign)
+                    ),
+                    yaw_speed=0.0,
+                )
+            time.sleep(0.03)
+
+        _stop_axes()
+        print(
+            "[GIMBAL] {} pitch timeout: target {:+.1f} current {}.".format(
+                stage,
+                target_pitch,
+                "---" if tracker.get_pitch() is None
+                else "{:+.1f}".format(float(tracker.get_pitch())),
+            ),
+            flush=True,
+        )
+        return False
+
+    if _stopped():
+        _stop_axes()
+        return False
+
+    # Correct any existing tilt before beginning the horizontal sweep.
+    if not _level_pitch("PRE_YAW"):
+        return False
+
+    # Do not use the shortest wrapped angle at +/-180: these are mechanical
+    # absolute yaw coordinates. Scan order already avoids direct 180 -> -90.
+    yaw_stable = 0
+    max_pitch_during_yaw = 0.0
+    started_yaw = time.monotonic()
+
+    while time.monotonic() < deadline:
+        if _stopped():
+            _stop_axes()
             return False
 
         pitch, yaw = tracker.get_angles()
         if pitch is None or yaw is None:
+            _stop_axes()
             time.sleep(0.03)
             continue
 
-        # Absolute mechanical yaw: never wrap +180 -> -90 through the limit.
+        pitch_error = abs(float(pitch) - target_pitch)
+        max_pitch_during_yaw = max(max_pitch_during_yaw, pitch_error)
+
+        # If yaw-only motion also produces pitching, software cannot claim
+        # that a dual-axis controller caused the entire problem. Stop the
+        # scan before publishing misleading OPEN/WALL occupancy evidence.
+        if pitch_error > float(config.gimbal_yaw_pitch_guard_deg):
+            _stop_axes()
+            print(
+                "[GIMBAL] YAW_ONLY_PITCH_DRIFT {}: pitch={:+.1f}, "
+                "peak_error={:.1f} deg, yaw={:+.1f}. Stopping scan; "
+                "inspect gimbal/cables/mode.".format(
+                    DIR_NAME[int(direction) % 4],
+                    float(pitch),
+                    max_pitch_during_yaw,
+                    float(yaw),
+                ),
+                flush=True,
+            )
+            return False
+
         yaw_error = target_yaw - float(yaw)
-        pitch_error = target_pitch - float(pitch)
-        yaw_ready = abs(yaw_error) <= float(config.gimbal_tolerance_deg)
-        pitch_ready = abs(pitch_error) <= float(config.gimbal_pitch_tolerance_deg)
-
-        if yaw_ready and pitch_ready:
-            stable += 1
-            gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
-            if stable >= int(config.gimbal_stable_samples):
-                if not _sleep_interruptible(config.gimbal_settle_sec, stop_event):
-                    return False
-
-                final_pitch, final_yaw = tracker.get_angles()
-                if (
-                    final_pitch is not None
-                    and final_yaw is not None
-                    and abs(target_pitch - float(final_pitch))
-                    <= float(config.gimbal_pitch_tolerance_deg)
-                    and abs(target_yaw - float(final_yaw))
-                    <= float(config.gimbal_tolerance_deg)
-                ):
-                    sensors.reset_filters()
-                    return True
-
-                # Feedback moved again during the settle period; reacquire.
-                stable = 0
-            continue
-
-        stable = 0
-        yaw_speed = 0.0
-        pitch_speed = 0.0
-
-        if not yaw_ready:
+        if abs(yaw_error) <= float(config.gimbal_tolerance_deg):
+            _stop_axes()
+            yaw_stable += 1
+            if yaw_stable >= int(config.gimbal_stable_samples):
+                break
+        else:
+            yaw_stable = 0
             speed = max(
                 float(config.gimbal_min_yaw_speed_dps),
                 min(
@@ -334,40 +398,69 @@ def _point_gimbal(
                     abs(yaw_error) * float(config.gimbal_yaw_kp),
                 ),
             )
-            yaw_speed = math.copysign(speed, yaw_error)
-
-        if not pitch_ready:
-            speed = max(
-                float(config.gimbal_pitch_min_speed_dps),
-                min(
-                    float(config.gimbal_pitch_max_speed_dps),
-                    abs(pitch_error) * float(config.gimbal_pitch_kp),
-                ),
-            )
-            pitch_speed = (
-                math.copysign(speed, pitch_error)
-                * float(config.gimbal_pitch_drive_sign)
+            gimbal.drive_speed(
+                pitch_speed=0.0,
+                yaw_speed=math.copysign(speed, yaw_error),
             )
 
-        gimbal.drive_speed(
-            pitch_speed=pitch_speed,
-            yaw_speed=yaw_speed,
-        )
         time.sleep(0.03)
+    else:
+        _stop_axes()
+        print(
+            "[GIMBAL] Yaw timeout at {}. Measured yaw={}.".format(
+                DIR_NAME[int(direction) % 4],
+                tracker.get_yaw(),
+            ),
+            flush=True,
+        )
+        return False
 
-    gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
-    pitch, yaw = tracker.get_angles()
+    _stop_axes()
+    if not _sleep_interruptible(0.12, stop_event):
+        return False
+
+    # Only after yaw is stopped may pitch be corrected again. This also
+    # accounts for any small physical/firmware coupling under the guard.
+    if not _level_pitch("POST_YAW"):
+        return False
+
+    _stop_axes()
+    if not _sleep_interruptible(config.gimbal_settle_sec, stop_event):
+        return False
+
+    final_pitch, final_yaw = tracker.get_angles()
+    if (
+        final_pitch is None
+        or final_yaw is None
+        or abs(target_pitch - float(final_pitch))
+        > float(config.gimbal_pitch_tolerance_deg)
+        or abs(target_yaw - float(final_yaw))
+        > float(config.gimbal_tolerance_deg)
+    ):
+        print(
+            "[GIMBAL] Final orientation unstable: target pitch={:+.1f}, "
+            "yaw={:+.1f}; actual pitch={}, yaw={}.".format(
+                target_pitch,
+                target_yaw,
+                "---" if final_pitch is None else "{:+.1f}".format(float(final_pitch)),
+                "---" if final_yaw is None else "{:+.1f}".format(float(final_yaw)),
+            ),
+            flush=True,
+        )
+        return False
+
+    samples = tracker.pitch_samples_since(started_yaw)
     print(
-        "[GIMBAL] Orientation not reached: desired pitch={:+.1f} yaw={:+.1f}; "
-        "measured pitch={} yaw={}".format(
-            target_pitch,
-            target_yaw,
-            "---" if pitch is None else "{:+.1f}".format(float(pitch)),
-            "---" if yaw is None else "{:+.1f}".format(float(yaw)),
+        "[GIMBAL] {} yaw-only sweep finished; peak pitch error={:.1f} deg "
+        "({} feedback samples).".format(
+            DIR_NAME[int(direction) % 4],
+            max_pitch_during_yaw,
+            len(samples),
         ),
         flush=True,
     )
-    return False
+    sensors.reset_filters()
+    return True
 
 def _sample_tof(
     sensors: ToFOnlySensorManager,
