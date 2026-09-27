@@ -110,6 +110,39 @@ class LiveSurveyBridge:
         self._rescan.set()
         self.set_status("Rescan requested at the current cell")
 
+    def rescan_requested(self) -> bool:
+        return self._rescan.is_set()
+
+    def set_skip_visited_scans(self, enabled: bool) -> bool:
+        # Only affects the NEXT cell checkpoint; never bypasses live ToF
+        # safety checks during movement.
+        with self._lock:
+            self._config.skip_scanned_visited_cells = bool(enabled)
+            self._status = (
+                "Visited-cell full scan reuse {}".format(
+                    "ON" if enabled else "OFF"
+                )
+            )
+            return bool(enabled)
+
+    def get_skip_visited_scans(self) -> bool:
+        with self._lock:
+            return bool(self._config.skip_scanned_visited_cells)
+
+    def set_yaw_speed(self, speed_dps: float) -> float:
+        bounded = min(
+            90.0,
+            max(float(self._config.gimbal_min_yaw_speed_dps), float(speed_dps)),
+        )
+        with self._lock:
+            self._config.gimbal_yaw_speed_dps = float(bounded)
+            self._status = "Gimbal yaw speed set to {:.0f} deg/s".format(bounded)
+        return bounded
+
+    def get_yaw_speed(self) -> float:
+        with self._lock:
+            return float(self._config.gimbal_yaw_speed_dps)
+
     def consume_rescan(self) -> bool:
         if self._rescan.is_set():
             self._rescan.clear()
