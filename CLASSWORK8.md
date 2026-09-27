@@ -418,3 +418,52 @@ markers as well.
 
 The V05 baseline does not aim or fire the blaster.  It is the Round-1 mapping
 and target-database foundation for the later Round-2 route planner.
+
+
+### V05 camera tuning from the 27 Sep real foam-wall sample
+
+The real 640x360 sample contained seven physical signs. The original detector
+reported eight because a yellow floor object was incorrectly accepted as a
+YELLOW RECTANGLE. The rightmost green rectangle was also called a square.
+
+The current V05 detector now:
+- limits the target band to configurable fractions of image height
+  (\`target_roi_top_ratio=0.18\`, \`target_roi_bottom_ratio=0.82\` by default);
+- rejects clipped objects touching ROI/image borders;
+- tightens square aspect ratio to 0.85-1.16 and keeps elongated signs as
+  rectangles;
+- rejects tiny contours below 300 px by default;
+- verifies 4 of 6 distinct fresh camera frames, never counting one cached
+  frame repeatedly;
+- keeps separate adjacent same-color/same-shape targets rather than merging
+  them solely because the shared ToF ray gives the same distance;
+- draws small numbered boxes to prevent camera labels overlapping.
+
+The ROI must be tuned in the configuration GUI if the camera pitch, mounting,
+target height, or maze geometry changes; it is not a universal field constant.
+
+**Offline saved-image check (does not connect to the robot):**
+
+\`\`\`powershell
+python -u final_target_image_test.py
+\`\`\`
+
+The script automatically finds the newest
+\`classwork8_output/target_camera_samples/target_raw_*.png\`, prints each
+detection's color, shape, confidence, bounding box and aspect ratio, and
+writes a matching \`target_retuned_*.png\`. An explicit path is also accepted:
+
+\`\`\`powershell
+python -u final_target_image_test.py "C:\\path\\to\\target_raw_sample.png"
+\`\`\`
+
+**Offline regression tests:**
+
+\`\`\`powershell
+python -m unittest tests.test_final_target_detection -v
+\`\`\`
+
+The displayed confidence is a detection heuristic, not a calibrated
+probability of correctness. Cross-cell target association still requires
+camera geometry or additional validation; V05 deliberately does not merge
+targets from different approach cells based on one ToF distance alone.
