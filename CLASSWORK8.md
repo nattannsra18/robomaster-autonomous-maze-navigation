@@ -795,3 +795,66 @@ If tests pass, run \`python -u final_round1_tof_camera_01.py\` and first verify
 that a far sign produces \`SIGHTING_ONLY\` / \`sighting_cell_hint\` rather than
 a physical target at the start, and that returning to a fully scanned cell
 produces \`[SCAN_REUSED]\` while fresh move-direction ToF remains active.
+
+
+### V05 safer mecanum straight-line motion with ToF + odometry only
+
+The motion controller previously corrected lateral error from wheel odometry,
+plus a small side-distance bias taken only at the start of a cell and faded
+away after about 35 cm. That alone is not proof the chassis is parallel to
+a wall: mecanum wheel slip can be absent from wheel odometry, and the one
+gimbal ToF cannot continuously face both forward and sideways.
+
+The V05 movement addition applies only to a leg with a **confirmed mapped
+wall at its side**. By default, after 0.48 of a 60 cm cell (~29 cm), it:
+1. Sends a full chassis stop.
+2. Points the existing ToF at the known wall side(s) and samples each while
+   stationary at horizontal pitch.
+3. If any known side return is <=22 cm, stops the mission with a
+   \`SIDE_CLEARANCE_LOW_LEFT/RIGHT\` reason. This threshold is a
+   **sensor-to-wall range**, not actual body clearance; calibrate it with
+   the specific RoboMaster / foam wall installation.
+4. With sufficiently reliable wall returns, makes only a bounded
+   right-relative lateral bias; unknown/distant returns cannot command
+   automatic sideways motion.
+5. Restores the ToF to the actual travel direction, waits for a new forward
+   reading, and **only then** resumes the remaining fraction of the 60 cm
+   cell. There is at most one such mid-cell side checkpoint per move.
+
+Wheel odometry has an independent cross-track guard: slowdown after reported
+3.0 cm lateral error, and a stop at 8.5 cm. The total lateral command near
+mapped side walls is capped at 0.028 m/s, even if scan and odometry terms
+otherwise add. Loss of yaw feedback while heading hold is enabled also stops
+the chassis rather than disabling yaw correction silently. These movement
+events are saved as \`MIDCELL_SIDE_CHECK\`, \`SIDE_CLEARANCE_LOW\`,
+\`CROSS_TRACK_LIMIT\`, and \`CELL_MOTION_QUALITY\` in exploration logs.
+
+The original 60 cm logical cell goal and frontier planner are unchanged.
+The optional mid-cell physical checks may add several seconds per wall-side
+move, which matters for the 15-minute Final time budget. Switch them off
+only after field testing establishes that the increased risk is acceptable.
+
+The pre-mission **Mission Settings** tab includes "Check side-wall clearance
+mid-cell", and **ToF / Safety** exposes progress ratio, side hard/soft
+thresholds, maximum mid-cell bias, combined lateral limit, and cross-track
+slow/stop thresholds. The new defaults are conservative field-testing
+starting points, NOT certified collision-avoidance limits.
+
+A single gimbal ToF cannot guarantee continuous side collision detection or
+independently measure a robot's full wall-parallel orientation. Start with
+the chassis placed parallel to the actual maze wall, test a short straight
+route with a hand ready to STOP, and compare true tape-measured lateral
+clearance to the ToF readings and odometry log. Low foam can be missed by
+an unlevel sensor. Sharp/IR side hardware would later improve continuous
+protection; no such hardware is assumed here.
+
+Offline tests (no robot connection):
+
+\`\`\`powershell
+python -m py_compile classwork8\motion_safety_v05.py classwork8\tof_camera_round1_v05.py classwork8\config.py classwork8\config_gui_v05.py
+python -m unittest tests.test_final_motion_safety_v05 tests.test_final_scan_reuse tests.test_final_gimbal_pitch_v05 -v
+\`\`\`
+
+On a real test, look for \`[SIDE_CHECK]\` at a wall-adjacent cell,
+\`[MOVE] Reached ... peak cross=... yaw_error=...\`, and export
+\`exploration_log.csv\` to compare physical and reported drift.
