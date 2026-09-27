@@ -189,3 +189,36 @@ def bound_travel_lateral(
     )
     difference = bounded - lateral
     return x_cmd + rx * difference, y_cmd + ry * difference
+
+
+def side_start_recovery_preflight(
+    confirmed_side_cm: Optional[float],
+    fresh_opposite_cm: Optional[float],
+    *,
+    hard_stop_cm: float,
+    release_margin_cm: float,
+    opposite_min_cm: float,
+    step_m: float,
+) -> Tuple[bool, str]:
+    """Authorize ONLY an away-from-wall nudge with a fresh opposite-direction ray.
+
+    This checks sensor-to-wall distances, not body clearance. Physical sensor
+    offsets and low obstacles must be checked at the real robot. Never move
+    on a missing reading, or without additional room beyond the small step.
+    """
+    if confirmed_side_cm is None or float(confirmed_side_cm) <= 0.0:
+        return False, "RECOVERY_NO_CONFIRMED_SIDE_RANGE"
+    if fresh_opposite_cm is None or float(fresh_opposite_cm) <= 0.0:
+        return False, "RECOVERY_NO_FRESH_OPPOSITE_RANGE"
+    if float(confirmed_side_cm) >= float(hard_stop_cm) + float(release_margin_cm):
+        return False, "RECOVERY_NOT_NEEDED"
+    if float(step_m) <= 0.0:
+        return False, "RECOVERY_INVALID_STEP"
+    required = max(
+        float(opposite_min_cm),
+        float(hard_stop_cm) + float(release_margin_cm) +
+        float(step_m) * 100.0 + 3.0,
+    )
+    if float(fresh_opposite_cm) < required:
+        return False, "RECOVERY_OPPOSITE_TOO_CLOSE"
+    return True, "RECOVERY_SAFE_OPPOSITE_RAY"
