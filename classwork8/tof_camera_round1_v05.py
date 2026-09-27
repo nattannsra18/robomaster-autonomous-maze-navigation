@@ -794,6 +794,27 @@ def _should_reuse_scan(
     )
 
 
+def _flanked_by_confirmed_walls(
+    cell: Tuple[int, int],
+    direction: int,
+    visited_cells: Set[Tuple[int, int]],
+    edge_states: Dict[Tuple[int, int, int], str],
+) -> bool:
+    """Reject an apparent long gap within an observed continuous wall line.
+
+    Two visited lateral neighbour cells must independently show WALL on the
+    same facing edge. This is a conservative UNKNOWN, not an invented wall:
+    a real narrow doorway remains unresolved until a better observation.
+    """
+    flank_directions = ((int(direction) - 1) % 4, (int(direction) + 1) % 4)
+    flanks = [_neighbor(cell, side) for side in flank_directions]
+    return all(
+        flank in visited_cells
+        and edge_states.get((flank[0], flank[1], int(direction) % 4)) == "WALL"
+        for flank in flanks
+    )
+
+
 def _scan_four_directions(
     gimbal,
     pose: PoseTracker,
@@ -989,7 +1010,17 @@ def _scan_four_directions(
             and distance_cm >= float(config.tof_open_cm)
             and not already_traversed
         ):
-            if previous_state == "WALL":
+            if _flanked_by_confirmed_walls(
+                current_cell, direction, known_cells, edge_states
+            ):
+                print(
+                    "[SCAN_OUTSIDE_REJECTED] {} long echo lies between two "
+                    "previously observed wall edges; keeping this gap UNKNOWN.".format(
+                        DIR_NAME[direction]
+                    ), flush=True,
+                )
+                distance_cm = None
+            elif previous_state == "WALL":
                 print(
                     "[SCAN_OUTSIDE_REJECTED] {} has a previously confirmed WALL; "
                     "long echo is not permission to map beyond it.".format(
