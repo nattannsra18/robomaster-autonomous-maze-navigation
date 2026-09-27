@@ -284,13 +284,13 @@ The evaluator compares the saved robot occupancy map against a separately drawn
 **Ground Truth** map of the real maze. This is an offline step; no robot or
 RoboMaster SDK connection is required.
 
-- Map encoding: \`-1\` = UNKNOWN, \`0\` = FREE, \`100\` = WALL.
-- Ground Truth must use only \`0\` or \`100\` within the evaluated area.
+- Map encoding: `-1` = UNKNOWN, `0` = FREE, `100` = WALL.
+- Ground Truth must use only `0` or `100` within the evaluated area.
 - The two CSV files must represent **the same physical resolution and orientation**.
-  The default occupancy \`map.csv\` is 5 cm per cell, NOT a 60 cm-per-cell
+  The default occupancy `map.csv` is 5 cm per cell, NOT a 60 cm-per-cell
   logical maze diagram. Rasterize a hand-drawn Ground Truth to 5 cm per
   cell (including wall thickness), or compare two equally sized fine grids.
-- Rows in \`map.csv\` are top-to-bottom (positive map Y first), and columns
+- Rows in `map.csv` are top-to-bottom (positive map Y first), and columns
   are left-to-right (negative to positive map X). Check orientation against
   the actual start direction before choosing the crop.
 - The initial 8 m x 8 m working canvas is larger than many real fields.
@@ -301,50 +301,50 @@ RoboMaster SDK connection is required.
 
 If the two maps already have identical dimensions and orientation:
 
-\`\`\`powershell
+```powershell
 python -m classwork8.evaluate "classwork8_output\run_YYYYMMDD_HHMMSS\map.csv" ground_truth.csv
-\`\`\`
+```
 
 If Ground Truth covers only a rectangle within the exported canvas, provide
 its top-left **0-based row/column in the exported map.csv**, after any
 explicit rotation (do not blindly centre-crop):
 
-\`\`\`powershell
+```powershell
 python -m classwork8.evaluate "classwork8_output\run_YYYYMMDD_HHMMSS\map.csv" ground_truth.csv --top 38 --left 44
-\`\`\`
+```
 
 The numbers above are only command syntax examples; determine your real
-\`--top\`/\`--left\` from the physical frame. If the map orientation is known
-to differ, \`--rotate 90\`, \`180\` or \`270\` rotates the predicted map
+`--top`/`--left` from the physical frame. If the map orientation is known
+to differ, `--rotate 90`, `180` or `270` rotates the predicted map
 clockwise *before* cropping.
 
-Outputs in \`run_...\evaluation\`:
+Outputs in `run_...\evaluation`:
 
-- \`evaluation.txt\`: assignment equations and numeric counts/percentages.
-- \`evaluation.json\`: machine-readable results and the chosen alignment.
-- \`aligned_map.csv\`: exactly the evaluated robot-map region.
-- \`comparison.svg\`: robot map, Ground Truth and a third agreement map
+- `evaluation.txt`: assignment equations and numeric counts/percentages.
+- `evaluation.json`: machine-readable results and the chosen alignment.
+- `aligned_map.csv`: exactly the evaluated robot-map region.
+- `comparison.svg`: robot map, Ground Truth and a third agreement map
   (green correct, yellow unexplored, red wrong prediction).
 
 Assignment formulas:
 
-\`\`\`text
+```text
 Map Accuracy = number of correctly classified cells / all GT cells * 100
 Coverage     = number of non-UNKNOWN predicted cells / all GT cells * 100
-\`\`\`
+```
 
 An UNKNOWN robot cell counts as **incorrect** for assignment accuracy, and
 **unexplored** for coverage. The additional observed-cell accuracy is for
 diagnostics only and is *not* substituted for the assignment score.
-The mission's existing \`working_canvas_coverage_percent\` in \`summary.json\`
-is not the assignment Coverage; use \`evaluation.json\` after matching the
+The mission's existing `working_canvas_coverage_percent` in `summary.json`
+is not the assignment Coverage; use `evaluation.json` after matching the
 physical field's evaluation area.
 
 Run the evaluator's offline regression tests:
 
-\`\`\`powershell
+```powershell
 python -m unittest tests.test_classwork8_evaluation -v
-\`\`\`
+```
 
 ## V03: configurable GUI + nearest-frontier exploration
 
