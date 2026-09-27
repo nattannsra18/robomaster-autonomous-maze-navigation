@@ -27,6 +27,7 @@ if "libmedia_codec" not in sys.modules:
 from classwork8.config import Classwork8Config
 from classwork8.motion_safety_v05 import (
     adjacent_wall_sides,
+    bound_travel_lateral,
     side_checkpoint_decision,
 )
 from classwork8 import tof_camera_round1_v05 as mission
@@ -81,6 +82,16 @@ class SideCheckLogicTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(label, "MIDCELL_BIAS_AWAY_RIGHT")
         self.assertLess(bias, 0.0)
+
+    def test_combined_lateral_command_is_bounded_without_changing_forward(self):
+        # FRONT travel: chassis +Y moves right.
+        x, y = bound_travel_lateral(0.10, 0.07, (0.0, 1.0), 0.028)
+        self.assertAlmostEqual(x, 0.10)
+        self.assertAlmostEqual(y, 0.028)
+        # RIGHT travel: right-relative is backward (-X).
+        x, y = bound_travel_lateral(-0.07, 0.10, (-1.0, 0.0), 0.028)
+        self.assertAlmostEqual(x, -0.028)
+        self.assertAlmostEqual(y, 0.10)
 
     def test_dangerous_side_range_forces_stop_not_correction(self):
         ok, label, bias = self.decide(0, {3, 1}, {3: 21.0, 1: 35.0})
