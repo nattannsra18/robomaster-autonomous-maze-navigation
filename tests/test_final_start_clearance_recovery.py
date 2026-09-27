@@ -21,6 +21,7 @@ from classwork8.config import Classwork8Config
 from classwork8.motion_safety_v05 import (
     side_start_recovery_preflight,
     heading_alignment_preflight,
+    stationary_escape_heading_preflight,
     supervised_recheck_pose_ok,
 )
 from classwork8 import tof_camera_round1_v05 as mission
@@ -85,6 +86,37 @@ class HeadingAlignmentDecisionTests(unittest.TestCase):
         valid, status, _ = self.plan(0.6, self.rays())
         self.assertFalse(valid)
         self.assertEqual(status, "HEADING_RECOVERY_ALREADY_ALIGNED")
+
+
+class StationaryEscapeHeadingTests(unittest.TestCase):
+    def decide(self, samples):
+        return stationary_escape_heading_preflight(
+            samples, trigger_deg=4.0, max_stable_offset_deg=8.0,
+            max_spread_deg=0.75,
+        )
+
+    def test_three_consistent_readings_allow_only_no_turn_escape(self):
+        self.assertEqual(
+            self.decide([5.7, 5.9, 5.8]),
+            (True, "RECOVERY_STABLE_OFFSET_ESCAPE_ONLY", 5.8),
+        )
+        self.assertEqual(
+            self.decide([0.4, 0.6, 0.5]),
+            (True, "RECOVERY_HEADING_STABLE_ALIGNED", 0.5),
+        )
+
+    def test_one_spike_is_not_accepted_as_a_stable_heading(self):
+        allowed, reason, _ = self.decide([0.1, 5.5, 0.2])
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "RECOVERY_HEADING_UNSTABLE")
+
+    def test_excessive_yaw_and_missing_data_prohibit_any_escape(self):
+        self.assertEqual(
+            self.decide([9.0, 9.1, 9.0])[1],
+            "RECOVERY_HEADING_PRE_PULSE_UNSAFE",
+        )
+        self.assertFalse(self.decide([None, 0.0, 0.0])[0])
+        self.assertFalse(self.decide([float("nan"), 0.0, 0.0])[0])
 
 
 class SupervisedRecheckTests(unittest.TestCase):
@@ -245,14 +277,65 @@ class PhysicalNudgeSimulation(unittest.TestCase):
         self.assertEqual(count["translations"], 1)
         self.assertEqual(self.chassis.commands[-1], (0.0, 0.0, 0.0))
 
-    def test_preexisting_large_yaw_does_not_start_escape(self):
-        self.pose.yaw = 5.0
+    def test_large_persistent_yaw_over_8_deg_never_starts_escape(self):
+        self.pose.yaw = 9.0
         ok, reason, _ = self.run_recovery()
         self.assertFalse(ok)
         self.assertEqual(reason, "RECOVERY_HEADING_PRE_PULSE_UNSAFE")
         self.assertFalse(any(
             x != 0 or y != 0 for x, y, _ in self.chassis.commands
         ))
+
+    def test_stable_five_degree_yaw_can_escape_but_not_resume_normal_move(self):
+        self.pose.yaw = 5.0
+        ok, reason, final_cm = self.run_recovery()
+        self.assertFalse(ok)
+        self.assertEqual(reason, "RECOVERY_CLEARANCE_RESTORED_HEADING_UNALIGNED")
+        self.assertGreaterEqual(final_cm, 12.0)
+        self.assertTrue(any(x < 0 for x, _, _ in self.chassis.commands))
+        self.assertTrue(all(z == 0.0 for _, _, z in self.chassis.commands))
+
+    def test_right_wall_real_log_case_no_turn_then_heading_gate(self):
+        self.pose.yaw = 5.8
+        self.sensor.get_front_cm = lambda: (
+            9.6 - self.pose.y * 100.0 if self.sensor.direction == 1
+            else 40.0 + self.pose.y * 100.0 if self.sensor.direction == 3
+            else 50.0
+        )
+        def point(_gimbal, _sensor, _tracker, direction, _config, _stop):
+            self.sensor.direction = direction
+            self.tracker.direction = direction
+            return True
+        with mock.patch.object(mission, "_point_gimbal", side_effect=point), \\
+             mock.patch.object(mission.time, "sleep", return_value=None):
+            ok, reason, final_cm = mission._recover_critical_start_side(
+                self.chassis, object(), self.pose, self.sensor,
+                self.tracker, self.recorder, self.cfg,
+                side=1, travel_direction=0, current_cell=(0, 0),
+                start_x=0.0, start_y=0.0, start_yaw_deg=0.0,
+                confirmed_side_cm=9.6, stop_event=None,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "RECOVERY_CLEARANCE_RESTORED_HEADING_UNALIGNED")
+        self.assertGreaterEqual(final_cm, 12.0)
+        self.assertTrue(any(y < 0 and x == 0 for x, y, _ in self.chassis.commands))
+        self.assertTrue(all(z == 0 for _, _, z in self.chassis.commands))
+
+    def test_stationary_transient_heading_spike_rechecked_without_motion(self):
+        self.pose.yaw = 0.0
+        original = self.pose.get_yaw
+        samples = iter([5.2, 0.0, 0.0])
+        self.pose.get_yaw = lambda: next(samples, original())
+        ok, reason, final_cm = self.run_recovery()
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "RECOVERY_CLEARANCE_CONFIRMED")
+        self.assertGreaterEqual(final_cm, 12.0)
+        events = [
+            call.args[2] for call in self.recorder.event.call_args_list
+            if len(call.args) > 2 and call.args[1] == "CLEARANCE_HEADING"
+        ]
+        self.assertIn("RECOVERY_HEADING_UNSTABLE", events)
+        self.assertIn("RECOVERY_HEADING_STABLE_ALIGNED", events)
 
     def test_confirmed_front_side_moves_back_in_short_steps_then_rechecks(self):
         ok, reason, final_cm = self.run_recovery()
