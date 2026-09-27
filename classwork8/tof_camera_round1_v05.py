@@ -969,7 +969,7 @@ def _scan_four_directions(
                             verified,
                             current_cell,
                             direction,
-                            distance_cm if near_wall else None,
+                            distance_cm,
                             range_confirmed_wall=near_wall,
                             camera_pitch_deg=selected_pitch,
                         )
@@ -998,8 +998,8 @@ def _scan_four_directions(
                                 verified.detection.shape.upper(),
                                 saved_target["target_id"],
                                 float(verified.confidence),
-                                "RANGE_CONFIRMED" if near_wall
-                                else "NEEDS_RANGE_REVIEW",
+                                "NEAR_WALL_ESTIMATE" if near_wall
+                                else "SIGHTING_ONLY (distance unconfirmed)",
                                 current_cell,
                                 DIR_NAME[direction],
                             ),
