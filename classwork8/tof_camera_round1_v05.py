@@ -1628,6 +1628,13 @@ def _drive_one_cell(
             front_cm = confirmed_cm if confirmed_cm is not None else front_cm
 
         speed = config.travel_speed_mps
+        if wall_sides:
+            # The requested 0.25 m/s is an OPEN-corridor ceiling only.
+            # Beside a confirmed foam wall, keep a lower, independent cap.
+            speed = min(
+                speed,
+                float(config.motion_wall_adjacent_speed_cap_mps),
+            )
         if abs(cross_track) >= float(config.motion_cross_track_slow_m):
             speed = min(speed, float(config.motion_slow_cross_track_speed_mps))
         if front_cm < config.slow_front_cm:
