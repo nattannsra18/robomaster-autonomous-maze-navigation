@@ -712,6 +712,31 @@ def _scan_side_guidance_v02(
     return 0.0, "NO_SCAN_SIDE_GUIDANCE"
 
 
+def _should_reuse_scan(
+    current_cell: Tuple[int, int],
+    scanned_cells: Set[Tuple[int, int]],
+    edge_states: Dict[Tuple[int, int, int], str],
+    skip_enabled: bool,
+    rescan_requested: bool,
+) -> bool:
+    """Skip only a previously completed 4-way scan with known topology.
+
+    UNKNOWN edges, first visits, or explicit operator rescans require a
+    physical scan. This decision does not disable fresh travel-direction ToF.
+    """
+    return bool(
+        skip_enabled
+        and current_cell in scanned_cells
+        and not rescan_requested
+        and all(
+            edge_states.get(
+                (current_cell[0], current_cell[1], direction)
+            ) in ("OPEN", "WALL")
+            for direction in range(4)
+        )
+    )
+
+
 def _scan_four_directions(
     gimbal,
     pose: PoseTracker,
@@ -2265,15 +2290,12 @@ def run(
                 finish_reason = "USER_STOP"
                 break
 
-            cache_valid = (
-                bool(config.skip_scanned_visited_cells)
-                and current_cell in scanned_cells
-                and not survey_bridge.rescan_requested()
-                and all(
-                    edge_states.get((current_cell[0], current_cell[1], direction))
-                    in ("OPEN", "WALL")
-                    for direction in range(4)
-                )
+            cache_valid = _should_reuse_scan(
+                current_cell,
+                scanned_cells,
+                edge_states,
+                config.skip_scanned_visited_cells,
+                survey_bridge.rescan_requested(),
             )
 
             if cache_valid:
