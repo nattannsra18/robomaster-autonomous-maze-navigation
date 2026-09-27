@@ -2658,6 +2658,7 @@ def _closed_maze_completion_v04(
     edge_states: Dict[Tuple[int, int, int], str],
     blocked_edges: Set[Tuple[Tuple[int, int], int]],
     config: Classwork8Config,
+    safety_deferred_edges: Optional[Set[Tuple[Tuple[int, int], Tuple[int, int]]]] = None,
 ) -> dict:
     """Robust completion test for the closed rectangular classwork arena.
 
@@ -2679,6 +2680,7 @@ def _closed_maze_completion_v04(
         "bbox": None,
         "ratios": {},
         "threshold": float(config.closed_maze_perimeter_wall_ratio),
+        "boundary_open_edges": 0,
     }
 
     if not config.closed_maze_auto_stop or not visited:
@@ -2723,13 +2725,20 @@ def _closed_maze_completion_v04(
     }
 
     ratios: Dict[str, float] = {}
+    safety_deferred_edges = safety_deferred_edges or set()
+    boundary_open_edges = 0
 
     for name, checks in sides.items():
         confirmed = 0
 
         for cell, direction in checks:
             state = edge_states.get((cell[0], cell[1], direction))
-            blocked = (cell, direction) in blocked_edges
+            blocked = (
+                (cell, direction) in blocked_edges
+                and _canonical_edge(cell, direction) not in safety_deferred_edges
+            )
+            if state == "OPEN" and not blocked:
+                boundary_open_edges += 1
 
             if state == "WALL" or blocked:
                 confirmed += 1
@@ -2737,12 +2746,13 @@ def _closed_maze_completion_v04(
         ratios[name] = confirmed / float(max(1, len(checks)))
 
     result["ratios"] = ratios
+    result["boundary_open_edges"] = boundary_open_edges
 
     threshold = float(config.closed_maze_perimeter_wall_ratio)
 
-    result["complete"] = all(
-        ratio >= threshold
-        for ratio in ratios.values()
+    result["complete"] = (
+        boundary_open_edges == 0
+        and all(ratio >= threshold for ratio in ratios.values())
     )
 
     return result
@@ -2834,6 +2844,12 @@ def run(
     # can still export a useful partial run.
     visited: Set[Tuple[int, int]] = {current_cell}
     blocked_edges: Set[Tuple[Tuple[int, int], int]] = set()
+    # Non-wall edges deferred after a verified unsafe side-start recovery.
+    # Never count these as physical walls or silently report exploration done.
+    safety_deferred_edges: Set[
+        Tuple[Tuple[int, int], Tuple[int, int]]
+    ] = set()
+    uncertain_rescan_count: Dict[Tuple[int, int], int] = {}
     traversed_edges: Set[
         Tuple[Tuple[int, int], Tuple[int, int]]
     ] = set()
@@ -3276,9 +3292,10 @@ def run(
                 edge_states,
                 blocked_edges,
                 config,
+                safety_deferred_edges,
             )
 
-            if completion_status["complete"]:
+            if completion_status["complete"] and not safety_deferred_edges:
                 stop_chassis(chassis)
 
                 ratios_text = ", ".join(
@@ -3338,12 +3355,39 @@ def run(
             )
 
             if plan is None:
+                # One short repeat scan at the CURRENT cell can resolve a
+                # conflicted low-foam ray. Never claim completion solely from
+                # missing/ambiguous OPEN evidence or a deferred unsafe route.
+                unknown_here = any(
+                    edge_states.get((current_cell[0], current_cell[1], d))
+                        not in ("OPEN", "WALL")
+                    for d in range(4)
+                )
+                count = uncertain_rescan_count.get(current_cell, 0)
+                if unknown_here and count < 1 and not stop_event.is_set():
+                    uncertain_rescan_count[current_cell] = count + 1
+                    scanned_cells.discard(current_cell)
+                    print(
+                        "[SCAN_UNCERTAIN] Revisiting {} once before declaring no frontier.".format(
+                            current_cell
+                        ), flush=True,
+                    )
+                    continue
+                incomplete_scan = any(
+                    edge_states.get((cell[0], cell[1], d))
+                        not in ("OPEN", "WALL")
+                    for cell in visited for d in range(4)
+                )
                 planner_frontier_count = 0
                 planner_frontier_cell = None
                 planner_frontier_target = None
                 planner_route = []
 
-                finish_reason = "FRONTIER_EXPLORATION_COMPLETE"
+                finish_reason = (
+                    "FRONTIER_DEFERRED_SAFETY" if safety_deferred_edges
+                    else "FRONTIER_SCAN_UNCERTAIN" if incomplete_scan
+                    else "FRONTIER_EXPLORATION_COMPLETE"
+                )
                 recorder.event(
                     time.monotonic(),
                     "FINISH",
@@ -3502,6 +3546,50 @@ def run(
                     force=True,
                 )
                 continue
+
+            # A failed but stationary START-side clearance attempt should
+            # not end the whole mission if another confirmed-open route exists.
+            # Defer this specific physical edge only; do not call it a WALL.
+            # Missing sensors, odometry/heading faults and mid-leg failures
+            # still stop immediately, not a blind attempt to move elsewhere.
+            reroutable_recovery = (
+                moved <= 0.005
+                and (
+                    reason.startswith("RECOVERY_OPPOSITE_TOO_CLOSE")
+                    or reason.startswith("RECOVERY_CELL_OFFSET_LIMIT")
+                    or reason.startswith("RECOVERY_ATTEMPT_LIMIT")
+                )
+            )
+            if reroutable_recovery:
+                rel_x, rel_y = _relative_xy(
+                    pose, float(raw_start_x), float(raw_start_y),
+                    float(raw_start_yaw), config
+                )
+                safe_pose = (
+                    rel_x is not None and rel_y is not None
+                    and abs(float(rel_x) - float(current_cell[0]) * float(config.cell_size_m))
+                        <= float(config.side_start_recovery_max_center_offset_m) + 0.005
+                    and abs(float(rel_y) - float(current_cell[1]) * float(config.cell_size_m))
+                        <= float(config.side_start_recovery_max_center_offset_m) + 0.005
+                )
+                if safe_pose:
+                    deferred = _canonical_edge(current_cell, move_direction)
+                    safety_deferred_edges.add(deferred)
+                    blocked_edges.add((current_cell, move_direction))
+                    blocked_edges.add((next_cell, (move_direction + 2) % 4))
+                    recorder.event(
+                        time.monotonic(), "DEFERRED_UNSAFE_EDGE",
+                        reason + " (try another reachable frontier, no fake WALL)",
+                        logical_node=current_cell,
+                        destination=next_cell,
+                        direction=DIR_NAME[move_direction],
+                    )
+                    print(
+                        "[ROUTE_DEFERRED] {} -> {}: {}. Trying an alternate OPEN edge.".format(
+                            current_cell, next_cell, reason
+                        ), flush=True,
+                    )
+                    continue
 
             finish_reason = (
                 "FRONTIER_RELOCATE_{}".format(reason)
