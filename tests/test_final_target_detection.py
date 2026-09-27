@@ -236,7 +236,10 @@ class FinalTargetDetectionTests(unittest.TestCase):
         )
         self.assertTrue(sighting)
         self.assertEqual(source, (0.0, 0.0))
-        self.assertGreater(hint[1], self.config.cell_size_m)
+        # Unlocalized signs stay within their observer cell in the GUI,
+        # even when the raw ToF hint beyond a low foam wall is much farther.
+        self.assertLess(hint[1], self.config.cell_size_m / 2.0)
+        self.assertGreater(hint[1], 0.0)
 
         with tempfile.TemporaryDirectory() as folder:
             registry.save(Path(folder))
