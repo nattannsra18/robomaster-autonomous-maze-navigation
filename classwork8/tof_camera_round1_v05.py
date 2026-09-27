@@ -1125,44 +1125,6 @@ def _scan_four_directions(
         )
         yaw = pose.get_yaw()
 
-        # An actual wall along this leg can be closer than wheel odometry
-        # reports. At the halfway point, pause, look sideways while stopped,
-        # and restore forward ToF before any new chassis translation.
-        if (
-            checkpoint_enabled
-            and not checkpoint_done
-            and remaining > float(config.step_tolerance_m)
-            and progress >= (
-                float(config.cell_size_m) * float(config.midcell_side_check_ratio)
-            )
-        ):
-            checkpoint_done = True
-            ok_side, side_reason, mid_bias = _midcell_wall_checkpoint(
-                chassis, gimbal, sensors, gimbal_tracker, recorder, config,
-                direction, wall_sides, current_cell, target_cell,
-                progress, stop_event,
-            )
-            if not ok_side:
-                stop_chassis(chassis)
-                return False, side_reason, moved
-
-            # Replace the initial stopped-scan bias with the more recent
-            # mid-cell side-distance correction; never sum stale+fresh bias.
-            scan_side_correction = mid_bias
-            scan_side_progress_origin = max(0.0, float(progress))
-            publish_state(
-                status="Side clearance verified at {:.2f} m: {}".format(
-                    progress, side_reason
-                ),
-                logical_cell=current_cell,
-                gimbal_direction=direction,
-                tof_cm=sensors.get_front_cm(),
-                moves=moves,
-                force=True,
-            )
-            # Reacquire fresh pose, heading and forward ToF after the pause.
-            continue
-
         if rel_x is not None and rel_y is not None:
             _update_tof_ray(
                 grid,
@@ -1520,6 +1482,44 @@ def _drive_one_cell(
             front_cm = _wait_for_move_tof_v03(sensors, config, stop_event)
             if front_cm is None:
                 return False, "TOF_STALE_AFTER_GIMBAL", moved
+
+        # At most one mid-cell lateral check. The chassis MUST be fully
+        # stopped before the gimbal points away from travel direction. This
+        # checkpoint belongs to _drive_one_cell, never the 4-way scan routine.
+        if (
+            checkpoint_enabled
+            and not checkpoint_done
+            and remaining > float(config.step_tolerance_m)
+            and progress >= (
+                float(config.cell_size_m) * float(config.midcell_side_check_ratio)
+            )
+        ):
+            checkpoint_done = True
+            ok_side, side_reason, mid_bias = _midcell_wall_checkpoint(
+                chassis, gimbal, sensors, gimbal_tracker, recorder, config,
+                direction, wall_sides, current_cell, target_cell,
+                progress, stop_event,
+            )
+            if not ok_side:
+                stop_chassis(chassis)
+                return False, side_reason, moved
+
+            # Replace stale pre-move scan bias with freshly sampled mid-cell
+            # side bias; never add them together.
+            scan_side_correction = mid_bias
+            scan_side_progress_origin = max(0.0, float(progress))
+            publish_state(
+                status="Side clearance verified at {:.2f} m: {}".format(
+                    progress, side_reason
+                ),
+                logical_cell=current_cell,
+                gimbal_direction=direction,
+                tof_cm=sensors.get_front_cm(),
+                moves=moves,
+                force=True,
+            )
+            # Re-sample updated pose, heading, and fresh forward ToF.
+            continue
 
         if rel_x is not None and rel_y is not None:
             _update_tof_ray(
