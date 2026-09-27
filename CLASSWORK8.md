@@ -278,6 +278,44 @@ Map encoding:
 - `0` = FREE
 - `100` = OCCUPIED/WALL
 
+## Automatic evaluation on V04 SAVE (no extra command)
+
+V04 now enables **Automatically evaluate on SAVE** by default under
+**Completion / Export** in the pre-mission configuration window. Put an
+independently measured, field-aligned `ground_truth.csv` in the repository
+working directory, or enter its full path there. Keep the occupancy map
+resolution, orientation and measured field bounds consistent.
+
+If the Ground Truth is smaller than the 8 m working canvas, enter the
+**0-based Top/Left** crop coordinates (both fields); the default `-1, -1`
+only works with equal-size maps. Optional 0/90/180/270-degree clockwise
+rotation is applied before cropping. The program never searches for an
+alignment that maximizes scores.
+
+- **STOP & SAVE**, closing the V04 GUI, or automatic mission completion:
+  export map/log/trajectory/summary as usual, then immediately generate
+  `run_.../evaluation/` with `evaluation.json`, `evaluation.txt`,
+  `aligned_map.csv`, `comparison.svg` and a Ground Truth copy. The
+  final GUI status includes Accuracy and Coverage when evaluation succeeds.
+- **SAVE GUI MAP NOW** without stopping: create
+  `run_.../gui_snapshots/<timestamp>/gui_map.png` and a same-time
+  `map.csv` occupancy snapshot. Its `evaluation/` folder is also generated
+  automatically. Full mission logs and trajectory are finalized by STOP &
+  SAVE, not by this snapshot-only button.
+- If the Ground Truth is missing, save remains successful; a clear
+  `evaluation.txt`/`evaluation.json` reports the diagnostic
+  **working-canvas** coverage only and leaves both *assignment* metrics null.
+  It never invents an Accuracy score or treats the whole 8 m canvas as
+  the measured classroom maze. If GT exists but dimensions/crop are wrong,
+  the saved report contains `evaluation_error` while map/logs remain intact.
+
+To use on another PC:
+
+```powershell
+git pull origin classwork8-slam-exploration
+python -u classwork8_slam_04.py
+```
+
 ## Accuracy and Coverage (assignment item 4)
 
 The evaluator compares the saved robot occupancy map against a separately drawn
