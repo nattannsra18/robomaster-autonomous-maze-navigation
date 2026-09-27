@@ -118,6 +118,34 @@ def side_checkpoint_decision(
 
     return True, label, max(-max_bias, min(max_bias, bias))
 
+
+def critical_start_side_recheck(
+    values_cm: Tuple[Optional[float], Optional[float]],
+    *,
+    hard_stop_cm: float,
+    release_margin_cm: float,
+    max_spread_cm: float,
+) -> Tuple[bool, str, Optional[float]]:
+    """Require two independent stationary fresh returns before clearing a stop.
+
+    Returns (cleared, diagnostic, confirmed_range_cm). A single unexpectedly
+    high reflection must NOT override an earlier low wall reading. The guard
+    remains active whenever samples are absent, disagree or stay too close.
+    """
+    first, second = values_cm
+    if first is None or second is None:
+        return False, "SIDE_START_RECHECK_NO_FRESH_TOF", None
+    a, b = float(first), float(second)
+    if a <= 0.0 or b <= 0.0:
+        return False, "SIDE_START_RECHECK_INVALID_TOF", None
+    if abs(a - b) > float(max_spread_cm):
+        return False, "SIDE_START_RECHECK_INCONSISTENT", None
+    confirmed = (a + b) / 2.0
+    if min(a, b) < float(hard_stop_cm) + float(release_margin_cm):
+        return False, "SIDE_START_CRITICAL_CONFIRMED", confirmed
+    return True, "SIDE_START_TRANSIENT_CLEARED", confirmed
+
+
 def bound_travel_lateral(
     x_cmd: float,
     y_cmd: float,
