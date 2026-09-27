@@ -232,6 +232,24 @@ class GroundTruthEditor:
         self.config = config
         self.layout = GroundTruthLayout()
         self.csv_path = Path(config.output_dir) / "ground_truth" / "ground_truth.csv"
+        # Re-open a previously authored reference automatically when its
+        # editable JSON is available, instead of starting with an empty maze.
+        previous_csv = Path(str(getattr(config, "ground_truth_csv", "")))
+        previous_json = previous_csv.with_suffix(".json")
+        if previous_csv.is_file() and previous_json.is_file():
+            try:
+                previous = json.loads(previous_json.read_text(encoding="utf-8"))
+                if (previous.get("format") == "classwork8-physical-ground-truth-v1"
+                    and math.isclose(float(previous.get("cell_size_m")), config.cell_size_m, abs_tol=1e-7)
+                    and math.isclose(float(previous.get("occupancy_resolution_m")), config.resolution_m, abs_tol=1e-7)):
+                    loaded = GroundTruthLayout.from_payload(previous)
+                    self.layout = loaded
+                    self.csv_path = previous_csv
+                    self.rows_var.set(str(loaded.rows))
+                    self.cols_var.set(str(loaded.cols))
+                    self.wall_thickness_var.set(str(round(float(previous.get("wall_thickness_m", .05))*100, 2)))
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
         self.saved = False
         self.start_requested = False
         self.wall_thickness_var = tk.StringVar(master=parent, value="5")
@@ -360,12 +378,13 @@ class GroundTruthEditor:
         if not filename:return
         try:
             payload=json.loads(Path(filename).read_text(encoding="utf-8"))
-            self.layout=GroundTruthLayout.from_payload(payload)
             if (not math.isclose(float(payload.get("cell_size_m")),self.config.cell_size_m,abs_tol=1e-7) or
                 not math.isclose(float(payload.get("occupancy_resolution_m")),self.config.resolution_m,abs_tol=1e-7)):
                 raise ValueError("Loaded physical cell size / resolution differs from current V04 settings")
-            self.rows_var.set(str(self.layout.rows))
-            self.cols_var.set(str(self.layout.cols))
+            loaded = GroundTruthLayout.from_payload(payload)
+            self.layout = loaded
+            self.rows_var.set(str(loaded.rows))
+            self.cols_var.set(str(loaded.cols))
             self.wall_thickness_var.set(str(round(float(payload.get("wall_thickness_m",0.05))*100,2)))
             self.csv_path=Path(filename).with_suffix(".csv")
             self.saved=False
