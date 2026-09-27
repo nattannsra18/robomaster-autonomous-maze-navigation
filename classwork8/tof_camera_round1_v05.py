@@ -897,73 +897,169 @@ def _scan_four_directions(
             flush=True,
         )
 
-        # V05 Round 1: while the gimbal is already stationary for the ToF scan,
-        # use the same camera direction to survey colored shape targets.  This
-        # adds no extra gimbal sweep and keeps one shared camera stream.
-        if (
+        # Camera targets are physically lower than the horizontal ToF ray.
+        # Keep the proven mapping range above, then (only while chassis is
+        # stopped) tip the camera down to its independently configured angle.
+        # Restore horizontal ToF before any next ray or chassis movement.
+        near_wall = (
+            distance_cm is not None
+            and float(distance_cm) < float(config.tof_open_cm)
+        )
+        survey_this_direction = (
             camera_service is not None
             and camera_service.running
             and target_detector is not None
-            and distance_cm is not None
-            and float(distance_cm) < float(config.tof_open_cm)
-        ):
-            # Targets belong to wall faces.  Survey only wall-facing scans so
-            # a distant sign seen through an open corridor is not registered
-            # against the wrong approach cell.  This also saves camera
-            # processing time in the 15-minute final mission.
-            verified_targets, target_debug = target_detector.verify_latest(
-                camera_service
+            and (
+                near_wall
+                or bool(config.target_survey_open_directions)
             )
-            camera_pitch = gimbal_tracker.get_pitch()
-            if (
-                camera_pitch is None
-                or abs(
-                    float(camera_pitch) - float(config.gimbal_scan_pitch_deg)
-                ) > float(config.gimbal_pitch_tolerance_deg)
-            ):
-                print(
-                    "[TARGET] Camera survey skipped: gimbal pitch drifted.",
-                    flush=True,
-                )
-                verified_targets = []
-            if target_debug is not None:
-                target_debug_holder[0] = target_debug
+        )
 
-            for verified in verified_targets:
-                saved_target = target_registry.add_verified(
-                    verified,
-                    current_cell,
+        if survey_this_direction:
+            selected_pitch = float(survey_bridge.get_pitch())
+            survey_bridge.set_status(
+                "Survey {} at pitch {:+.1f} deg (robot stopped)".format(
+                    DIR_NAME[direction], selected_pitch
+                )
+            )
+            publish_state(
+                status="Camera surveying {} at {:+.1f} deg".format(
+                    DIR_NAME[direction], selected_pitch
+                ),
+                logical_cell=current_cell,
+                gimbal_direction=direction,
+                tof_cm=distance_cm,
+                moves=moves,
+                force=True,
+            )
+
+            verified_targets = []
+            restore_ok = False
+            camera_position_ok = _set_camera_observation_pitch(
+                gimbal,
+                gimbal_tracker,
+                config,
+                selected_pitch,
+                stop_event,
+            )
+            try:
+                if camera_position_ok:
+                    verified_targets, target_debug = target_detector.verify_latest(
+                        camera_service
+                    )
+                    target_debug_holder[0] = target_debug
+
+                    measured_pitch = gimbal_tracker.get_pitch()
+                    if (
+                        measured_pitch is None
+                        or abs(float(measured_pitch) - selected_pitch)
+                        > float(config.target_camera_pitch_tolerance_deg)
+                    ):
+                        print(
+                            "[TARGET] Discarding observations: camera pitch "
+                            "changed while sampling.",
+                            flush=True,
+                        )
+                        verified_targets = []
+
+                    for verified in verified_targets:
+                        saved_target = target_registry.add_verified(
+                            verified,
+                            current_cell,
+                            direction,
+                            distance_cm if near_wall else None,
+                            range_confirmed_wall=near_wall,
+                            camera_pitch_deg=selected_pitch,
+                        )
+                        recorder.event(
+                            time.monotonic(),
+                            "TARGET_OBSERVATION",
+                            "{} {} from {} {}".format(
+                                verified.detection.color.upper(),
+                                verified.detection.shape.upper(),
+                                current_cell,
+                                DIR_NAME[direction],
+                            ),
+                            logical_node=current_cell,
+                            direction=DIR_NAME[direction],
+                            target_id=saved_target["target_id"],
+                            target_color=verified.detection.color,
+                            target_shape=verified.detection.shape,
+                            target_confidence=round(float(verified.confidence), 4),
+                            camera_pitch_deg=selected_pitch,
+                            range_confirmed_wall=near_wall,
+                            tof_cm=distance_cm,
+                        )
+                        print(
+                            "[TARGET] {} {} -> {} conf={:.2f} {} from {} {}".format(
+                                verified.detection.color.upper(),
+                                verified.detection.shape.upper(),
+                                saved_target["target_id"],
+                                float(verified.confidence),
+                                "RANGE_CONFIRMED" if near_wall
+                                else "NEEDS_RANGE_REVIEW",
+                                current_cell,
+                                DIR_NAME[direction],
+                            ),
+                            flush=True,
+                        )
+                else:
+                    print(
+                        "[TARGET] Camera pitch not reached at {}; survey skipped.".format(
+                            DIR_NAME[direction]
+                        ),
+                        flush=True,
+                    )
+            finally:
+                # This restore is mandatory. The ToF ray is not safe for
+                # navigation or topology if the camera remains angled down.
+                restore_ok = _point_gimbal(
+                    gimbal,
+                    sensors,
+                    gimbal_tracker,
                     direction,
-                    distance_cm,
+                    config,
+                    stop_event,
                 )
-                recorder.event(
-                    time.monotonic(),
-                    "TARGET_OBSERVATION",
-                    "{} {} at {} looking {}".format(
-                        verified.detection.color.upper(),
-                        verified.detection.shape.upper(),
-                        current_cell,
-                        DIR_NAME[direction],
-                    ),
-                    logical_node=current_cell,
-                    direction=DIR_NAME[direction],
-                    target_id=saved_target["target_id"],
-                    target_color=verified.detection.color,
-                    target_shape=verified.detection.shape,
-                    target_confidence=round(float(verified.confidence), 4),
-                    tof_cm=distance_cm,
+                survey_bridge.set_status(
+                    "Live preview; ToF horizontal restored"
+                    if restore_ok else "ERROR: cannot restore horizontal ToF"
                 )
+
+            if not restore_ok:
                 print(
-                    "[TARGET] {} {} -> {} conf={:.2f} from {} {}".format(
-                        verified.detection.color.upper(),
-                        verified.detection.shape.upper(),
-                        saved_target["target_id"],
-                        float(verified.confidence),
-                        current_cell,
-                        DIR_NAME[direction],
-                    ),
+                    "[SCAN] Camera pitch restore FAILED. No further mapping/move.",
                     flush=True,
                 )
+                return None
+
+            recorder.event(
+                time.monotonic(),
+                "TARGET_SURVEY",
+                "{} at {:+.1f} deg: {} verified, wall_range_confirmed={}".format(
+                    DIR_NAME[direction],
+                    selected_pitch,
+                    len(verified_targets),
+                    near_wall,
+                ),
+                logical_node=current_cell,
+                direction=DIR_NAME[direction],
+                verified_targets=len(verified_targets),
+                camera_pitch_deg=selected_pitch,
+                range_confirmed_wall=near_wall,
+                tof_cm=distance_cm,
+            )
+        elif camera_service is not None and camera_service.running:
+            recorder.event(
+                time.monotonic(),
+                "TARGET_SURVEY_SKIPPED",
+                "{}: open direction not enabled for target survey".format(
+                    DIR_NAME[direction]
+                ),
+                logical_node=current_cell,
+                direction=DIR_NAME[direction],
+                tof_cm=distance_cm,
+            )
 
         rel_x, rel_y = _relative_xy(
             pose, start_x, start_y, start_yaw_deg, config
