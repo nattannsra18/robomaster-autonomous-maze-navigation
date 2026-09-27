@@ -78,9 +78,8 @@ class Classwork8Config:
     # Closed-loop gimbal scan tuning. The actual relative yaw is read from
     # gimbal.sub_angle(), so the mapper does not assume the gimbal reached target.
     # Turn slowly with YAW ONLY; restore level PITCH after yaw finishes.
-    # The field sweep showed +/-24 deg pitch excursions when both axes were
-    # commanded together. If pitch still moves >6 deg with pitch_speed=0,
-    # abort mapping and investigate physical/firmware coupling instead.
+    # The observed transient yaw/pitch excursion is logged, but ToF is sampled
+    # only AFTER both axes settle to their configured scan angles.
     gimbal_yaw_speed_dps: float = 40.0
     gimbal_min_yaw_speed_dps: float = 8.0
     gimbal_yaw_kp: float = 1.0
