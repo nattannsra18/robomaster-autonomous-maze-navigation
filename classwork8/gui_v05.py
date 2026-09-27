@@ -1112,6 +1112,16 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
+        for target in snapshot.get("targets") or []:
+            hint, _origin, sighting = target_plot_geometry(
+                target, float(snapshot.get("cell_size_m", 0.60))
+            )
+            if sighting and hint is not None:
+                # Camera sighting alters the VIEWPORT only, not map coverage.
+                display_cells.append((
+                    -round(hint[0] / float(snapshot.get("cell_size_m", 0.60))),
+                    -round(hint[1] / float(snapshot.get("cell_size_m", 0.60))),
+                ))
         min_row = min(r for r, _ in display_cells)
         max_row = max(r for r, _ in display_cells)
         min_col = min(c for _, c in display_cells)
