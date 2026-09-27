@@ -196,6 +196,7 @@ class FinalTargetDetectionTests(unittest.TestCase):
         self.assertIsNone(far["estimated_target_xy_m"])
         self.assertEqual(far["approach_cells"], [])
         self.assertEqual(far["observation_cells"], [[0, 0]])
+        self.assertEqual(far["sighting_cell_hint"], [0, 2])
         self.assertFalse(far["round2_position_ready"])
         hint, source, sighting = target_plot_geometry(
             far, self.config.cell_size_m
