@@ -278,12 +278,60 @@ Map encoding:
 - `0` = FREE
 - `100` = OCCUPIED/WALL
 
+## Draw physical Ground Truth in the V04 GUI (before SLAM)
+
+Open `python -u classwork8_slam_04.py`. The first screen has a prominent
+**STEP 1 - DRAW / LOAD PHYSICAL GROUND TRUTH MAP** button. It opens an editor
+similar to the fixed-grid `main.py` map creator, but this physical reference
+is stored *only* for evaluation; the unknown-world robot planner never reads
+it. The editor appears **before** the robot connects.
+
+1. Set physical **Rows / Cols** for the actual maze. The default is an empty
+   5x5 canvas, not a supplied/preloaded maze.
+2. Choose **Draw / erase internal wall** and click close to a shared cell edge;
+   clicking again removes it. Outer perimeter walls are fixed. Right-click
+   can toggle an interior wall. The editor shows FRONT = up / RIGHT = right.
+3. Choose **Set robot START**, then click the actual cell in which the robot
+   will be placed, with its physical FRONT pointing upward as drawn.
+4. Set the measured foam-wall thickness in cm (default 5 cm); this affects
+   fine-grid WALL rasterization and the reported accuracy.
+5. Use **SAVE & RETURN** to return to mission configuration, or
+   **SAVE & START SLAM** to save, validate the settings and proceed to
+   robot connection automatically. A saved map can be reopened with
+   **LOAD EDITABLE MAP (.json)**. An external CSV can be chosen with
+   **BROWSE EXISTING CSV** on the configuration screen.
+
+The editor saves together, by default:
+
+```text
+classwork8_output/ground_truth/
+  ground_truth.csv  # fully labelled 5-cm occupancy grid for evaluation
+  ground_truth.json # editable physical cell layout, walls, START and metadata
+  ground_truth.svg  # visual reference with START and walls
+```
+
+**Automatic coordinate alignment:** the marked START is local map (0,0).
+The editor rasterizes logical 60-cm cells into occupancy cells using the
+configured resolution, converts physical FRONT/RIGHT into the export's
++X/+Y axis conventions, and computes the exact 0-based crop row/column
+within the working canvas. For a 7x7 physical maze with START in the
+middle (3,3), a 60-cm logical cell, 5-cm occupancy resolution, and an
+8-m centred canvas, the crop is (top=38,left=38). These numbers derive
+from the drawing and calibration, **never from best-fitting the SLAM map**.
+
+Always draw an independently measured physical maze and mark the true
+start cell; if the robot's position/orientation or canvas/resolution changes,
+reopen and save the Ground Truth. The editor does not automatically infer
+walls from the robot's output, which would invalidate the assignment's
+accuracy measurement.
+
 ## Automatic evaluation on V04 SAVE (no extra command)
 
-V04 now enables **Automatically evaluate on SAVE** by default under
-**Completion / Export** in the pre-mission configuration window. Put an
-independently measured, field-aligned `ground_truth.csv` in the repository
-working directory, or enter its full path there. Keep the occupancy map
+V04 enables **Automatically evaluate on SAVE** by default under
+**Completion / Export**. The physical Ground Truth editor supplies the
+CSV path and exact evaluation crop automatically when you save its layout;
+you do not need to enter a path or crop coordinates manually in that flow.
+Alternatively, browse an independently measured CSV. Keep occupancy
 resolution, orientation and measured field bounds consistent.
 
 If the Ground Truth is smaller than the 8 m working canvas, enter the
