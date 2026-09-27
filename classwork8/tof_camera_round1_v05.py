@@ -22,7 +22,11 @@ from robomaster_mission.mission import (
 
 from .camera_service import CameraService
 from .live_survey import LiveSurveyBridge
-from .motion_safety_v05 import adjacent_wall_sides, side_checkpoint_decision
+from .motion_safety_v05 import (
+    adjacent_wall_sides,
+    bound_travel_lateral,
+    side_checkpoint_decision,
+)
 from .config import Classwork8Config
 from .occupancy_grid import OccupancyGrid
 from .reporting import RunRecorder
@@ -1705,6 +1709,17 @@ def _drive_one_cell(
                 x_cmd,
                 y_cmd,
                 mode,
+            )
+
+        # Never add the odometry and side-scan biases into an aggressive
+        # sideways lunge near a mapped wall. Keep the longitudinal component
+        # intact; heading recovery may have already set translation to zero.
+        if wall_sides:
+            x_cmd, y_cmd = bound_travel_lateral(
+                x_cmd,
+                y_cmd,
+                DIR_RIGHT_VEC_DRIVE[direction],
+                config.motion_total_lateral_max_mps,
             )
 
         # Keep combined odometry+vision lateral correction bounded.
