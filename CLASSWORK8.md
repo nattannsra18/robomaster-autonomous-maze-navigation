@@ -941,3 +941,46 @@ git pull origin classwork8-slam-exploration
 python -m py_compile classwork8\motion_safety_v05.py classwork8\tof_camera_round1_v05.py classwork8\config.py classwork8\config_gui_v05.py
 python -m unittest tests.test_final_motion_safety_v05 -v
 \`\`\`
+
+
+### V05 21:14 field stop: LEFT ToF = 6.5 cm on frontier relocation
+
+This run was **not** a 30 cm checkpoint stop or an exception. Four full
+directional surveys completed at the start, the robot drove/accepted several
+cells, and the run reported:
+
+\`\`\`text
+[SCAN] LEFT ToF = 6.5 cm
+[MOVE] SIDE_CRITICAL_AT_START LEFT: 6.5 cm <= 10.0 cm.
+[MISSION] Finish reason: FRONTIER_RELOCATE_SIDE_CRITICAL_AT_START_LEFT
+\`\`\`
+
+The previous move was accepted at progress 0.536 m due to a confirmed FRONT
+obstacle at 15.6 cm; the physical chassis may therefore be about 6.4 cm
+short of the logical centre of (1,-2). This *may contribute* to an awkward
+side/corner reading; the log alone cannot establish whether there is
+physical contact, a wall edge/reflection or odometry error.
+
+Hotfix: when a start-side reading is critical, the stopped robot temporarily
+looks at that side and obtains **two independent fresh ToF returns**, clearing
+the filter before each. Both must be consistent within 2 cm and each must
+be at least 12 cm (10 cm critical + 2 cm hysteresis). Only then will it
+restore the Gimbal to the actual travel direction, require new forward ToF,
+and consider resuming. Persistently low readings (e.g. 6.4 and 6.6 cm),
+inconsistent readings, absent fresh updates or pitch misalignment keep
+the chassis stopped and print the precise \`[SIDE_START]\` reason.
+
+The 10 cm critical distance is a SENSOR-to-wall threshold, not a certified
+clearance of the RoboMaster body. Before changing it, physically measure the
+gap between the body/wheels and foam wall at the paused cell, compare the
+measured offset from the mounted ToF, and correct the starting alignment if
+needed. Never lower the guard just to make the mission finish. This update
+does not change the gimbal controller, frontier planner, travel speed,
+target-detection thresholds or heading control.
+
+Offline regression:
+
+\`\`\`powershell
+python -m py_compile classwork8\motion_safety_v05.py classwork8\tof_camera_round1_v05.py classwork8\config.py classwork8\config_gui_v05.py
+python -m unittest tests.test_final_motion_safety_v05 -v
+\`\`\`
