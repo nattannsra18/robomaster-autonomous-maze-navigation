@@ -914,6 +914,7 @@ def _scan_four_directions(
                 )
                 return None
 
+        range_disagreement = False
         # V02: readings between a definite near wall and the normal OPEN
         # threshold are ambiguous.  A foam edge / floor reflection can create
         # one short median even when the branch is physically open.  Re-sample
@@ -937,12 +938,20 @@ def _scan_four_directions(
                 retry = _sample_tof(sensors, config, stop_event)
                 if retry is not None:
                     retry_values.append(float(retry))
-            distance_cm = max(retry_values)
+            range_disagreement = (
+                min(retry_values) < float(config.tof_open_cm)
+                <= max(retry_values)
+            )
+            # Never turn mixed short/long evidence into a phantom OPEN via max().
+            distance_cm = (
+                None if range_disagreement else float(statistics.median(retry_values))
+            )
             print(
-                "[SCAN] {} ambiguous -> retry candidates {} -> {:.1f} cm".format(
+                "[SCAN] {} ambiguous retry={} -> {}".format(
                     DIR_NAME[direction],
                     [round(v, 1) for v in retry_values],
-                    float(distance_cm),
+                    "UNKNOWN (mixed short/long returns)" if range_disagreement
+                    else "{:.1f} cm".format(float(distance_cm)),
                 ),
                 flush=True,
             )
@@ -963,6 +972,66 @@ def _scan_four_directions(
                 flush=True,
             )
             return None
+
+        # Low foam walls can let a long ToF ray reach the outside background.
+        # A single high reading is not sufficient to declare a logical OPEN:
+        # require fresh, independent stationary medians after resetting filters.
+        edge_key = _canonical_edge(current_cell, direction)
+        previous_state = edge_states.get(
+            (current_cell[0], current_cell[1], direction)
+        )
+        already_traversed = edge_key in traversed_edges
+        if (
+            distance_cm is not None
+            and distance_cm >= float(config.tof_open_cm)
+            and not already_traversed
+        ):
+            if previous_state == "WALL":
+                print(
+                    "[SCAN_OUTSIDE_REJECTED] {} has a previously confirmed WALL; "
+                    "long echo is not permission to map beyond it.".format(
+                        DIR_NAME[direction]
+                    ), flush=True,
+                )
+                distance_cm = None
+            else:
+                open_readings = [float(distance_cm)]
+                for _ in range(max(1, int(config.scan_open_confirm_samples) - 1)):
+                    sensors.reset_filters()
+                    if not _sleep_interruptible(
+                        config.scan_ambiguous_retry_settle_sec, stop_event
+                    ):
+                        return None
+                    repeat = _sample_tof(sensors, config, stop_event)
+                    if repeat is None:
+                        break
+                    open_readings.append(float(repeat))
+                scan_pitch = gimbal_tracker.get_pitch()
+                open_confirmed = (
+                    len(open_readings) >= int(config.scan_open_confirm_samples)
+                    and min(open_readings) >= float(config.tof_open_cm)
+                    and max(open_readings) - min(open_readings)
+                        <= float(config.scan_open_max_spread_cm)
+                    and scan_pitch is not None
+                    and abs(float(scan_pitch) - float(config.gimbal_scan_pitch_deg))
+                        <= float(config.gimbal_pitch_tolerance_deg)
+                )
+                if not open_confirmed:
+                    print(
+                        "[SCAN_UNCERTAIN] {} repeats={} (not promoting to OPEN)".format(
+                            DIR_NAME[direction],
+                            [round(value, 1) for value in open_readings],
+                        ), flush=True,
+                    )
+                    distance_cm = None
+                else:
+                    distance_cm = float(statistics.median(open_readings))
+        if (
+            already_traversed and distance_cm is not None
+            and float(distance_cm) < float(config.tof_open_cm)
+        ):
+            # Actual chassis passage wins over one spurious short echo.
+            distance_cm = None
 
         ranges[direction] = distance_cm
         print(
@@ -985,6 +1054,7 @@ def _scan_four_directions(
             camera_service is not None
             and camera_service.running
             and target_detector is not None
+            and distance_cm is not None
             and (
                 near_wall
                 or bool(config.target_survey_open_directions)
@@ -1237,7 +1307,9 @@ def _scan_four_directions(
             if distance_cm >= config.tof_open_cm:
                 open_dirs.add(direction)
                 _set_edge_state(edge_states, current_cell, direction, "OPEN")
-                known_cells.add(_neighbor(current_cell, direction))
+                # A scan only shows a potential adjacent cell. Add it to
+                # the GUI as a known cell AFTER actual chassis traversal,
+                # not from an echo that may have looked over a foam wall.
             else:
                 _set_edge_state(edge_states, current_cell, direction, "WALL")
 
