@@ -97,6 +97,50 @@ class PitchHoldTests(unittest.TestCase):
             any(abs(pitch) > 0.0 for pitch, _yaw in self.gimbal.commands)
         )
 
+    def test_yaw_sweep_never_commands_both_axes_at_once(self):
+        self.config.gimbal_turn_timeout_sec = 10.0
+        self.tracker.pitch = 0.0
+        self.tracker.yaw = 0.0
+
+        success = _point_gimbal(
+            self.gimbal, self.sensors, self.tracker, 1, self.config, None
+        )
+        self.assertTrue(success)
+        self.assertEqual(self.sensors.resets, 1)
+        self.assertTrue(
+            any(abs(yaw) > 0.0 for _pitch, yaw in self.gimbal.commands)
+        )
+        self.assertTrue(all(
+            abs(pitch) == 0.0 or abs(yaw) == 0.0
+            for pitch, yaw in self.gimbal.commands
+        ))
+
+    def test_large_pitch_drift_under_yaw_only_aborts_without_mapping(self):
+        self.config.gimbal_turn_timeout_sec = 2.0
+        self.tracker.pitch = 0.0
+        self.tracker.yaw = 0.0
+
+        class CoupledGimbal(FakeGimbal):
+            def drive_speed(self, pitch_speed=0.0, yaw_speed=0.0):
+                result = super().drive_speed(
+                    pitch_speed=pitch_speed, yaw_speed=yaw_speed
+                )
+                if abs(yaw_speed) > 0.0:
+                    with self.tracker._lock:
+                        self.tracker.pitch = 7.0
+                return result
+
+        coupled = CoupledGimbal(self.tracker)
+        success = _point_gimbal(
+            coupled, self.sensors, self.tracker, 1, self.config, None
+        )
+        self.assertFalse(success)
+        self.assertEqual(self.sensors.resets, 0)
+        self.assertTrue(all(
+            abs(pitch) == 0.0 or abs(yaw) == 0.0
+            for pitch, yaw in coupled.commands
+        ))
+
     def test_no_pitch_feedback_fails_safely(self):
         self.config.gimbal_turn_timeout_sec = 0.12
         self.tracker.pitch = None
