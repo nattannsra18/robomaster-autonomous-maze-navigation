@@ -18,8 +18,8 @@ def configure_before_run(config) -> bool:
 
     root = tk.Tk()
     root.title("Classwork 8 V04 - Mission Configuration")
-    root.geometry("860x720")
-    root.minsize(760, 620)
+    root.geometry("980x850")
+    root.minsize(820, 700)
 
     accepted = {"value": False}
     variables: Dict[str, object] = {}
@@ -41,6 +41,18 @@ def configure_before_run(config) -> bool:
         ),
         wraplength=800,
     ).pack(anchor="w", pady=(2, 10))
+
+    ttk.Button(
+        outer,
+        text="STEP 1 - DRAW / LOAD PHYSICAL GROUND TRUTH MAP",
+        command=lambda: open_ground_truth_editor(),
+    ).pack(anchor="w", pady=(0, 10))
+    ttk.Label(
+        outer,
+        text="After saving the reference map, choose SAVE & START SLAM or APPLY & CONNECT. The robot will not see the Ground Truth.",
+        foreground="#2563eb",
+        wraplength=860,
+    ).pack(anchor="w", pady=(0, 8))
 
     notebook = ttk.Notebook(outer)
     notebook.pack(fill="both", expand=True)
