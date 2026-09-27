@@ -34,22 +34,29 @@ class ConfirmedOnlyMapTests(unittest.TestCase):
     def test_only_confirmed_signs_are_displayed(self):
         source = [self.confirmed_near, self.pending, self.confirmed_distant]
         displayed = confirmed_map_targets(source)
-        self.assertEqual([item["target_id"] for item in displayed], ["T01", "T02"])
+        self.assertEqual([item["target_id"] for item in displayed], ["T01"])
         self.assertEqual(len(source), 3)  # no mutation / no data loss
 
     def test_pending_legacy_entry_is_hidden_even_without_status(self):
         self.assertEqual(confirmed_map_targets([dict(self.pending, status=None)]), [])
 
-    def test_both_confirmed_localized_and_distant_signs_remain_plottable(self):
+    def test_only_localized_signs_remain_plottable(self):
         displayed = confirmed_map_targets(
             [self.confirmed_near, self.pending, self.confirmed_distant]
         )
         self.assertEqual(target_plot_geometry(displayed[0], 0.6)[0], (0.5, 0.0))
-        hint, origin, sighting_only = target_plot_geometry(displayed[1], 0.6)
-        self.assertTrue(sighting_only)
-        self.assertIsNotNone(hint)
-        self.assertIsNotNone(origin)
-        self.assertEqual(len(target_marker_offsets(displayed, 0.6)), 2)
+        self.assertEqual(len(target_marker_offsets(displayed, 0.6)), 1)
+
+    def test_rejects_unconfirmed_and_missing_or_invalid_coordinates(self):
+        invalid = [
+            dict(self.confirmed_near, range_confirmed_wall=False),
+            dict(self.confirmed_near, estimated_target_xy_m=None),
+            dict(self.confirmed_near, estimated_target_xy_m=[float("nan"), 0.0]),
+            dict(self.confirmed_near, estimated_target_xy_m=[0.5]),
+            dict(self.confirmed_near, confirmed=False),
+            dict(self.confirmed_near, localization_status="SIGHTING_ONLY"),
+        ]
+        self.assertEqual(confirmed_map_targets(invalid), [])
 
     def test_none_and_empty_are_safe(self):
         self.assertEqual(confirmed_map_targets(None), [])
