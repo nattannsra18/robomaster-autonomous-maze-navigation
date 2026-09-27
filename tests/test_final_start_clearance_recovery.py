@@ -91,7 +91,7 @@ class FakePose:
         self.x = 0.0
         self.y = 0.0
     def get_xy(self): return self.x, self.y
-    def get_yaw(self): return 0.0
+    def get_yaw(self): return getattr(self, "yaw", 0.0)
 
 
 class FakeChassis:
@@ -140,7 +140,7 @@ class PhysicalNudgeSimulation(unittest.TestCase):
         self.tracker = FakeTracker(self.cfg)
         self.recorder = mock.Mock()
 
-    def run_recovery(self):
+    def run_recovery(self, confirmed_side_cm=6.5):
         def point(_gimbal, _sensor, _tracker, direction, _config, _stop):
             self.sensor.direction = direction
             self.tracker.direction = direction
@@ -152,8 +152,76 @@ class PhysicalNudgeSimulation(unittest.TestCase):
                 self.tracker, self.recorder, self.cfg,
                 side=0, travel_direction=1, current_cell=(0, 0),
                 start_x=0.0, start_y=0.0, start_yaw_deg=0.0,
-                confirmed_side_cm=6.5, stop_event=None,
+                confirmed_side_cm=confirmed_side_cm, stop_event=None,
             )
+
+    def test_transient_heading_spike_stops_rechecks_and_retries(self):
+        # First translation makes a fake yaw spike. Stopping the motors makes
+        # feedback settle; the next pulse must repeat the opposite ToF gate.
+        self.pose.yaw = 0.0
+        original_drive = self.chassis.drive_speed
+        injected = {"value": False}
+        count = {"translations": 0}
+
+        def transient_drive(x=0.0, y=0.0, z=0.0, timeout=0.2):
+            result = original_drive(x=x, y=y, z=z, timeout=timeout)
+            if x < 0:
+                count["translations"] += 1
+                if not injected["value"]:
+                    injected["value"] = True
+                    self.pose.yaw = 5.2
+            elif injected["value"] and x == y == z == 0.0:
+                self.pose.yaw = 0.0
+            return result
+
+        self.chassis.drive_speed = transient_drive
+        self.sensor.get_front_cm = lambda: (
+            8.0 - self.pose.x * 100.0 if self.sensor.direction == 0
+            else 40.0 + self.pose.x * 100.0
+        )
+        ok, reason, final_cm = self.run_recovery(confirmed_side_cm=8.0)
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "RECOVERY_CLEARANCE_CONFIRMED")
+        self.assertGreaterEqual(final_cm, 12.0)
+        self.assertTrue(injected["value"])
+        self.assertGreater(count["translations"], 2)
+        self.assertTrue(all(z == 0 for _, _, z in self.chassis.commands))
+        events = [
+            call.args[2] for call in self.recorder.event.call_args_list
+            if len(call.args) > 2 and call.args[1] == "CLEARANCE_HEADING"
+        ]
+        self.assertIn("RECOVERY_HEADING_SETTLED", events)
+
+    def test_persistent_heading_error_never_keeps_driving(self):
+        self.pose.yaw = 0.0
+        original_drive = self.chassis.drive_speed
+        injected = {"value": False}
+        count = {"translations": 0}
+
+        def persistent_drive(x=0.0, y=0.0, z=0.0, timeout=0.2):
+            result = original_drive(x=x, y=y, z=z, timeout=timeout)
+            if x < 0:
+                count["translations"] += 1
+                if not injected["value"]:
+                    injected["value"] = True
+                    self.pose.yaw = 5.2
+            return result
+
+        self.chassis.drive_speed = persistent_drive
+        ok, reason, _ = self.run_recovery()
+        self.assertFalse(ok)
+        self.assertEqual(reason, "RECOVERY_HEADING_PERSISTENT")
+        self.assertEqual(count["translations"], 1)
+        self.assertEqual(self.chassis.commands[-1], (0.0, 0.0, 0.0))
+
+    def test_preexisting_large_yaw_does_not_start_escape(self):
+        self.pose.yaw = 5.0
+        ok, reason, _ = self.run_recovery()
+        self.assertFalse(ok)
+        self.assertEqual(reason, "RECOVERY_HEADING_PRE_PULSE_UNSAFE")
+        self.assertFalse(any(
+            x != 0 or y != 0 for x, y, _ in self.chassis.commands
+        ))
 
     def test_confirmed_front_side_moves_back_in_short_steps_then_rechecks(self):
         ok, reason, final_cm = self.run_recovery()
