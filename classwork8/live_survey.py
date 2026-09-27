@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
+
+import cv2
 
 from .target_detection import TargetDetector
 
@@ -21,6 +25,7 @@ class LiveSurveyBridge:
         self._config = config
         self._camera = None
         self._preview = None
+        self._raw_frame = None
         self._preview_timestamp = 0.0
         self._capture_timestamp = 0.0
         self._candidate_count = 0
@@ -104,6 +109,7 @@ class LiveSurveyBridge:
                         previous_processed = now
                         previous_capture = capture_time
                         with self._lock:
+                            self._raw_frame = frame.copy()
                             self._preview = debug
                             self._preview_timestamp = now
                             self._capture_timestamp = float(capture_time)
@@ -136,6 +142,25 @@ class LiveSurveyBridge:
                 "status": self._status,
             }
 
+    def save_camera_sample(self, output_dir) -> Optional[tuple]:
+        """Save a matching raw/annotated frame for real-lighting calibration."""
+        with self._lock:
+            if self._raw_frame is None or self._preview is None:
+                return None
+            raw = self._raw_frame.copy()
+            debug = self._preview.copy()
+
+        folder = Path(output_dir) / "target_camera_samples"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        raw_path = folder / "target_raw_{}.png".format(stamp)
+        debug_path = folder / "target_debug_{}.png".format(stamp)
+        if not cv2.imwrite(str(raw_path), raw):
+            raise RuntimeError("Could not save {}".format(raw_path))
+        if not cv2.imwrite(str(debug_path), debug):
+            raise RuntimeError("Could not save {}".format(debug_path))
+        return str(raw_path), str(debug_path)
+
     def stop(self) -> None:
         self._stop.set()
         thread = self._thread
@@ -146,3 +171,4 @@ class LiveSurveyBridge:
         self._thread = None
         with self._lock:
             self._preview = None
+            self._raw_frame = None
