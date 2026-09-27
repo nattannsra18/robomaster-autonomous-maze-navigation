@@ -67,8 +67,8 @@ def _defaults(config: Classwork8Config) -> None:
     config.target_camera_resolution = "360p"
     config.target_min_confidence = 0.58
     config.target_save_confidence = 0.70
-    config.target_sample_frames = 5
-    config.target_verify_frames = 3
+    config.target_sample_frames = 6
+    config.target_verify_frames = 4
 
     # Do not run the older corridor-steering camera pipeline in this baseline.
     config.vision_enabled = False
