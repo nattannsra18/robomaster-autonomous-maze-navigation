@@ -2117,6 +2117,14 @@ def run(
                 camera_active and target_detector is not None
             ),
             "target_count": len(target_registry.targets),
+            "target_sighting_count": sum(
+                1 for item in target_registry.targets
+                if item.get("localization_status") == "SIGHTING_ONLY"
+            ),
+            "target_position_candidate_count": sum(
+                1 for item in target_registry.targets
+                if item.get("localization_status") == "NEAR_WALL_ESTIMATE"
+            ),
             "targets": target_registry.public_targets(),
         })
 
