@@ -39,6 +39,18 @@ class GuiRegistrationTests(unittest.TestCase):
         self.assertIn("ToF / Mapping", tab_names)
         self.assertIn("ToF / Mapping", field_specs)
 
+    def test_live_map_and_png_use_same_visible_target_filter(self):
+        gui = (ROOT / "classwork8" / "gui_v05.py").read_text(encoding="utf-8")
+        # Both map viewport calculations and both drawing passes use the
+        # same filter. LOS should not alter view bounds or appear in exports.
+        self.assertEqual(
+            gui.count('for target in visible_map_targets(snapshot.get("targets") or []):'),
+            4,
+        )
+        self.assertNotIn('"? LOS"', gui)
+        self.assertNotIn('"Hollow Txx? LOS', gui)
+        self.assertIn("Targets on map:", gui)
+
     def test_no_obsolete_speed_cap_controls_are_shown(self):
         _tab_names, field_specs = _gui_literals()
         visible = {
