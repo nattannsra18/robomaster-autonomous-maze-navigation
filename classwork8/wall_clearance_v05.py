@@ -2,8 +2,9 @@
 
 Directions: 0 FRONT, 1 RIGHT, 2 BACK, 3 LEFT in ROBOT frame.
 Ranges are horizontal ToF sensor-to-wall centimetres, not chassis-edge gaps.
-One gimbal ToF cannot see four directions simultaneously. Only use fresh
-per-cell four-way scans; never reuse a cached scan for corrective movement.
+One gimbal ToF cannot see four directions simultaneously. Call only with
+the current scan direction and a fresh opposite-direction safety range
+(from this unmoved scan epoch or an immediate short opposite probe).
 """
 from __future__ import annotations
 
@@ -43,11 +44,12 @@ def _valid_wall_reading(value, config) -> bool:
 def choose_clearance_plan(
     ranges: Dict[int, Optional[float]], config
 ) -> Optional[ClearancePlan]:
-    """Choose largest actionable shortfall, never shove into opposing wall.
+    """Choose a feasible bounded shift away from a near wall.
 
-    Treat a valid open-range opposite side as spacious but still bound motion
-    to max_step. Missing/invalid opposite range means no safe motion.
-    An impossible narrow pair (both too close) is skipped, not forced.
+    Caller supplies just the current direction and its opposite. A valid
+    open-range opposite side is spacious but still bounded by max_step.
+    Missing/invalid opposite range means no safe motion. A narrow pair
+    (both too close) is skipped, never forced.
     """
     candidates = []
     tol = float(config.wall_clearance_deadband_cm)
