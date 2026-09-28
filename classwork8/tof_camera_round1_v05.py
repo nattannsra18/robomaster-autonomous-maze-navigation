@@ -721,6 +721,7 @@ def _scan_four_directions(
     target_registry: TargetRegistry,
     target_debug_holder: List[object],
     survey_bridge: LiveSurveyBridge,
+    verified_retreat_direction: Optional[int] = None,
 ) -> Optional[Tuple[Dict[int, Optional[float]], Set[int]]]:
     # Sweep in the direction that is closest to the current gimbal endpoint.
     # This avoids a large BACK(+180) -> LEFT(-90) wrap across the +250 deg
@@ -907,16 +908,17 @@ def _scan_four_directions(
             ),
             flush=True,
         )
-        # When both sides of a pair have naturally appeared in this
-        # four-direction sweep, correct now before moving to the next side.
-        # Never point away for an additional opposite probe; with only one
-        # scanned side, defer the correction until its opposite is reached.
+        # Each direction is self-contained: scan -> if TOO CLOSE, retreat
+        # NOW -> hold at this SAME yaw for camera sign verification -> next.
+        # No retrospective correction of an earlier direction.
+        adjusted = False
         if config.wall_clearance_enabled:
             safety_ranges[direction] = distance_cm
             adjusted, failure = _maintain_wall_clearance_checkpoint(
                 chassis, gimbal, pose, sensors, gimbal_tracker, config,
                 safety_ranges, direction, float(start_x), float(start_y),
                 float(start_yaw_deg), stop_event,
+                verified_retreat_direction=verified_retreat_direction,
             )
             if failure is not None:
                 print("[CLEARANCE_FAIL] {} during {} scan.".format(
@@ -957,6 +959,9 @@ def _scan_four_directions(
                     return None
                 safety_ranges.clear()
                 safety_ranges[direction] = distance_cm
+                # After translating in this cell, the just-traversed route
+                # is no longer a guaranteed 4 cm corridor for OTHER sides.
+                verified_retreat_direction = None
                 print(
                     "[CLEARANCE_DURING_SCAN] {} final ToF={:.1f}cm".format(
                         DIR_NAME[direction], distance_cm
@@ -1026,6 +1031,24 @@ def _scan_four_directions(
                     # ToF viewpoint: the low sign may only enter the image
                     # after the new camera pitch has settled.
                     survey_frame_epoch = time.monotonic()
+                    if adjusted:
+                        # The camera is now pitched down AND the chassis has
+                        # already stopped after retreat. Keep exactly THIS yaw
+                        # direction and let new floor-sign frames accumulate
+                        # before verification; do not turn to the next side.
+                        print(
+                            "[CLEARANCE_CAMERA_HOLD] {} {:.2f}s at new pose; "
+                            "camera pitch={:+.1f}deg; awaiting fresh sign frames".format(
+                                DIR_NAME[direction],
+                                float(config.wall_clearance_camera_dwell_sec),
+                                selected_pitch,
+                            ), flush=True,
+                        )
+                        if not _sleep_interruptible(
+                            float(config.wall_clearance_camera_dwell_sec),
+                            stop_event,
+                        ):
+                            return None
                     verified_targets, target_debug = target_detector.verify_latest(
                         camera_service,
                         not_before=survey_frame_epoch,
@@ -1176,6 +1199,20 @@ def _scan_four_directions(
                 ),
                 flush=True,
             )
+        elif adjusted:
+            # With no camera survey available, still remain stationary for
+            # the configured post-adjustment pause before changing direction.
+            print(
+                "[CLEARANCE_HOLD] {} {:.2f}s, camera survey unavailable; "
+                "next direction only after hold".format(
+                    DIR_NAME[direction],
+                    float(config.wall_clearance_camera_dwell_sec),
+                ), flush=True,
+            )
+            if not _sleep_interruptible(
+                float(config.wall_clearance_camera_dwell_sec), stop_event,
+            ):
+                return None
         elif camera_service is not None and camera_service.running:
             recorder.event(
                 time.monotonic(),
@@ -2605,6 +2642,10 @@ def run(
                     target_registry,
                     target_debug_holder,
                     survey_bridge,
+                    verified_retreat_direction=(
+                        (int(last_move_direction) + 2) % 4
+                        if moves > 0 else None
+                    ),
                 )
                 if scan is None:
                     finish_reason = (
