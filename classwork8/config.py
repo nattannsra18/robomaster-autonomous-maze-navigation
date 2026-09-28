@@ -248,6 +248,12 @@ class Classwork8Config:
     target_camera_settle_sec: float = 0.15
     target_preview_fps: float = 10.0
     target_survey_open_directions: bool = True
+    # Extra CAMERA-only stationary views for signs near wall/cell corners.
+    # Horizontal ToF rays and logical edge classifications stay cardinal.
+    target_camera_multi_angle_enabled: bool = True
+    target_camera_side_yaw_offset_deg: float = 20.0
+    target_camera_side_hold_max_sec: float = 1.20
+    target_camera_side_sample_frames: int = 6
 
     # Lighting-robust OpenCV detector.
     target_clahe_clip_limit: float = 2.0
@@ -338,6 +344,12 @@ class Classwork8Config:
             raise ValueError("gimbal yaw speed must be above minimum and at most 120 deg/s")
         if self.gimbal_turn_timeout_sec <= 0.0:
             raise ValueError("gimbal turn timeout must be positive")
+        if not 0.0 < self.target_camera_side_yaw_offset_deg <= 25.0:
+            raise ValueError("camera side yaw offset must be >0 and <=25 deg")
+        if not 0.1 <= self.target_camera_side_hold_max_sec <= 3.0:
+            raise ValueError("camera side view hold must be 0.1..3.0 sec")
+        if not 3 <= int(self.target_camera_side_sample_frames) <= 12:
+            raise ValueError("camera side sample count must be 3..12")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
             raise ValueError("ToF mapping range is invalid")
         if self.tof_open_cm <= self.stop_front_cm:
