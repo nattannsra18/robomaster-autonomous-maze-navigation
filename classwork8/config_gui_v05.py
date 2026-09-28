@@ -53,7 +53,7 @@ def configure_before_run(config) -> bool:
     tabs = {}
     tab_canvases = {}
     tab_names = (
-        "Mission Settings", "Motion", "ToF / Safety", "Mapping",
+        "Mission Settings", "Motion", "ToF / Mapping", "Mapping",
         "Target Detection", "Completion / Export",
     )
     for name in tab_names:
@@ -139,7 +139,7 @@ def configure_before_run(config) -> bool:
             ("gimbal_pitch_max_speed_dps", "Maximum pitch speed (deg/s)", "float", "Limit visible pitch movement"),
             ("gimbal_pitch_drive_sign", "Pitch direction sign (+1/-1)", "float", "Only reverse after a stationary feedback test confirms pitch moves opposite"),
             ("gimbal_pitch_tolerance_deg", "Pitch tolerance (deg)", "float", "0.8 deg default; earlier 2 deg allowed noticeable nodding"),
-            ("gimbal_pitch_unsafe_deg", "Unsafe pitch drift (deg)", "float", "Movement stops and re-levels above this error"),
+            ("gimbal_pitch_unsafe_deg", "Legacy pitch threshold (deg)", "float", "BASIC motion ignores this stop guard; ToF mapping uses alignment tolerance"),
         ],
         "Mapping": [
             ("resolution_m", "Occupancy resolution (m)", "float", "Assignment map resolution; default = 0.05"),
