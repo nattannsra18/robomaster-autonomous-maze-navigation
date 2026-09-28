@@ -1170,7 +1170,21 @@ def _drive_one_cell(
                 max_abs_heading_error_deg,
                 abs(normalize_angle_deg(float(start_yaw_deg) - float(yaw))),
             )
-        _update_tof_ray(grid, config, rel_x, rel_y, direction, front_cm)
+        # Validate observation geometry for mapping ONLY. Incorrect gimbal
+        # pitch/yaw must not corrupt SLAM, but cannot alter chassis speed.
+        sensor_pitch = gimbal_tracker.get_pitch()
+        sensor_yaw = gimbal_tracker.get_yaw()
+        if (
+            sensor_pitch is not None
+            and sensor_yaw is not None
+            and abs(
+                float(sensor_pitch) - float(config.gimbal_scan_pitch_deg)
+            ) <= float(config.gimbal_pitch_tolerance_deg)
+            and abs(normalize_angle_deg(
+                float(sensor_yaw) - float(config.gimbal_yaw_for_direction(direction))
+            )) <= float(config.gimbal_tolerance_deg)
+        ):
+            _update_tof_ray(grid, config, rel_x, rel_y, direction, front_cm)
 
         # Planned cell completion, not a wall/obstacle safety stop.
         if remaining <= float(config.step_tolerance_m):
