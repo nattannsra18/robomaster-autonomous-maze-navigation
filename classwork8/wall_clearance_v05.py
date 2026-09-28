@@ -3,8 +3,9 @@
 Directions: 0 FRONT, 1 RIGHT, 2 BACK, 3 LEFT in ROBOT frame.
 Ranges are horizontal ToF sensor-to-wall centimetres, not chassis-edge gaps.
 One gimbal ToF cannot see four directions simultaneously. Call only with
-the current scan direction and a fresh opposite-direction safety range
-(from this unmoved scan epoch or an immediate short opposite probe).
+the currently scanned direction and the opposite's previous range from
+the SAME unmoved four-direction scan. If that range is missing, defer the
+adjustment until the normal opposite-direction turn; NEVER add a probe turn.
 """
 from __future__ import annotations
 
