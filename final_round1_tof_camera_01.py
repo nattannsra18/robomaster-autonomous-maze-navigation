@@ -75,6 +75,25 @@ def _defaults(config: Classwork8Config) -> None:
     config.vision_steering_enabled = False
 
 
+def _apply_cli_overrides(config, args) -> None:
+    """Reapply diagnostic limits AFTER GUI so the 1-cell trial is bounded."""
+    if args.travel_speed is not None:
+        config.travel_speed_mps = args.travel_speed
+    if args.no_camera:
+        config.target_detection_enabled = False
+    if args.yaw_isolation:
+        config.yaw_isolation_mode = True
+        config.heading_hold_enabled = False
+    if args.max_moves is not None:
+        config.max_moves = args.max_moves
+    if args.max_yaw_correction is not None:
+        config.heading_max_z_dps = args.max_yaw_correction
+        config.heading_align_max_z_dps = min(
+            float(config.heading_align_max_z_dps),
+            float(args.max_yaw_correction),
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Final Assignment Round 1 - ToF + camera map and target survey"
@@ -101,21 +120,42 @@ def main():
         action="store_true",
         help="diagnostic: force chassis z=0 during every move and disable all post-scan yaw alignment; log chassis/gimbal yaw separately",
     )
+    parser.add_argument(
+        "--max-moves",
+        type=int,
+        default=None,
+        metavar="N",
+        help="hard mission cap (e.g. 1 for a one-cell test), also after GUI",
+    )
+    parser.add_argument(
+        "--max-yaw-correction",
+        type=float,
+        default=None,
+        metavar="DPS",
+        help="cap moving and post-scan chassis yaw commands, also after GUI",
+    )
     args = parser.parse_args()
+    if args.max_moves is not None and args.max_moves < 1:
+        parser.error("--max-moves must be at least 1")
+    if args.max_yaw_correction is not None and not (
+        0.0 < args.max_yaw_correction <= 30.0
+    ):
+        parser.error("--max-yaw-correction must be >0 and <=30 deg/s")
 
     config = Classwork8Config()
     _defaults(config)
-    if args.travel_speed is not None:
-        config.travel_speed_mps = args.travel_speed
-
-    if args.no_camera:
-        config.target_detection_enabled = False
-    if args.yaw_isolation:
-        config.yaw_isolation_mode = True
-        config.heading_hold_enabled = False
+    _apply_cli_overrides(config, args)
 
     if args.no_gui:
         config.validate()
+        print(
+            "[DIAG_LIMITS] max_moves={} heading_max_z={} "
+            "align_max_z={} speed={} yaw_isolation={}".format(
+                config.max_moves, config.heading_max_z_dps,
+                config.heading_align_max_z_dps,
+                config.travel_speed_mps, config.yaw_isolation_mode
+            ), flush=True,
+        )
         run(config=config)
         return
 
@@ -125,15 +165,16 @@ def main():
         print("Mission cancelled before connection.")
         return
 
-    if args.no_camera:
-        config.target_detection_enabled = False
-    if args.yaw_isolation:
-        # Enforce this *after* the GUI: users must not accidentally re-enable
-        # yaw commands while conducting the isolation experiment.
-        config.yaw_isolation_mode = True
-        config.heading_hold_enabled = False
-
+    _apply_cli_overrides(config, args)
     config.validate()
+    print(
+        "[DIAG_LIMITS] max_moves={} heading_max_z={} "
+        "align_max_z={} speed={} yaw_isolation={}".format(
+            config.max_moves, config.heading_max_z_dps,
+            config.heading_align_max_z_dps,
+            config.travel_speed_mps, config.yaw_isolation_mode
+        ), flush=True,
+    )
 
     print("Connecting to RoboMaster after configuration...")
     ep_robot = robot.Robot()
