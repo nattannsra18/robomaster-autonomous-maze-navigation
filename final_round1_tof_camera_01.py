@@ -47,13 +47,13 @@ from classwork8.tof_camera_round1_v05 import run
 
 
 def _defaults(config: Classwork8Config) -> None:
-    # Keep the proven V04 movement setup from the successful field run.
+    # Keep geometry and odometry calibration; use Classwork8Config travel speed.
     config.cell_size_m = 0.60
     config.exploration_step_m = 0.60
     config.step_tolerance_m = 0.005
     config.odom_scale_x = 1.00
     config.odom_scale_y = 1.00
-    config.travel_speed_mps = 0.10
+    # No speed override here: the configured value is the direct chassis request.
 
     config.tof_recovery_wait_sec = 1.20
     config.tof_recovery_retries = 2
@@ -89,10 +89,19 @@ def main():
         action="store_true",
         help="disable target camera and run ToF mapping only",
     )
+    parser.add_argument(
+        "--travel-speed",
+        type=float,
+        default=None,
+        metavar="MPS",
+        help="direct longitudinal chassis speed in m/s (overrides config default)",
+    )
     args = parser.parse_args()
 
     config = Classwork8Config()
     _defaults(config)
+    if args.travel_speed is not None:
+        config.travel_speed_mps = args.travel_speed
 
     if args.no_camera:
         config.target_detection_enabled = False
