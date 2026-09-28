@@ -663,14 +663,17 @@ def _scan_four_directions(
     ranges: Dict[int, Optional[float]] = {}
     open_dirs: Set[int] = set()
 
-    stop_chassis_fn_called = False
-
+    # Caller sends x=y=z=0 before any stationary scan.
     for direction in order:
         if stop_event is not None and stop_event.is_set():
             return None
 
+        _heading_snapshot(
+            "PRE_GIMBAL_{}_{}".format(current_cell, DIR_NAME[direction]),
+            pose, gimbal_tracker, float(start_yaw_deg),
+        )
         print(
-            "[SCAN] Pointing Gimbal {} (target {:+.0f} deg)...".format(
+            "[SCAN] Pointing Gimbal {} (target {:+.0f} deg)...".format
                 DIR_NAME[direction],
                 config.gimbal_yaw_for_direction(direction),
             ),
@@ -704,6 +707,10 @@ def _scan_four_directions(
             )
             return None
 
+        _heading_snapshot(
+            "POST_GIMBAL_{}_{}".format(current_cell, DIR_NAME[direction]),
+            pose, gimbal_tracker, float(start_yaw_deg),
+        )
         print(
             "[SCAN] Gimbal {} ready: yaw={:+.1f} pitch={:+.1f} deg.".format(
                 DIR_NAME[direction],
@@ -1112,8 +1119,8 @@ def _align_chassis_after_scan(chassis, pose: PoseTracker, config: Classwork8Conf
     initial_error = abs(_heading_error(target, actual))
     print("[HEADING_ALIGN] target={:+.2f} actual={:+.2f} diff={:+.2f}".format(
         target, actual, _heading_error(target, actual)), flush=True)
-    if not config.heading_hold_enabled:
-        return True, "HEADING_HOLD_DISABLED"
+    if config.yaw_isolation_mode or not config.heading_hold_enabled:
+        return True, "YAW_ISOLATION" if config.yaw_isolation_mode else "HEADING_HOLD_DISABLED"
     if initial_error <= float(config.heading_align_tolerance_deg):
         return True, "ALREADY_ALIGNED"
     if initial_error > float(config.heading_align_max_error_deg):
@@ -1172,6 +1179,8 @@ def _basic_motion_command(
     x_cmd, y_cmd, z_cmd, _mode, yaw_error = _fixed_heading_control_v02(
         config, target_yaw_deg, current_yaw_deg, x_cmd, y_cmd, "BASIC_MOVE"
     )
+    if config.yaw_isolation_mode:
+        z_cmd = 0.0  # Enforce at the sole translation-command producer.
     return x_cmd, y_cmd, z_cmd, yaw_error
 
 
@@ -1942,6 +1951,11 @@ def run(
         print("[INIT] Setting robot mode to FREE...", flush=True)
         mode_ok = ep_robot.set_robot_mode(mode=robot.FREE)
         print("[INIT] FREE mode result: {!r}".format(mode_ok), flush=True)
+        if not mode_ok:
+            raise RuntimeError(
+                "FREE_MODE_FAILED: refusing scan; chassis could be coupled to gimbal"
+            )
+        stop_chassis(chassis)  # Clear any stale commanded yaw after mode change.
 
         # Subscribe BEFORE recentering so we can verify the actual gimbal angle
         # even if the DJI action-completion packet is delayed/lost.
@@ -2030,6 +2044,20 @@ def run(
             flush=True,
         )
 
+        if config.yaw_isolation_mode:
+            config.heading_hold_enabled = False
+            print(
+                "[YAW_ISOLATION] ACTIVE: every move uses chassis z=0; "
+                "post-scan yaw correction is disabled.", flush=True,
+            )
+            stop_chassis(chassis)
+            for count in range(6):
+                _heading_snapshot(
+                    "STATIONARY_{}".format(count), pose, gimbal_tracker,
+                    float(raw_start_yaw),
+                )
+                if not _sleep_interruptible(0.5, stop_event):
+                    break
         heading = HeadingManager()
         if not heading.initialize(raw_start_yaw):
             raise RuntimeError("yaw/attitude unavailable")
@@ -2141,6 +2169,12 @@ def run(
                     force=True,
                 )
             else:
+                # Clear any previous drive_speed command before every scan.
+                stop_chassis(chassis)
+                _heading_snapshot(
+                    "SCAN_STOP_SENT_{}".format(current_cell),
+                    pose, gimbal_tracker, float(raw_start_yaw),
+                )
                 scan = _scan_four_directions(
                     gimbal,
                     pose,
