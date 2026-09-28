@@ -8,6 +8,7 @@ V04 = ROOT / "classwork8" / "tof_only_v04.py"
 HYBRID = ROOT / "classwork8" / "tof_only_v04_camera.py"
 CAMERA = ROOT / "classwork8" / "v04_target_survey.py"
 RUNNER = ROOT / "final_round1_v04_slam_v05_camera_01.py"
+GUI = ROOT / "classwork8" / "gui_v04_camera.py"
 
 MOTION_AND_SLAM = (
     "_point_gimbal",
@@ -69,6 +70,12 @@ class CameraIsolationTests(unittest.TestCase):
             if isinstance(call.func, ast.Attribute) and call.func.attr == "drive_wheels":
                 self.fail("Camera module must never issue drive_wheels")
         self.assertIn("stop_chassis(chassis)", CAMERA.read_text(encoding="utf-8"))
+
+    def test_gui_hides_v05_only_motion_controls(self):
+        ui = GUI.read_text(encoding="utf-8")
+        self.assertNotIn('text="RESCAN CURRENT CELL"', ui)
+        self.assertNotIn('text="Skip 4-way scan at fully scanned visited cells"', ui)
+        self.assertIn('V04 SLAM + V05 Camera', ui)
 
     def test_camera_and_v04_scan_are_separate(self):
         core = HYBRID.read_text(encoding="utf-8")
