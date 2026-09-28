@@ -64,6 +64,9 @@ class Classwork8Config:
     wall_clearance_deadband_cm: float = 0.5
     wall_clearance_max_step_cm: float = 4.0
     wall_clearance_speed_mps: float = 0.035
+    # Pause at the SAME direction after the clearance shift and after
+    # camera pitch is ready, giving fresh frames time to reveal a floor sign.
+    wall_clearance_camera_dwell_sec: float = 0.70
 
     # LEGACY motion fields below are retained for saved-config compatibility.
     # BASIC motion never uses them for lateral bias or longitudinal slowdown.
@@ -334,6 +337,9 @@ class Classwork8Config:
             raise ValueError("wall_clearance_max_step_cm must be 0.5 to 6 cm")
         if not 0.01 <= self.wall_clearance_speed_mps <= 0.05:
             raise ValueError("wall_clearance_speed_mps must be 0.01 to 0.05 m/s")
+        if (not math.isfinite(float(self.wall_clearance_camera_dwell_sec))
+                or not 0.0 <= float(self.wall_clearance_camera_dwell_sec) <= 2.0):
+            raise ValueError("wall_clearance_camera_dwell_sec must be 0 to 2 seconds")
         # Obsolete wall/cross-track/recovery settings do not constrain speed.
         if self.step_tolerance_m <= 0.0:
             raise ValueError("step_tolerance_m must be positive")
