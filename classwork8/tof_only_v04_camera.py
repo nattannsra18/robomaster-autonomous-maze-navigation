@@ -1709,7 +1709,13 @@ def run(
             raise RuntimeError("yaw/attitude unavailable")
 
         # Camera target detector only; V04 drive/SLAM never uses its results.
-        target_survey.start(ep_robot)
+        camera_started = target_survey.start(ep_robot)
+        print(
+            "[TARGET_CAMERA] {}. Navigation corridor steering remains OFF.".format(
+                "V05 color/shape stream + live preview started"
+                if camera_started else "Camera unavailable; V04 ToF mapping only"
+            ), flush=True,
+        )
 
         # Camera assistance is optional. Failure to open/decode the video stream
         # must never prevent the ToF+odometry exploration from running.
@@ -2070,6 +2076,7 @@ def run(
     except Exception as exc:
         finish_reason = "ERROR: {}".format(exc)
         recorder.event(time.monotonic(), "ERROR", str(exc))
+        print("[MISSION_ERROR] {}".format(finish_reason), flush=True)
         raise
 
     finally:
@@ -2143,6 +2150,7 @@ def run(
         except Exception:
             pass
 
+        print("[MISSION] Finish reason: {}".format(finish_reason), flush=True)
         run_dir = recorder.export(
             grid,
             reason=finish_reason,
