@@ -688,6 +688,7 @@ def _should_reuse_scan(
 
 
 def _scan_four_directions(
+    chassis,
     gimbal,
     pose: PoseTracker,
     sensors: ToFOnlySensorManager,
@@ -2536,6 +2537,7 @@ def run(
                     pose, gimbal_tracker, float(raw_start_yaw),
                 )
                 scan = _scan_four_directions(
+                    chassis,
                     gimbal,
                     pose,
                     sensors,
