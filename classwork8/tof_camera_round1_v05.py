@@ -2389,7 +2389,10 @@ def run(
                 current_cell,
                 scanned_cells,
                 edge_states,
-                config.skip_scanned_visited_cells,
+                (
+                    config.skip_scanned_visited_cells
+                    and not config.wall_clearance_enabled
+                ),
                 survey_bridge.rescan_requested(),
             )
 
@@ -2466,6 +2469,51 @@ def run(
                     break
 
                 ranges, open_dirs = scan
+
+                # One ToF on a scanning gimbal cannot provide a simultaneous
+                # four-direction wall follower. At each fresh checkpoint scan,
+                # select at most ONE small move away from a close wall. The
+                # opposite scanned range budgets the move; live ToF and pose
+                # verify it while the gimbal faces that wall. If moved, scan
+                # all four directions AGAIN from the new actual pose so
+                # topology/SLAM never treat the old readings as current.
+                corrected, correction_failure = _maintain_wall_clearance_checkpoint(
+                    chassis, gimbal, pose, sensors, gimbal_tracker, config,
+                    ranges, float(raw_start_x), float(raw_start_y),
+                    float(raw_start_yaw), stop_event,
+                )
+                if correction_failure is not None:
+                    finish_reason = correction_failure
+                    print(
+                        "[CLEARANCE_FAIL] {}; navigation stopped.".format(
+                            correction_failure
+                        ), flush=True,
+                    )
+                    break
+                if corrected:
+                    recorder.event(
+                        time.monotonic(),
+                        "CLEARANCE_ADJUST",
+                        "short stationary shift away from a close wall; rescanning",
+                        logical_node=current_cell,
+                    )
+                    stop_chassis(chassis)
+                    rescanned = _scan_four_directions(
+                        gimbal, pose, sensors, gimbal_tracker, grid, recorder,
+                        config, float(raw_start_x), float(raw_start_y),
+                        float(raw_start_yaw), stop_event, publish_state,
+                        current_cell, moves, known_cells, edge_states,
+                        traversed_edges, camera_service, target_detector,
+                        target_registry, target_debug_holder, survey_bridge,
+                    )
+                    if rescanned is None:
+                        finish_reason = (
+                            "USER_STOP" if stop_event.is_set()
+                            else "CLEARANCE_RESCAN_FAILED"
+                        )
+                        break
+                    ranges, open_dirs = rescanned
+
                 _heading_snapshot("POST_SCAN_{}".format(current_cell),
                                   pose, gimbal_tracker, float(raw_start_yaw))
                 scanned_cells.add(current_cell)
