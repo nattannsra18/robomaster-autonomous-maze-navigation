@@ -131,7 +131,7 @@ class LiveSurveyBridge:
 
     def set_yaw_speed(self, speed_dps: float) -> float:
         bounded = min(
-            90.0,
+            180.0,
             max(float(self._config.gimbal_min_yaw_speed_dps), float(speed_dps)),
         )
         with self._lock:
