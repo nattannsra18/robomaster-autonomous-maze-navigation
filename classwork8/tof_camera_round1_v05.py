@@ -815,6 +815,17 @@ def _scan_four_directions(
         )
 
         if survey_this_direction:
+            # Explicit intentional pause: target observation, NOT motion safety.
+            recorder.event(
+                time.monotonic(), "TARGET_SCAN_PAUSE",
+                "stationary camera target observation",
+                logical_node=current_cell, direction=DIR_NAME[direction],
+            )
+            print(
+                "[TARGET_SCAN_PAUSE] stationary survey {}".format(
+                    DIR_NAME[direction]
+                ), flush=True,
+            )
             selected_pitch = float(survey_bridge.get_pitch())
             survey_bridge.set_status(
                 "Survey {} at pitch {:+.1f} deg (robot stopped)".format(
@@ -950,6 +961,10 @@ def _scan_four_directions(
                 )
                 return None
 
+            print(
+                "[TARGET_SCAN_RESUME] survey completed; continuing scan/navigation.",
+                flush=True,
+            )
             live_preview_status = survey_bridge.latest_preview()
             recorder.event(
                 time.monotonic(),
