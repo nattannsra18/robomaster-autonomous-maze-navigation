@@ -207,13 +207,13 @@ class RealtimeMapGUI:
         )
         self.camera_pitch_var = tk.DoubleVar(
             value=(
-                -15.0 if self.survey_bridge is None
+                -20.0 if self.survey_bridge is None
                 else self.survey_bridge.get_pitch()
             )
         )
         self.yaw_speed_var = tk.DoubleVar(
             value=(
-                90.0 if self.survey_bridge is None
+                140.0 if self.survey_bridge is None
                 else self.survey_bridge.get_yaw_speed()
             )
         )
@@ -266,7 +266,7 @@ class RealtimeMapGUI:
         ).pack(anchor="w", pady=(0, 3))
         self.yaw_speed_slider = tk.Scale(
             right,
-            from_=15, to=90, resolution=5,
+            from_=15, to=180, resolution=5,
             orient="horizontal",
             variable=self.yaw_speed_var,
             label="Max Gimbal yaw speed (deg/s)",
