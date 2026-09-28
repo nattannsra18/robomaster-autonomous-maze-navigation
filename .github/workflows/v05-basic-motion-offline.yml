@@ -20,7 +20,7 @@ jobs:
           python -m pip install robomaster==0.1.1.68 numpy==1.24.4 opencv-python-headless==4.8.1.78
       - name: Syntax validation
         run: |
-          python -m compileall -q classwork8 final_round1_tof_camera_01.py tests
+          python -m compileall -q classwork8 final_round1_tof_camera_01.py diagnose_chassis_drift_v05.py tests
       - name: Offline regressions (no robot connected)
         run: |
-          python -m unittest tests.test_basic_heading_v05 tests.test_final_gimbal_pitch_v05 tests.test_final_motion_safety_v05 tests.test_basic_gui_config_v05 tests.test_final_target_detection -v
+          python -m unittest tests.test_basic_heading_v05 tests.test_final_gimbal_pitch_v05 tests.test_final_motion_safety_v05 tests.test_basic_gui_config_v05 tests.test_final_target_detection tests.test_diagnose_chassis_drift_v05 -v
