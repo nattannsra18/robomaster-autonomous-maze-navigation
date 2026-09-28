@@ -909,11 +909,8 @@ def _scan_four_directions(
                 # Restart ToF median at the adjusted pose, without restarting
                 # the four-way scan. Previous mapped rays were sampled at
                 # their original measured poses; invalidate safety cache.
-                if not _point_gimbal(
-                    gimbal, sensors, gimbal_tracker, direction, config,
-                    stop_event,
-                ):
-                    return None
+                # Gimbal has stayed at THIS scan direction for the entire
+                # corrective move: no second yaw turn or extra direction.
                 sensors.reset_filters()
                 distance_cm = _sample_tof(sensors, config, stop_event)
                 final_pitch, final_yaw = gimbal_tracker.get_angles()
@@ -2492,11 +2489,8 @@ def run(
                 current_cell,
                 scanned_cells,
                 edge_states,
-                (
-                    config.skip_scanned_visited_cells
-                    and not config.wall_clearance_enabled
-                ),
-                survey_bridge.rescan_requested(),
+                True,  # Hard limit: a completed cell is NEVER swept again.
+                False,  # A GUI pitch edit cannot add four extra scan directions.
             )
 
             if cache_valid:
@@ -2590,27 +2584,19 @@ def run(
                     ranges_cm={str(k): v for k, v in sorted(ranges.items())},
                 )
 
-            # The operator can adjust the camera observation pitch from Tk
-            # while exploration is running. At a safe stationary checkpoint,
-            # repeat this cell's scan once instead of driving away from a
-            # low target that the previous pitch might have missed.
-            if survey_bridge.consume_rescan() and not stop_event.is_set():
+            # Time budget: never sweep the same logical cell twice.
+            # Camera pitch requests are consumed but do NOT restart 4-way
+            # scanning; the new pitch is applied at the next unvisited cell.
+            if survey_bridge.consume_rescan():
+                print(
+                    "[SCAN_BUDGET] Rescan request deferred: current cell "
+                    "already used its four directions.", flush=True,
+                )
                 recorder.event(
-                    time.monotonic(),
-                    "TARGET_RESCAN_REQUESTED",
-                    "Operator requested another survey of current cell",
+                    time.monotonic(), "SCAN_BUDGET",
+                    "four scan directions already used; pitch change on next new cell",
                     logical_node=current_cell,
-                    camera_pitch_deg=survey_bridge.get_pitch(),
                 )
-                publish_state(
-                    status="Rescanning current cell with updated camera pitch",
-                    logical_cell=current_cell,
-                    gimbal_direction=current_gimbal_direction,
-                    tof_cm=sensors.get_front_cm(),
-                    moves=moves,
-                    force=True,
-                )
-                continue
 
             completion_status = _closed_maze_completion_v04(
                 visited,
