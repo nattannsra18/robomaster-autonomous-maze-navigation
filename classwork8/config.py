@@ -120,13 +120,13 @@ class Classwork8Config:
     # Turn slowly with YAW ONLY; restore level PITCH after yaw finishes.
     # The observed transient yaw/pitch excursion is logged, but ToF is sampled
     # only AFTER both axes settle to their configured scan angles.
-    gimbal_yaw_speed_dps: float = 140.0
-    gimbal_min_yaw_speed_dps: float = 7.0
-    gimbal_yaw_kp: float = 2.8
+    gimbal_yaw_speed_dps: float = 170.0
+    gimbal_min_yaw_speed_dps: float = 9.0
+    gimbal_yaw_kp: float = 3.6
     gimbal_tolerance_deg: float = 2.5
     gimbal_stable_samples: int = 3
     gimbal_turn_timeout_sec: float = 8.0  # Each phase independently.
-    gimbal_settle_sec: float = 0.20
+    gimbal_settle_sec: float = 0.08
     gimbal_yaw_pitch_guard_deg: float = 6.0
 
     # V05 ToF/camera both share the gimbal: yaw-only control does not keep
@@ -137,9 +137,9 @@ class Classwork8Config:
     # The 27 Sep stationary log alternated around -1.7 / +1.7 deg because
     # the old 2 deg tolerance accepted both endpoints. Slow correction near
     # level and use a tighter acceptance window; do not force a 4 deg/s pulse.
-    gimbal_pitch_kp: float = 1.5
-    gimbal_pitch_min_speed_dps: float = 3.0
-    gimbal_pitch_max_speed_dps: float = 24.0
+    gimbal_pitch_kp: float = 2.2
+    gimbal_pitch_min_speed_dps: float = 4.0
+    gimbal_pitch_max_speed_dps: float = 38.0
     gimbal_pitch_tolerance_deg: float = 0.8
     gimbal_pitch_unsafe_deg: float = 6.0
     gimbal_pitch_drive_sign: float = 1.0
@@ -219,7 +219,7 @@ class Classwork8Config:
     target_camera_pitch_max_deg: float = 10.0
     target_camera_pitch_tolerance_deg: float = 1.5
     target_camera_pitch_timeout_sec: float = 4.5
-    target_camera_settle_sec: float = 0.15
+    target_camera_settle_sec: float = 0.08
     target_preview_fps: float = 10.0
     target_survey_open_directions: bool = True
 
