@@ -19,7 +19,7 @@ if "libmedia_codec" not in sys.modules:
 from classwork8.config import Classwork8Config
 from classwork8.tof_camera_round1_v05 import (
     GimbalTracker, _align_chassis_after_scan, _heading_error,
-    _fixed_heading_control_v02, _point_gimbal,
+    _fixed_heading_control_v02, _point_gimbal, V05PoseTracker,
 )
 
 
@@ -97,6 +97,16 @@ class HeadingTests(unittest.TestCase):
         self.assertAlmostEqual(config.gimbal_scan_pitch_deg, 0.0)
         self.assertAlmostEqual(config.gimbal_yaw_speed_dps, 140.0)
         self.assertAlmostEqual(config.gimbal_min_yaw_speed_dps, 7.0)
+
+    def test_attitude_age_detects_missing_feedback(self):
+        pose = V05PoseTracker()
+        self.assertIsNone(pose.attitude_age_sec())
+        pose.attitude_callback((3.0, 0.0, 0.0))
+        self.assertAlmostEqual(pose.get_yaw(), 3.0)
+        self.assertIsNotNone(pose.attitude_age_sec())
+        self.assertLess(pose.attitude_age_sec(), 0.3)
+        pose.attitude_callback((float("nan"), 0.0, 0.0))
+        self.assertAlmostEqual(pose.get_yaw(), 3.0)
 
     def test_yaw_isolation_preserves_translation_and_forces_zero_z(self):
         from classwork8.tof_camera_round1_v05 import _basic_motion_command, DIR_VEC_DRIVE
