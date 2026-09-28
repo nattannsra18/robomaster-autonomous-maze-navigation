@@ -59,6 +59,13 @@ class BasicMotionTests(unittest.TestCase):
             self.assertAlmostEqual(y, 0.0)
             self.assertLessEqual(abs(z), config.heading_max_z_dps)
 
+    def test_invalid_gimbal_angle_skips_map_only(self):
+        source = inspect.getsource(mission._drive_one_cell)
+        self.assertIn("sensor_pitch = gimbal_tracker.get_pitch()", source)
+        self.assertIn("sensor_yaw = gimbal_tracker.get_yaw()", source)
+        self.assertIn("_update_tof_ray(grid, config", source)
+        self.assertNotIn("GIMBAL_PITCH_DRIFT", source)
+
     def test_heading_steering_does_not_stop_translation(self):
         config = Classwork8Config()
         for direction in range(4):
