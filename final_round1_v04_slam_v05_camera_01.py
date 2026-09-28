@@ -95,6 +95,9 @@ def main():
     if args.no_camera:
         config.target_detection_enabled = False
     config.validate()
+    # Import the GUI BEFORE connecting to hardware; syntax/import errors should
+    # never leave a successfully initialized robot behind.
+    from classwork8.gui_v04_camera import run_with_gui
     ep_robot = robot.Robot()
     try:
         ok = ep_robot.initialize(conn_type=config.connection)
@@ -108,7 +111,6 @@ def main():
             pass
         raise
     # Presentation only: V05 live-preview GUI. It does NOT supply motion logic.
-    from classwork8.gui_v04_camera import run_with_gui
     run_with_gui(run, config, ep_robot)
 
 
