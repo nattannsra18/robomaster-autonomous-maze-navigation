@@ -731,8 +731,9 @@ def _scan_four_directions(
     else:
         order = [3, 0, 1, 2]  # LEFT -> FRONT -> RIGHT -> BACK
     ranges: Dict[int, Optional[float]] = {}
-    # Safety probe distances only remain valid until the chassis moves;
-    # mapping rays below each retain their own true sampled pose.
+    # Opposite-side safety ranges only come from the normal four directions.
+    # They become invalid after movement; each mapping ray retains its own
+    # real ToF sampling pose, so no extra yaw scan is permitted.
     safety_ranges: Dict[int, Optional[float]] = {}
     open_dirs: Set[int] = set()
 
@@ -906,10 +907,10 @@ def _scan_four_directions(
             ),
             flush=True,
         )
-        # Correct immediately at the current direction, before scanning
-        # the next normal direction. Never wait for the completed four-way
-        # sweep. An unobserved opposite wall is briefly probed on demand,
-        # then the gimbal returns to this wall for monitored movement.
+        # When both sides of a pair have naturally appeared in this
+        # four-direction sweep, correct now before moving to the next side.
+        # Never point away for an additional opposite probe; with only one
+        # scanned side, defer the correction until its opposite is reached.
         if config.wall_clearance_enabled:
             safety_ranges[direction] = distance_cm
             adjusted, failure = _maintain_wall_clearance_checkpoint(
@@ -929,8 +930,8 @@ def _scan_four_directions(
                     direction=DIR_NAME[direction],
                 )
                 print(
-                    "[CLEARANCE_DURING_SCAN] {} adjusted; re-reading THIS "
-                    "direction only before continuing sweep.".format(
+                    "[CLEARANCE_DURING_SCAN] {} adjusted; using live ToF "
+                    "at this SAME direction, no additional yaw sweep.".format(
                         DIR_NAME[direction]
                     ), flush=True,
                 )
