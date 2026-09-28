@@ -916,11 +916,17 @@ def _scan_four_directions(
                     return None
                 sensors.reset_filters()
                 distance_cm = _sample_tof(sensors, config, stop_event)
-                if (distance_cm is None or
-                        abs(float(gimbal_tracker.get_pitch() or 0.0)
-                            - float(config.gimbal_scan_pitch_deg))
-                        > float(config.gimbal_pitch_tolerance_deg)):
-                    print("[CLEARANCE_FAIL] Fresh same-direction ToF/pitch "
+                final_pitch, final_yaw = gimbal_tracker.get_angles()
+                if (
+                    distance_cm is None or final_pitch is None
+                    or final_yaw is None
+                    or abs(float(final_pitch) - float(config.gimbal_scan_pitch_deg))
+                    > float(config.gimbal_pitch_tolerance_deg)
+                    or abs(_heading_error(
+                        config.gimbal_yaw_for_direction(direction), final_yaw
+                    )) > float(config.gimbal_tolerance_deg)
+                ):
+                    print("[CLEARANCE_FAIL] Fresh same-direction ToF/pitch/yaw "
                           "unavailable after movement.", flush=True)
                     return None
                 safety_ranges.clear()
