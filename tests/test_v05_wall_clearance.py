@@ -154,6 +154,82 @@ class WallClearanceMotionTests(unittest.TestCase):
         self.assertLessEqual(abs(pose.y), 0.052)
         self.assertEqual(chassis.commands[-1], ("stop", 0, 0, 0, 0))
 
+    def test_right_scan_immediately_probes_left_then_moves_left(self):
+        cfg = enabled_config()
+        cfg.odom_scale_x = cfg.odom_scale_y = 1.0
+
+        class Pose:
+            y = 0.0
+            def get_xy(self):
+                return 0.0, self.y
+            def get_yaw(self):
+                return 0.0
+            def attitude_age_sec(self):
+                return 0.01
+
+        class Sensors:
+            direction = 1
+            pose = None
+            def reset_filters(self):
+                pass
+            @property
+            def tof_last_update(self):
+                return time.monotonic()
+            def get_front_cm(self):
+                return (
+                    13.0 - self.pose.y * 100.0
+                    if self.direction == 1
+                    else 30.0 + self.pose.y * 100.0
+                )
+
+        class Tracker:
+            sensors = None
+            def get_angles(self):
+                return 0.0, float(cfg.gimbal_yaw_for_direction(
+                    self.sensors.direction
+                ))
+
+        class Chassis:
+            def __init__(self, pose):
+                self.pose = pose
+                self.move_commands = []
+                self.wheel_zeros = 0
+            def stop(self):
+                pass
+            def drive_wheels(self, w1=0, w2=0, w3=0, w4=0):
+                assert (w1, w2, w3, w4) == (0, 0, 0, 0)
+                self.wheel_zeros += 1
+                return True
+            def drive_speed(self, x, y, z, timeout):
+                self.move_commands.append((x, y, z))
+                self.pose.y += y * 0.10
+                return None
+
+        pose, sensors = Pose(), Sensors()
+        sensors.pose = pose
+        tracker = Tracker()
+        tracker.sensors = sensors
+        chassis = Chassis(pose)
+        pointed = []
+        def point(_gimbal, _sensors, _tracker, direction, _config, _stop):
+            pointed.append(direction)
+            sensors.direction = direction
+            return True
+        with patch.object(v05, "_point_gimbal", side_effect=point), patch.object(
+            v05, "_sample_tof", side_effect=lambda *args: sensors.get_front_cm()
+        ):
+            moved, reason = v05._maintain_wall_clearance_checkpoint(
+                chassis, object(), pose, sensors, tracker, cfg,
+                {1: 13.0}, 1, 0.0, 0.0, 0.0, threading.Event(),
+            )
+        self.assertEqual(pointed, [3, 1, 1])
+        self.assertTrue(moved)
+        self.assertIsNone(reason)
+        self.assertGreater(len(chassis.move_commands), 0)
+        self.assertTrue(all(x == z == 0.0 and y < 0.0
+                            for x, y, z in chassis.move_commands))
+        self.assertGreaterEqual(chassis.wheel_zeros, 2)
+
     def test_feature_disabled_does_not_command_chassis(self):
         cfg = Classwork8Config()
         moved, reason = v05._maintain_wall_clearance_checkpoint(
