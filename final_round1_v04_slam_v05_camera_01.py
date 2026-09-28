@@ -40,6 +40,8 @@ def _defaults(config):
     config.odom_scale_x = 1.00
     config.odom_scale_y = 1.00
     config.travel_speed_mps = 0.10
+    config.stop_front_cm = 18.0  # exact V04 safety threshold (fix branch global config is 13)
+    config.midcell_side_check_enabled = True  # same V04 config default; V04 core is unchanged
     config.tof_recovery_wait_sec = 1.20
     config.tof_recovery_retries = 2
     config.closed_maze_auto_stop = True
