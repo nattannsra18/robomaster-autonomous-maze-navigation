@@ -11,7 +11,7 @@ from classwork8.target_detection import (
     TargetRegistry,
     VerifiedTarget,
 )
-from classwork8.target_map_visual import target_plot_geometry
+from classwork8.target_map_visual import target_plot_geometry, visible_map_targets
 
 
 class FinalTargetDetectionTests(unittest.TestCase):
@@ -247,6 +247,54 @@ class FinalTargetDetectionTests(unittest.TestCase):
             self.assertIsNone(
                 saved["targets"][0]["estimated_target_xy_m"]
             )
+
+    def test_map_displays_only_range_supported_verified_targets(self):
+        near = {
+            "target_id": "T01",
+            "localization_status": "NEAR_WALL_ESTIMATE",
+            "range_confirmed_wall": True,
+            "estimated_target_xy_m": [0.6, 0.3],
+        }
+        los = {
+            "target_id": "T02",
+            "localization_status": "SIGHTING_ONLY",
+            "range_confirmed_wall": False,
+            "estimated_target_xy_m": None,
+            "observation_cells": [[0, 0]],
+            "sighting_cell_hint": [2, 0],
+        }
+        unlocated = {
+            "target_id": "T03",
+            "localization_status": "NEAR_WALL_ESTIMATE",
+            "range_confirmed_wall": True,
+            "estimated_target_xy_m": None,
+        }
+        records = [near, los, unlocated]
+        self.assertEqual(
+            [item["target_id"] for item in visible_map_targets(records)],
+            ["T01"],
+        )
+        self.assertEqual(len(records), 3)  # Do not mutate raw target records.
+        hint, _origin, sighting = target_plot_geometry(
+            los, self.config.cell_size_m
+        )
+        self.assertTrue(sighting)  # Underlying LOS information still exists.
+        self.assertIsNotNone(hint)
+
+    def test_map_displays_sighting_after_close_range_upgrade(self):
+        target = {
+            "target_id": "T02",
+            "localization_status": "SIGHTING_ONLY",
+            "range_confirmed_wall": False,
+            "estimated_target_xy_m": None,
+        }
+        self.assertEqual(visible_map_targets([target]), [])
+        target.update({
+            "localization_status": "NEAR_WALL_ESTIMATE",
+            "range_confirmed_wall": True,
+            "estimated_target_xy_m": [0.0, 1.2],
+        })
+        self.assertEqual(visible_map_targets([target]), [target])
 
     def test_same_view_close_observation_upgrades_sighting_tentatively(self):
         frame = np.full((360, 640, 3), 110, dtype=np.uint8)
