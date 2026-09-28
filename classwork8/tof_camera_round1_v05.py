@@ -3768,6 +3768,11 @@ def run(
             ),
             "target_count": len(target_registry.targets),
             "target_pending_count": len(target_registry.pending_targets),
+            "target_side_view_count": len(target_registry.side_view_sightings),
+            "target_side_view_verified_count": sum(
+                item["status"] == "VERIFIED_BEARING_ONLY"
+                for item in target_registry.side_view_sightings
+            ),
             "target_sighting_count": sum(
                 1 for item in target_registry.targets
                 if item.get("localization_status") == "SIGHTING_ONLY"
