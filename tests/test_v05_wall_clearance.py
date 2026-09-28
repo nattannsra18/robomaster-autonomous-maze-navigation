@@ -86,7 +86,9 @@ class WallClearancePlannerTests(unittest.TestCase):
         )
         run_source = inspect.getsource(v05.run)
         self.assertNotIn("_maintain_wall_clearance_checkpoint(", run_source)
-        self.assertIn("True,  # Hard limit: a completed cell is NEVER swept again.", run_source)
+        self.assertIn("cache_valid = current_cell in scanned_cells", run_source)
+        self.assertIn("[SCAN_BUDGET] cell=", source)
+        self.assertIn("directions=4", source)
         self.assertNotIn("Rescanning current cell", run_source)
         self.assertEqual(source.count("if not _point_gimbal("), 1)
         self.assertNotIn("[CLEARANCE_PROBE]", inspect.getsource(
