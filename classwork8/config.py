@@ -1,4 +1,5 @@
 from dataclasses import dataclass, asdict
+import math
 
 
 @dataclass
@@ -50,6 +51,19 @@ class Classwork8Config:
     front_block_confirm_samples: int = 4
     front_block_confirm_interval_sec: float = 0.05
     front_block_release_margin_cm: float = 3.0
+
+    # V05 checkpoint wall-clearance control (opt-in; single Gimbal ToF).
+    # These are the actual horizontal ToF readings in centimetres, NOT
+    # physical chassis-edge clearances. Each new cell scans all four sides;
+    # correction is stationary, bounded, and followed by a fresh full scan.
+    wall_clearance_enabled: bool = False
+    wall_clearance_front_cm: float = 18.0
+    wall_clearance_right_cm: float = 18.0
+    wall_clearance_back_cm: float = 18.0
+    wall_clearance_left_cm: float = 18.0
+    wall_clearance_deadband_cm: float = 1.5
+    wall_clearance_max_step_cm: float = 4.0
+    wall_clearance_speed_mps: float = 0.035
 
     # LEGACY motion fields below are retained for saved-config compatibility.
     # BASIC motion never uses them for lateral bias or longitudinal slowdown.
@@ -307,6 +321,19 @@ class Classwork8Config:
             raise ValueError("heading alignment tolerance/max error invalid")
         if not 0.0 < self.heading_align_max_z_dps <= 30.0 or self.heading_align_timeout_sec <= 0.0:
             raise ValueError("heading alignment speed/timeout invalid")
+        for name in (
+            "wall_clearance_front_cm", "wall_clearance_right_cm",
+            "wall_clearance_back_cm", "wall_clearance_left_cm",
+        ):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or not 5.0 <= value <= 50.0:
+                raise ValueError("{} must be a finite horizontal ToF distance between 5 and 50 cm".format(name))
+        if not 0.2 <= self.wall_clearance_deadband_cm <= 5.0:
+            raise ValueError("wall_clearance_deadband_cm must be 0.2 to 5 cm")
+        if not 0.5 <= self.wall_clearance_max_step_cm <= 6.0:
+            raise ValueError("wall_clearance_max_step_cm must be 0.5 to 6 cm")
+        if not 0.01 <= self.wall_clearance_speed_mps <= 0.05:
+            raise ValueError("wall_clearance_speed_mps must be 0.01 to 0.05 m/s")
         # Obsolete wall/cross-track/recovery settings do not constrain speed.
         if self.step_tolerance_m <= 0.0:
             raise ValueError("step_tolerance_m must be positive")
