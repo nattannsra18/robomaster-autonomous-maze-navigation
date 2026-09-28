@@ -78,6 +78,29 @@ class ToFOnlySensorManager(SensorManager):
         return None, None
 
 
+class V05PoseTracker(PoseTracker):
+    """Include attitude receipt time; non-None yaw can still be stale."""
+
+    def __init__(self):
+        super().__init__()
+        self._yaw_received_at = None
+
+    def attitude_callback(self, data):
+        try:
+            if data is None or len(data) < 3 or not math.isfinite(float(data[0])):
+                return
+        except (TypeError, ValueError, IndexError):
+            return
+        super().attitude_callback(data)
+        with self._lock:
+            self._yaw_received_at = time.monotonic()
+
+    def attitude_age_sec(self) -> Optional[float]:
+        with self._lock:
+            timestamp = self._yaw_received_at
+        return None if timestamp is None else max(0.0, time.monotonic() - timestamp)
+
+
 class GimbalTracker:
     def __init__(self):
         self._lock = threading.Lock()
@@ -1093,6 +1116,7 @@ def _heading_snapshot(phase: str, pose: PoseTracker, tracker: GimbalTracker,
                       reference: float) -> Optional[float]:
     """Compare chassis attitude with relative/ground gimbal yaw across phases."""
     actual = pose.get_yaw()
+    age = pose.attitude_age_sec() if hasattr(pose, "attitude_age_sec") else None
     rel, ground = tracker.get_yaws()
     error = None if actual is None else _heading_error(reference, actual)
     proxy = None if rel is None or ground is None else normalize_angle_deg(ground - rel)
@@ -1100,9 +1124,10 @@ def _heading_snapshot(phase: str, pose: PoseTracker, tracker: GimbalTracker,
         return "---" if v is None else "{:+.2f}".format(float(v))
     print(
         "[HEADING_TRACE] phase={} chassis={} ref={} diff={} "
-        "gimbal_relative={} gimbal_ground={} ground_minus_relative={}".format(
-            phase, fmt(actual), fmt(reference), fmt(error), fmt(rel),
-            fmt(ground), fmt(proxy)
+        "yaw_age_sec={} gimbal_relative={} gimbal_ground={} "
+        "ground_minus_relative={}".format(
+            phase, fmt(actual), fmt(reference), fmt(error), fmt(age),
+            fmt(rel), fmt(ground), fmt(proxy)
         ), flush=True,
     )
     return actual
@@ -1252,6 +1277,15 @@ def _drive_one_cell(
         if config.heading_hold_enabled and yaw is None:
             stop_chassis(chassis)
             return False, "HEADING_FEEDBACK_LOST", 0.0
+        # An old but non-None attitude value is not feedback. Never steer
+        # against a frozen yaw sample or draw conclusions from a stale probe.
+        yaw_age = pose.attitude_age_sec() if hasattr(pose, "attitude_age_sec") else None
+        if (config.heading_hold_enabled or config.yaw_isolation_mode) and (
+            yaw_age is None or yaw_age > 1.5
+        ):
+            stop_chassis(chassis)
+            print("[HEADING_FAIL] STALE_ATTITUDE age_sec={}".format(yaw_age), flush=True)
+            return False, "HEADING_FEEDBACK_STALE", 0.0
 
         rel_x, rel_y = _map_xy_from_raw(
             float(raw_x), float(raw_y), start_x, start_y, start_yaw_deg,
@@ -1784,7 +1818,7 @@ def run(
     edge_states: Dict[Tuple[int, int, int], str] = {}
     logical_path: List[Tuple[int, int]] = [(0, 0)]
 
-    pose = PoseTracker()
+    pose = V05PoseTracker()
     sensors = ToFOnlySensorManager()
     gimbal_tracker = GimbalTracker()
 
