@@ -36,6 +36,14 @@ class FakeChassis:
         self.pose = pose
         self.response_sign = response_sign
         self.commands = []
+        self.wheel_commands = []
+
+    def drive_wheels(self, w1=0, w2=0, w3=0, w4=0, timeout=None):
+        self.wheel_commands.append((w1, w2, w3, w4))
+        # Preserve the existing command trace convention while recording
+        # the new V05-specific zero-wheel stop independently.
+        self.commands.append((0.0, 0.0, 0.0))
+        return True
 
     def drive_speed(self, x=0.0, y=0.0, z=0.0, timeout=None):
         self.commands.append((float(x), float(y), float(z)))
@@ -62,6 +70,7 @@ class HeadingTests(unittest.TestCase):
         ok, reason = _align_chassis_after_scan(chassis, pose, config, 0.0, None)
         self.assertTrue(ok)
         self.assertEqual(reason, "ALREADY_ALIGNED")
+        self.assertEqual(chassis.wheel_commands, [(0, 0, 0, 0)])
         self.assertTrue(all(abs(z) == 0.0 for _x, _y, z in chassis.commands))
 
     def test_correction_converges_when_sign_matches(self):
