@@ -101,7 +101,7 @@ def configure_before_run(config) -> bool:
         # Quick settings appear FIRST. Advanced tabs reuse the same Tk
         # variables, so changing one control updates its duplicate instantly.
         "Mission Settings": [
-            ("wall_clearance_enabled", "Enable 4-direction wall clearance adjustment", "bool", "Opt in after testing. After a fresh four-way ToF scan, move a short distance AWAY from a too-close wall, then rescan."),
+            ("wall_clearance_enabled", "Enable 4-direction wall clearance adjustment", "bool", "During EACH direction scan, if the wall is too close, make a short shift AWAY immediately; sample the same direction again."),
             ("wall_clearance_front_cm", "FRONT minimum wall range (cm)", "float", "Measured horizontal ToF reading; if too close, cautiously reverse."),
             ("wall_clearance_right_cm", "RIGHT minimum wall range (cm)", "float", "If the right wall is closer than this, cautiously strafe LEFT."),
             ("wall_clearance_back_cm", "BACK minimum wall range (cm)", "float", "If the back wall is closer than this, cautiously move forward."),
@@ -122,7 +122,7 @@ def configure_before_run(config) -> bool:
             ("travel_speed_mps", "Travel speed (m/s)", "float", "Requested speed is used directly on every leg"),
             ("odom_scale_x", "Odometry scale X", "float", "Start at 1.00; tune with a measured 60 cm forward test"),
             ("odom_scale_y", "Odometry scale Y", "float", "Start at 1.00; tune with a measured 60 cm strafe test"),
-            ("wall_clearance_enabled", "Adjust clearance after full scan", "bool", "Single ToF on gimbal, not simultaneous four-side feedback. Disabled by default until physically calibrated."),
+            ("wall_clearance_enabled", "Adjust clearance after full scan", "bool", "Immediate per-direction correction. A quick opposite-direction safety check is taken if its range is not known; disabled by default."),
             ("wall_clearance_front_cm", "Front minimum range (cm)", "float", "Horizontal ToF distance to front wall"),
             ("wall_clearance_right_cm", "Right minimum range (cm)", "float", "Horizontal ToF distance to right wall"),
             ("wall_clearance_back_cm", "Back minimum range (cm)", "float", "Horizontal ToF distance to rear wall"),
