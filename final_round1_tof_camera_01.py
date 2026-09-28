@@ -96,6 +96,11 @@ def main():
         metavar="MPS",
         help="direct longitudinal chassis speed in m/s (overrides config default)",
     )
+    parser.add_argument(
+        "--yaw-isolation",
+        action="store_true",
+        help="diagnostic: force chassis z=0 during every move and disable all post-scan yaw alignment; log chassis/gimbal yaw separately",
+    )
     args = parser.parse_args()
 
     config = Classwork8Config()
@@ -105,6 +110,9 @@ def main():
 
     if args.no_camera:
         config.target_detection_enabled = False
+    if args.yaw_isolation:
+        config.yaw_isolation_mode = True
+        config.heading_hold_enabled = False
 
     if args.no_gui:
         config.validate()
@@ -119,6 +127,11 @@ def main():
 
     if args.no_camera:
         config.target_detection_enabled = False
+    if args.yaw_isolation:
+        # Enforce this *after* the GUI: users must not accidentally re-enable
+        # yaw commands while conducting the isolation experiment.
+        config.yaw_isolation_mode = True
+        config.heading_hold_enabled = False
 
     config.validate()
 
