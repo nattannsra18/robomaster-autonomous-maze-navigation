@@ -59,3 +59,17 @@ Example controlled, supervised headless test (choose desired speed):
 ```powershell
 python final_round1_tof_camera_01.py --no-gui --travel-speed 0.10
 ```
+
+
+## 28 Sep: bounded post-scan heading alignment exception
+
+The requested new post-scan feature deliberately adds a **stationary,
+bounded yaw-only** correction between a completed target scan and the next
+cell translation. This is not a wall/ToF speed cap or generic recovery.
+The longitudinal SDK command in `_basic_motion_command` remains equal to
+`travel_speed_mps`. If measured correction diverges or chassis yaw drift
+exceeds the configured maximum, the run ends for inspection instead of
+automatically reversing or continuing to turn.
+
+See [V05_HEADING_GIMBAL_DIAGNOSTICS.md](V05_HEADING_GIMBAL_DIAGNOSTICS.md)
+for the distinct chassis/gimbal yaw trace, new defaults and offline tests.
