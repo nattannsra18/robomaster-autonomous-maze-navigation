@@ -16,6 +16,27 @@ from diagnose_chassis_drift_v05 import Telemetry, _fmt
 from robomaster import logger as sdk_logger, robot
 
 
+class UnregisteredTelemetryNoiseFilter(logging.Filter):
+    """Count only firmware 0x24/0x21 decode warnings; preserve ACK diagnostics."""
+
+    def __init__(self):
+        super().__init__()
+        self.suppressed = 0
+
+    def filter(self, record):
+        message = record.getMessage().replace(" ", "")
+        if (
+            "cmdset:0x24,cmdid:0x21" in message
+            and (
+                "notregistered_protocol" in message
+                or "unpack_protocolfailed" in message
+            )
+        ):
+            self.suppressed += 1
+            return False
+        return True
+
+
 def angle_change(initial, current):
     """Shortest signed chassis yaw change in degrees."""
     return (float(current) - float(initial) + 180.0) % 360.0 - 180.0
@@ -72,6 +93,12 @@ def main():
     # Default RoboMaster SDK suppresses WARNING details that explain why
     # synchronous chassis.drive_speed may return False.
     sdk_logger.setLevel(logging.WARNING)
+    noise_filter = UnregisteredTelemetryNoiseFilter()
+    sdk_logger.addFilter(noise_filter)
+    print(
+        "[SDK_LOG] Filtering repeated unregistered incoming 0x24/0x21 "
+        "warnings; all other SDK warnings remain visible.", flush=True,
+    )
     ep = robot.Robot()
     chassis = None
     telemetry = Telemetry()
@@ -176,6 +203,13 @@ def main():
             ep.close()
         except Exception as exc:
             print("[CLOSE_WARN] {}".format(exc), flush=True)
+        sdk_logger.removeFilter(noise_filter)
+        print(
+            "[SDK_LOG] Suppressed {} repeated incoming 0x24/0x21 warnings. "
+            "This does not establish why the firmware sends them.".format(
+                noise_filter.suppressed
+            ), flush=True,
+        )
         print("[ZERO_TEST] Complete; include physical nose/wheel observations.", flush=True)
 
 
