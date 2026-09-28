@@ -36,7 +36,11 @@ class Classwork8Config:
     heading_recover_trigger_deg: float = 4.0
     heading_recover_release_deg: float = 1.0
     heading_recover_max_z_dps: float = 24.0
-    heading_drive_sign: float = 1.0
+    heading_drive_sign: float = 1.0  # Verify physical z/attitude sign in traces.
+    heading_align_tolerance_deg: float = 1.5
+    heading_align_max_error_deg: float = 12.0
+    heading_align_max_z_dps: float = 10.0
+    heading_align_timeout_sec: float = 3.5
 
     # V02 ToF robustness.  Gimbal direction changes clear the ToF filter, so
     # wait briefly for a genuinely fresh sample instead of aborting instantly.
@@ -101,12 +105,12 @@ class Classwork8Config:
     # Turn slowly with YAW ONLY; restore level PITCH after yaw finishes.
     # The observed transient yaw/pitch excursion is logged, but ToF is sampled
     # only AFTER both axes settle to their configured scan angles.
-    gimbal_yaw_speed_dps: float = 90.0
-    gimbal_min_yaw_speed_dps: float = 12.0
-    gimbal_yaw_kp: float = 2.0
+    gimbal_yaw_speed_dps: float = 140.0
+    gimbal_min_yaw_speed_dps: float = 7.0
+    gimbal_yaw_kp: float = 2.8
     gimbal_tolerance_deg: float = 2.5
     gimbal_stable_samples: int = 3
-    gimbal_turn_timeout_sec: float = 10.0
+    gimbal_turn_timeout_sec: float = 8.0  # Each phase independently.
     gimbal_settle_sec: float = 0.20
     gimbal_yaw_pitch_guard_deg: float = 6.0
 
@@ -148,7 +152,7 @@ class Classwork8Config:
     max_moves: int = 500
 
     # BASIC direct longitudinal speed, with no hidden environment speed cap.
-    travel_speed_mps: float = 0.25
+    travel_speed_mps: float = 0.30
     stop_front_cm: float = 18.0
     slow_front_cm: float = 35.0
     drive_timeout_sec: float = 0.15
@@ -195,7 +199,7 @@ class Classwork8Config:
     target_max_frame_age_sec: float = 0.60
     # Camera looks down only while stopped, after the horizontal ToF ray has
     # been sampled. Mapping/driving ALWAYS restore gimbal_scan_pitch_deg.
-    target_camera_pitch_deg: float = -15.0
+    target_camera_pitch_deg: float = -20.0
     target_camera_pitch_min_deg: float = -20.0
     target_camera_pitch_max_deg: float = 10.0
     target_camera_pitch_tolerance_deg: float = 1.5
@@ -284,8 +288,8 @@ class Classwork8Config:
             raise ValueError("gimbal pitch unsafe angle must exceed tolerance")
         if self.gimbal_yaw_pitch_guard_deg <= self.gimbal_pitch_tolerance_deg:
             raise ValueError("gimbal yaw pitch guard must exceed pitch tolerance")
-        if not 0.0 < self.gimbal_min_yaw_speed_dps <= self.gimbal_yaw_speed_dps <= 120.0:
-            raise ValueError("gimbal yaw speed must be above minimum and at most 120 deg/s")
+        if not 0.0 < self.gimbal_min_yaw_speed_dps <= self.gimbal_yaw_speed_dps <= 180.0:
+            raise ValueError("gimbal yaw speed must be above minimum and at most 180 deg/s")
         if self.gimbal_turn_timeout_sec <= 0.0:
             raise ValueError("gimbal turn timeout must be positive")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
@@ -296,8 +300,12 @@ class Classwork8Config:
             raise ValueError("travel_speed_mps must be positive")
         if self.odom_scale_x <= 0.0 or self.odom_scale_y <= 0.0:
             raise ValueError("odometry scale factors must be positive")
-        if self.heading_drive_sign == 0.0:
-            raise ValueError("heading_drive_sign must be non-zero")
+        if self.heading_drive_sign not in (-1.0, 1.0):
+            raise ValueError("heading_drive_sign must be +1 or -1")
+        if not 0.0 < self.heading_align_tolerance_deg < self.heading_align_max_error_deg <= 30.0:
+            raise ValueError("heading alignment tolerance/max error invalid")
+        if not 0.0 < self.heading_align_max_z_dps <= 30.0 or self.heading_align_timeout_sec <= 0.0:
+            raise ValueError("heading alignment speed/timeout invalid")
         # Obsolete wall/cross-track/recovery settings do not constrain speed.
         if self.step_tolerance_m <= 0.0:
             raise ValueError("step_tolerance_m must be positive")
