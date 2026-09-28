@@ -253,9 +253,19 @@ def main():
         )
         command_ok = gimbal.drive_speed(pitch_speed=0.0, yaw_speed=speed)
         print("[GIMBAL_PROBE] drive_speed result={!r}".format(command_ok), flush=True)
-        if not command_ok:
-            print("[GIMBAL_FAIL] drive_speed rejected; stopping.", flush=True)
+        # The official RoboMaster SDK's Client.send_msg() has no return
+        # statement. Successful fire-and-forget drive_speed therefore often
+        # returns None. Only an explicit False signals a send exception here;
+        # verify actual movement from fresh gimbal feedback below.
+        if command_ok is False:
+            print("[GIMBAL_FAIL] drive_speed explicitly returned False; stopping.", flush=True)
             return
+        if command_ok is None:
+            print(
+                "[GIMBAL_PROBE] None is normal for SDK async send; "
+                "waiting for measured yaw response.",
+                flush=True,
+            )
         try:
             _stage("GIMBAL_INWARD_PULSE", 1.2, telem, started, stop, True)
         finally:
