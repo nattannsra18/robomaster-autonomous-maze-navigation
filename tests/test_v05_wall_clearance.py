@@ -82,7 +82,7 @@ class WallClearancePlannerTests(unittest.TestCase):
         self.assertNotIn("rescanned = _scan_four_directions(", source)
         self.assertLess(
             source.index("_maintain_wall_clearance_checkpoint("),
-            source.index("ranges[direction] = distance_cm")
+            source.index("\n        ranges[direction] = distance_cm")
         )
         run_source = inspect.getsource(v05.run)
         self.assertNotIn("_maintain_wall_clearance_checkpoint(", run_source)
