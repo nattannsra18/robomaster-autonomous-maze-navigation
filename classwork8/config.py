@@ -29,9 +29,7 @@ class Classwork8Config:
     odom_scale_x: float = 1.25
     odom_scale_y: float = 1.25
 
-    # V02 fixed-heading controller.  The chassis is supposed to keep the
-    # mission-start yaw while mecanum-translating; do not wait for an 8-degree
-    # error before pausing translation and recovering.
+    # Continuous heading steering; legacy heading_recover_* settings are inactive.
     heading_kp_z: float = 2.4
     heading_max_z_dps: float = 18.0
     heading_deadband_deg: float = 0.35
@@ -48,20 +46,15 @@ class Classwork8Config:
     front_block_confirm_interval_sec: float = 0.05
     front_block_release_margin_cm: float = 3.0
 
-    # V02 scan-derived corridor guidance.  The single ToF cannot look forward
-    # and sideways simultaneously, so use the four-way scan made while stopped
-    # to add only a small lateral bias during the next 60 cm move.
+    # LEGACY motion fields below are retained for saved-config compatibility.
+    # BASIC motion never uses them for lateral bias or longitudinal slowdown.
     scan_side_guidance_enabled: bool = True
     scan_side_wall_max_cm: float = 45.0
     scan_side_danger_cm: float = 22.0
     scan_side_kp_mps_per_cm: float = 0.0020
     scan_side_max_correction_mps: float = 0.015
 
-    # V05 lateral protection using only the existing gimbal ToF. The robot
-    # stops halfway along a 60 cm leg ONLY when a mapped side has a confirmed
-    # wall, measures that wall while stationary, and then returns ToF to the
-    # travel direction before driving resumes. Never scan sideways in motion.
-    # These ranges are ToF sensor-to-wall, not chassis-side physical clearance.
+    # Inactive V05 side-check and speed-cap parameters.
     midcell_side_check_enabled: bool = True
     midcell_side_check_ratio: float = 0.48
     # These are sensor-to-wall distances, NOT physical chassis clearance.
@@ -69,8 +62,7 @@ class Classwork8Config:
     # absolute stop falsely aborted normal travel. Calibrate the critical
     # range using measured sensor-to-body offset before a full maze trial.
     midcell_side_hard_stop_cm: float = 10.0
-    # Only an independently repeated stationary SIDE measurement can clear
-    # one suspicious low range. Sustained 6.5 cm must still halt the chassis.
+    # No side-reading-driven stop is performed by BASIC motion.
     side_start_recheck_enabled: bool = True
     side_start_release_margin_cm: float = 2.0
     side_start_recheck_max_spread_cm: float = 2.0
@@ -79,10 +71,9 @@ class Classwork8Config:
     midcell_side_recenter_deadband_cm: float = 1.5
     midcell_side_max_bias_mps: float = 0.012
     motion_total_lateral_max_mps: float = 0.028
-    # Explicit cap for wall-adjacent legs: 0.25 m/s is NOT used next to foam walls.
+    # LEGACY ONLY; no wall-adjacent speed cap in BASIC motion.
     motion_wall_adjacent_speed_cap_mps: float = 0.12
-    # Abort if wheel odometry reports excessive departure from the planned
-    # logical cell centreline; it cannot detect unreported wheel slip.
+    # LEGACY ONLY; cross-track is observed and logged, not slowed/aborted.
     motion_cross_track_abort_m: float = 0.085
     motion_cross_track_slow_m: float = 0.030
     motion_slow_cross_track_speed_mps: float = 0.065
@@ -144,12 +135,11 @@ class Classwork8Config:
 
     # ToF-only exploration. A wall in the current cell is typically about
     # 30 cm from chassis centre. This threshold only marks candidate directions;
-    # movement still continuously checks ToF and stops at stop_front_cm.
+    # ToF is for topology; it does not change BASIC chassis commands.
     tof_open_cm: float = 55.0
     # V02 topology classification: a very close return is confidently a wall.
     # Mid-range returns are re-sampled and biased toward OPEN because a false
-    # open is still protected by the continuous front-stop guard, whereas a
-    # false wall can permanently hide an unexplored branch.
+    # open is NOT backed by a front-stop guard in BASIC motion. Supervise tests.
     scan_hard_wall_cm: float = 25.0
     scan_ambiguous_retries: int = 1
     scan_ambiguous_retry_settle_sec: float = 0.10
@@ -157,8 +147,7 @@ class Classwork8Config:
     scan_sample_interval_sec: float = 0.06
     max_moves: int = 500
 
-    # Conservative mecanum translation. No 90-degree chassis scan turns.
-    # Requested open-route ceiling. Mapped wall-adjacent legs remain speed-capped.
+    # BASIC direct longitudinal speed, with no hidden environment speed cap.
     travel_speed_mps: float = 0.25
     stop_front_cm: float = 18.0
     slow_front_cm: float = 35.0
@@ -169,8 +158,7 @@ class Classwork8Config:
     # its original orientation. Set False if absolutely no z correction is wanted.
     heading_hold_enabled: bool = True
 
-    # Camera-assisted corridor centering. ToF remains authoritative for walls
-    # and stopping; vision only adds a small lateral correction when reliable.
+    # Camera and vision fields are retained; BASIC movement ignores vision steering.
     vision_enabled: bool = True
     # Default to camera diagnostics only until the direction and wall/floor
     # boundaries have been verified on the actual foam-wall maze.
@@ -302,46 +290,17 @@ class Classwork8Config:
             raise ValueError("gimbal turn timeout must be positive")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
             raise ValueError("ToF mapping range is invalid")
-        if self.tof_open_cm <= self.stop_front_cm:
-            raise ValueError("tof_open_cm must be greater than stop_front_cm")
+        if self.tof_open_cm <= self.scan_hard_wall_cm:
+            raise ValueError("tof_open_cm must exceed scan_hard_wall_cm")
         if self.travel_speed_mps <= 0.0:
             raise ValueError("travel_speed_mps must be positive")
         if self.odom_scale_x <= 0.0 or self.odom_scale_y <= 0.0:
             raise ValueError("odometry scale factors must be positive")
         if self.heading_drive_sign == 0.0:
             raise ValueError("heading_drive_sign must be non-zero")
-        if self.tof_recovery_wait_sec <= 0.0:
-            raise ValueError("tof_recovery_wait_sec must be positive")
-        if self.tof_recovery_retries < 0:
-            raise ValueError("tof_recovery_retries must be >= 0")
-        if self.cell_center_tolerance_m <= 0.0:
-            raise ValueError("cell_center_tolerance_m must be positive")
-        if not 0.10 <= self.midcell_side_check_ratio <= 0.85:
-            raise ValueError("midcell_side_check_ratio must be between 0.10 and 0.85")
-        if not 0.0 < self.midcell_side_hard_stop_cm < self.midcell_side_soft_margin_cm <= self.scan_side_wall_max_cm:
-            raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
-        if not 0.0 < self.side_start_release_margin_cm <= 5.0:
-            raise ValueError("side start release margin must be 0..5 cm")
-        if not 0.0 < self.side_start_recheck_max_spread_cm <= 5.0:
-            raise ValueError("side start recheck max spread must be 0..5 cm")
-        if not 0.0 < self.midcell_side_max_baseline_drop_cm <= 20.0:
-            raise ValueError("midcell_side_max_baseline_drop_cm must be 0..20 cm")
-        if not 0.0 <= self.midcell_side_recenter_deadband_cm < self.midcell_side_max_baseline_drop_cm:
-            raise ValueError("midcell side recenter deadband must be less than baseline-drop stop")
-        if not 0.0 <= self.midcell_side_max_bias_mps <= 0.03:
-            raise ValueError("midcell_side_max_bias_mps must be 0..0.03")
-        if not 0.0 < self.motion_total_lateral_max_mps <= 0.05:
-            raise ValueError("motion_total_lateral_max_mps must be 0..0.05")
-        if not 0.0 < self.motion_wall_adjacent_speed_cap_mps <= 0.25:
-            raise ValueError("wall-adjacent speed cap must be >0 and <=0.25 m/s")
-        if not 0.0 < self.motion_cross_track_slow_m < self.motion_cross_track_abort_m < self.cell_size_m / 2.0:
-            raise ValueError("cross-track limits must satisfy 0 < slow < abort < half cell size")
-        if not 0.0 < self.motion_slow_cross_track_speed_mps <= self.travel_speed_mps:
-            raise ValueError("motion_slow_cross_track_speed_mps must not exceed travel speed")
-        if self.front_block_confirm_samples < 1:
-            raise ValueError("front_block_confirm_samples must be >= 1")
-        if not 0.0 < self.blocked_near_target_accept_ratio <= 1.0:
-            raise ValueError("blocked_near_target_accept_ratio must be in (0, 1]")
+        # Obsolete wall/cross-track/recovery settings do not constrain speed.
+        if self.step_tolerance_m <= 0.0:
+            raise ValueError("step_tolerance_m must be positive")
         if self.max_moves <= 0:
             raise ValueError("max_moves must be positive")
         if self.target_camera_resolution not in ("360p", "540p", "720p"):

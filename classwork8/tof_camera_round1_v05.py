@@ -22,12 +22,7 @@ from robomaster_mission.mission import (
 
 from .camera_service import CameraService
 from .live_survey import LiveSurveyBridge
-from .motion_safety_v05 import (
-    adjacent_wall_sides,
-    bound_travel_lateral,
-    critical_start_side_recheck,
-    side_checkpoint_decision,
-)
+from .motion_safety_v05 import adjacent_wall_sides
 from .config import Classwork8Config
 from .occupancy_grid import OccupancyGrid
 from .reporting import RunRecorder
@@ -575,54 +570,6 @@ def _wait_for_fresh_tof(
     return None
 
 
-def _confirm_front_blocked(
-    chassis,
-    sensors: ToFOnlySensorManager,
-    config: Classwork8Config,
-    stop_event: Optional[threading.Event],
-) -> Tuple[bool, Optional[float]]:
-    """Stop first, then require several fresh low ToF readings.
-
-    A single low reading must never be enough to rewrite maze topology.
-    """
-    stop_chassis(chassis)
-    consecutive = 0
-    last_value: Optional[float] = None
-    deadline = time.monotonic() + max(
-        0.6,
-        float(config.front_block_confirm_samples)
-        * float(config.front_block_confirm_interval_sec)
-        * 4.0,
-    )
-
-    while time.monotonic() < deadline:
-        if stop_event is not None and stop_event.is_set():
-            return True, last_value
-
-        value = sensors.get_front_cm()
-        if value is None:
-            time.sleep(0.02)
-            continue
-
-        last_value = float(value)
-
-        if last_value <= float(config.stop_front_cm):
-            consecutive += 1
-            if consecutive >= int(config.front_block_confirm_samples):
-                return True, last_value
-        elif last_value >= (
-            float(config.stop_front_cm)
-            + float(config.front_block_release_margin_cm)
-        ):
-            return False, last_value
-        else:
-            consecutive = max(0, consecutive - 1)
-
-        time.sleep(float(config.front_block_confirm_interval_sec))
-
-    return consecutive >= int(config.front_block_confirm_samples), last_value
-
-
 def _fixed_heading_control_v02(
     config: Classwork8Config,
     target_yaw_deg: float,
@@ -631,96 +578,16 @@ def _fixed_heading_control_v02(
     y_cmd: float,
     mode: str,
 ) -> Tuple[float, float, float, str, Optional[float]]:
-    """Keep the chassis at mission-start yaw while translating.
-
-    V01 allowed several degrees of yaw error while still translating.  V02
-    corrects earlier and pauses translation when the error becomes large.
-    """
+    """Continuous yaw P steering without translation pause or speed scaling."""
     if not config.heading_hold_enabled or current_yaw_deg is None:
         return x_cmd, y_cmd, 0.0, mode, None
-
     error = normalize_angle_deg(float(target_yaw_deg) - float(current_yaw_deg))
-    abs_error = abs(error)
-
-    if abs_error <= float(config.heading_deadband_deg):
+    if abs(error) <= float(config.heading_deadband_deg):
         return x_cmd, y_cmd, 0.0, mode, error
-
-    hard_recover = abs_error >= float(config.heading_recover_trigger_deg)
-    hold_translation = abs_error >= float(config.heading_recover_release_deg)
-
-    max_z = (
-        float(config.heading_recover_max_z_dps)
-        if hard_recover
-        else float(config.heading_max_z_dps)
-    )
-
-    z_cmd = (
-        error
-        * float(config.heading_kp_z)
-        / float(config.heading_drive_sign)
-    )
+    max_z = float(config.heading_max_z_dps)
+    z_cmd = error * float(config.heading_kp_z) / float(config.heading_drive_sign)
     z_cmd = max(-max_z, min(max_z, z_cmd))
-
-    # Do not translate while the chassis is still visibly angled.  This is
-    # intentionally stricter than V01 because mecanum translation with a
-    # 2-4 degree yaw error accumulates real lateral displacement.
-    if hold_translation:
-        return 0.0, 0.0, z_cmd, "HEADING_RECOVER_V02", error
-
     return x_cmd, y_cmd, z_cmd, mode, error
-
-
-def _scan_side_guidance_v02(
-    direction: int,
-    scan_ranges: Optional[Dict[int, Optional[float]]],
-    config: Classwork8Config,
-) -> Tuple[float, str]:
-    """Return a small right-relative lateral correction from the stopped scan."""
-    if (
-        not config.scan_side_guidance_enabled
-        or not scan_ranges
-    ):
-        return 0.0, "SIDE_GUIDANCE_OFF"
-
-    direction %= 4
-    left_dir = (direction - 1) % 4
-    right_dir = (direction + 1) % 4
-
-    left_cm = scan_ranges.get(left_dir)
-    right_cm = scan_ranges.get(right_dir)
-
-    left_valid = left_cm is not None and float(left_cm) > 0.0
-    right_valid = right_cm is not None and float(right_cm) > 0.0
-
-    max_corr = float(config.scan_side_max_correction_mps)
-
-    # Both corridor walls are visible: centre from their distance difference.
-    if (
-        left_valid
-        and right_valid
-        and float(left_cm) <= float(config.scan_side_wall_max_cm)
-        and float(right_cm) <= float(config.scan_side_wall_max_cm)
-    ):
-        # If the left wall is closer, move right (positive correction).
-        correction = (
-            float(right_cm) - float(left_cm)
-        ) * float(config.scan_side_kp_mps_per_cm)
-        correction = max(-max_corr, min(max_corr, correction))
-        return correction, "CENTER_BETWEEN_SCAN_WALLS"
-
-    # A single side ToF reading cannot define where the centre of a 60 cm
-    # passage lies. Older code pushed sideways at a normal 14-15 cm sensor
-    # reading, even when that range was unchanged through the cell. Use the
-    # first reading only as the baseline for the stopped mid-cell check.
-    # Critical starting ranges are handled explicitly before moving.
-    if (
-        (left_valid and float(left_cm) <= float(config.scan_side_wall_max_cm))
-        or (right_valid and float(right_cm) <= float(config.scan_side_wall_max_cm))
-    ):
-        return 0.0, "SINGLE_WALL_BASELINE_ONLY"
-
-    return 0.0, "NO_SCAN_SIDE_GUIDANCE"
-
 
 def _should_reuse_scan(
     current_cell: Tuple[int, int],
@@ -874,8 +741,8 @@ def _scan_four_directions(
         # threshold are ambiguous.  A foam edge / floor reflection can create
         # one short median even when the branch is physically open.  Re-sample
         # at the same gimbal angle and keep the larger robust median.  If this
-        # turns out to be a false-open, _drive_one_cell still has a continuous
-        # ToF stop guard before any topology is committed by movement.
+        # turns out to be a false-open remains a mapping risk: BASIC motion does not
+        # stop the chassis from a ToF reading.
         if (
             distance_cm is not None
             and float(config.scan_hard_wall_cm) < float(distance_cm)
@@ -1181,142 +1048,21 @@ def _scan_four_directions(
     return ranges, open_dirs
 
 
-def _midcell_wall_checkpoint(
-    chassis,
-    gimbal,
-    sensors: ToFOnlySensorManager,
-    tracker: GimbalTracker,
-    recorder: RunRecorder,
+def _basic_motion_command(
     config: Classwork8Config,
     direction: int,
-    wall_sides: Set[int],
-    current_cell: Tuple[int, int],
-    target_cell: Tuple[int, int],
-    progress_m: float,
-    stop_event: Optional[threading.Event],
-    baseline_ranges: Optional[Dict[int, Optional[float]]] = None,
-) -> Tuple[bool, str, float]:
-    """Stop and briefly measure confirmed side walls at a mid-cell point.
-
-    The gimbal-mounted ToF cannot face forward and sideways simultaneously:
-    no side sweeps are made while driving. After a successful stationary side
-    check, point it back along travel and require a fresh forward measurement.
-    The returned bias is bounded and based ONLY on this new, stationary scan.
-    """
-    stop_chassis(chassis)
-    ranges: Dict[int, Optional[float]] = {}
-
-    for side in (
-        (int(direction) - 1) % 4,
-        (int(direction) + 1) % 4,
-    ):
-        if side not in wall_sides:
-            continue
-
-        if stop_event is not None and stop_event.is_set():
-            return False, "USER_STOP", 0.0
-        if not _point_gimbal(gimbal, sensors, tracker, side, config, stop_event):
-            return False, "MIDCELL_SIDE_GIMBAL_FAILED", 0.0
-
-        value = _sample_tof(sensors, config, stop_event)
-        pitch = tracker.get_pitch()
-        if (
-            value is None
-            or pitch is None
-            or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
-            > float(config.gimbal_pitch_tolerance_deg)
-        ):
-            print(
-                "[SIDE_CHECK] Missing or unlevel ToF at {}. Staying stopped.".format(
-                    DIR_NAME[side]
-                ),
-                flush=True,
-            )
-            return False, "MIDCELL_SIDE_TOF_UNAVAILABLE", 0.0
-
-        ranges[side] = float(value)
-        print(
-            "[SIDE_CHECK] {} {:.1f} cm at progress {:.2f} m".format(
-                DIR_NAME[side], float(value), float(progress_m)
-            ),
-            flush=True,
-        )
-
-    can_continue, label, bias = side_checkpoint_decision(
-        direction,
-        wall_sides,
-        ranges,
-        hard_stop_cm=config.midcell_side_hard_stop_cm,
-        soft_margin_cm=config.midcell_side_soft_margin_cm,
-        wall_max_cm=config.scan_side_wall_max_cm,
-        gain_mps_per_cm=config.scan_side_kp_mps_per_cm,
-        max_bias_mps=config.midcell_side_max_bias_mps,
-        baseline_cm=baseline_ranges,
-        max_baseline_drop_cm=config.midcell_side_max_baseline_drop_cm,
-        recenter_deadband_cm=config.midcell_side_recenter_deadband_cm,
+    target_yaw_deg: float,
+    current_yaw_deg: Optional[float],
+) -> Tuple[float, float, float, Optional[float]]:
+    """Single longitudinal speed owner: no wall/ToF/cross-track speed inputs."""
+    requested_speed = float(config.travel_speed_mps)
+    ux, uy = DIR_VEC_DRIVE[int(direction) % 4]
+    x_cmd = ux * requested_speed
+    y_cmd = uy * requested_speed
+    x_cmd, y_cmd, z_cmd, _mode, yaw_error = _fixed_heading_control_v02(
+        config, target_yaw_deg, current_yaw_deg, x_cmd, y_cmd, "BASIC_MOVE"
     )
-    if not can_continue:
-        recorder.event(
-            time.monotonic(),
-            "SIDE_CHECK_STOP",
-            label,
-            logical_node=current_cell,
-            destination=target_cell,
-            progress_m=round(float(progress_m), 3),
-            readings_cm={DIR_NAME[side]: value for side, value in ranges.items()},
-            baseline_cm={
-                DIR_NAME[side]: value
-                for side, value in (baseline_ranges or {}).items()
-                if side in wall_sides
-            },
-        )
-        print(
-            "[SIDE_CHECK] STOP {}: mid={} cm; baseline={} cm; "
-            "critical={:.1f} cm; max_drop={:.1f} cm.".format(
-                label,
-                {DIR_NAME[side]: value for side, value in ranges.items()},
-                {
-                    DIR_NAME[side]: value
-                    for side, value in (baseline_ranges or {}).items()
-                    if side in wall_sides
-                },
-                float(config.midcell_side_hard_stop_cm),
-                float(config.midcell_side_max_baseline_drop_cm),
-            ),
-            flush=True,
-        )
-        return False, label, 0.0
-
-    if not _point_gimbal(gimbal, sensors, tracker, direction, config, stop_event):
-        return False, "MIDCELL_FORWARD_GIMBAL_FAILED", 0.0
-
-    forward_cm = _wait_for_move_tof_v03(sensors, config, stop_event)
-    if forward_cm is None:
-        return False, "MIDCELL_FORWARD_TOF_STALE", 0.0
-
-    recorder.event(
-        time.monotonic(),
-        "MIDCELL_SIDE_CHECK",
-        label,
-        logical_node=current_cell,
-        destination=target_cell,
-        progress_m=round(float(progress_m), 3),
-        readings_cm={DIR_NAME[side]: value for side, value in ranges.items()},
-        baseline_cm={
-            DIR_NAME[side]: value
-            for side, value in (baseline_ranges or {}).items()
-            if side in wall_sides
-        },
-        correction_mps=round(float(bias), 4),
-        fresh_forward_cm=round(float(forward_cm), 2),
-    )
-    print(
-        "[SIDE_CHECK] {} -> bias {:+.3f} m/s; forward ToF {:.1f} cm.".format(
-            label, float(bias), float(forward_cm)
-        ),
-        flush=True,
-    )
-    return True, label, float(bias)
+    return x_cmd, y_cmd, z_cmd, yaw_error
 
 
 def _drive_one_cell(
@@ -1342,174 +1088,43 @@ def _drive_one_cell(
     stop_event: Optional[threading.Event],
     publish_state: Callable[..., None],
 ) -> Tuple[bool, str, float]:
+    """BASIC movement: requested longitudinal speed plus continuous yaw steering.
+
+    SLAM, camera/target detection, gimbal and ToF observation are retained.
+    Historical wall/scan/vision inputs do not modify chassis speed. Only manual
+    stop, normal cell completion, and fatal missing feedback stop this move.
+    """
     direction %= 4
-
-    # ToF always faces the actual translation direction.
+    _ = (heading, vision, scan_ranges, wall_sides)  # Legacy call compatibility.
     if not _point_gimbal(
-        gimbal,
-        sensors,
-        gimbal_tracker,
-        direction,
-        config,
-        stop_event,
+        gimbal, sensors, gimbal_tracker, direction, config, stop_event
     ):
-        return False, "USER_STOP", 0.0
-
-    initial_front_cm = _wait_for_move_tof_v03(
-        sensors,
-        config,
-        stop_event,
-    )
-    if initial_front_cm is None:
-        return False, "TOF_STALE", 0.0
-
-    # The initial four-way scan can report an anomalously short side range.
-    # Never blindly bypass it: stop and obtain TWO independent fresh returns
-    # at the side angle. A sustained 6.5 cm still blocks movement until the
-    # operator has physically checked the chassis/wall clearance.
-    move_side_baselines = dict(scan_ranges or {})
-    for side in sorted(wall_sides):
-        baseline = move_side_baselines.get(side)
-        if baseline is None or float(baseline) <= 0.0 or float(baseline) > float(
-            config.midcell_side_hard_stop_cm
-        ):
-            continue
-
         stop_chassis(chassis)
-        print(
-            "[SIDE_START] {} {:.1f} cm <= critical {:.1f} cm. "
-            "Stopping to verify side clearance.".format(
-                DIR_NAME[side],
-                float(baseline),
-                float(config.midcell_side_hard_stop_cm),
-            ),
-            flush=True,
-        )
-        if not config.side_start_recheck_enabled:
-            return False, "SIDE_CRITICAL_AT_START_{}".format(DIR_NAME[side]), 0.0
-
-        if not _point_gimbal(
-            gimbal, sensors, gimbal_tracker, side, config, stop_event
-        ):
-            return False, "SIDE_START_RECHECK_GIMBAL_FAILED", 0.0
-
-        fresh_values = []
-        for _ in range(2):
-            if stop_event is not None and stop_event.is_set():
-                return False, "USER_STOP", 0.0
-            sensors.reset_filters()
-            value = _wait_for_fresh_tof(
-                sensors, config.tof_recovery_wait_sec, stop_event
-            )
-            pitch = gimbal_tracker.get_pitch()
-            if (
-                pitch is None
-                or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
-                > float(config.gimbal_pitch_tolerance_deg)
-            ):
-                value = None
-            fresh_values.append(value)
-
-        cleared, diagnostic, confirmed = critical_start_side_recheck(
-            (fresh_values[0], fresh_values[1]),
-            hard_stop_cm=config.midcell_side_hard_stop_cm,
-            release_margin_cm=config.side_start_release_margin_cm,
-            max_spread_cm=config.side_start_recheck_max_spread_cm,
-        )
-        recorder.event(
-            time.monotonic(),
-            "SIDE_START_RECHECK",
-            diagnostic,
-            logical_node=current_cell,
-            destination=target_cell,
-            direction=DIR_NAME[side],
-            first_cm=round(float(baseline), 2),
-            repeated_cm=fresh_values,
-            cleared=bool(cleared),
-        )
-        print(
-            "[SIDE_START] {} original={:.1f} cm; fresh={} cm => {}".format(
-                DIR_NAME[side], float(baseline), fresh_values, diagnostic
-            ),
-            flush=True,
-        )
-        if not cleared:
-            return False, "{}_{}".format(diagnostic, DIR_NAME[side]), 0.0
-
-        move_side_baselines[side] = confirmed
-        if not _point_gimbal(
-            gimbal, sensors, gimbal_tracker, direction, config, stop_event
-        ):
-            return False, "SIDE_START_RETURN_FORWARD_FAILED", 0.0
-        initial_front_cm = _wait_for_move_tof_v03(
-            sensors, config, stop_event
-        )
-        if initial_front_cm is None:
-            return False, "SIDE_START_FORWARD_TOF_STALE", 0.0
-
-    scan_ranges = move_side_baselines
+        return False, "GIMBAL_UNAVAILABLE", 0.0
 
     x0, y0 = pose.get_xy()
     if x0 is None or y0 is None:
+        stop_chassis(chassis)
         return False, "ODOMETRY_UNAVAILABLE", 0.0
-
     start_map_x, start_map_y = _map_xy_from_raw(
-        float(x0),
-        float(y0),
-        start_x,
-        start_y,
-        start_yaw_deg,
-        config.odom_scale_x,
-        config.odom_scale_y,
+        float(x0), float(y0), start_x, start_y, start_yaw_deg,
+        config.odom_scale_x, config.odom_scale_y,
     )
-
-    # Each logical node has a fixed metric centre.  Aim for that centre instead
-    # of merely travelling 0.60 m from wherever the previous move happened to
-    # finish.  This prevents mecanum slip from accumulating cell after cell.
     target_map_x = float(target_cell[0]) * config.cell_size_m
     target_map_y = float(target_cell[1]) * config.cell_size_m
-
-    checkpoint_enabled = bool(
-        config.midcell_side_check_enabled and wall_sides
-    )
-    deadline = time.monotonic() + max(
-        7.0,
-        (config.exploration_step_m / config.travel_speed_mps) * 3.5
-        + (
-            (len(wall_sides) + 1) * float(config.gimbal_turn_timeout_sec)
-            if checkpoint_enabled else 0.0
-        ),
-    )
-
-    drive_x_unit, drive_y_unit = DIR_VEC_DRIVE[direction]
-    checkpoint_done = False
-    scan_side_progress_origin = 0.0
     max_abs_cross_track_m = 0.0
     max_abs_heading_error_deg = 0.0
+    command_logged = False
 
-    scan_side_correction, scan_side_mode = _scan_side_guidance_v02(
-        direction,
-        scan_ranges,
-        config,
-    )
-    if abs(scan_side_correction) > 1e-9:
-        print(
-            "[MOVE] V02 {} side correction {:+.3f} m/s".format(
-                scan_side_mode,
-                scan_side_correction,
-            ),
-            flush=True,
-        )
-
-    while time.monotonic() < deadline:
+    # No environment-triggered stop, slowdown, auto-recovery or motion watchdog.
+    while True:
         if stop_event is not None and stop_event.is_set():
             stop_chassis(chassis)
             return False, "USER_STOP", 0.0
 
         raw_x, raw_y = pose.get_xy()
         yaw = pose.get_yaw()
-        front_cm = sensors.get_front_cm()
-
+        front_cm = sensors.get_front_cm()  # Observation only.
         if raw_x is None or raw_y is None:
             stop_chassis(chassis)
             return False, "ODOMETRY_LOST", 0.0
@@ -1518,386 +1133,84 @@ def _drive_one_cell(
             return False, "HEADING_FEEDBACK_LOST", 0.0
 
         rel_x, rel_y = _map_xy_from_raw(
-            float(raw_x),
-            float(raw_y),
-            start_x,
-            start_y,
-            start_yaw_deg,
-            config.odom_scale_x,
-            config.odom_scale_y,
+            float(raw_x), float(raw_y), start_x, start_y, start_yaw_deg,
+            config.odom_scale_x, config.odom_scale_y,
         )
-
-        delta_map_x = rel_x - start_map_x
-        delta_map_y = rel_y - start_map_y
-        moved = math.hypot(delta_map_x, delta_map_y)
-
-        if direction == 0:      # FRONT
+        moved = math.hypot(rel_x - start_map_x, rel_y - start_map_y)
+        if direction == 0:
             remaining = target_map_x - rel_x
             cross_track = rel_y - target_map_y
-        elif direction == 1:    # RIGHT
+        elif direction == 1:
             remaining = rel_y - target_map_y
             cross_track = rel_x - target_map_x
-        elif direction == 2:    # BACK
+        elif direction == 2:
             remaining = rel_x - target_map_x
             cross_track = rel_y - target_map_y
-        else:                   # LEFT
+        else:
             remaining = target_map_y - rel_y
             cross_track = rel_x - target_map_x
-
-        progress = config.cell_size_m - max(0.0, remaining)
-        max_abs_cross_track_m = max(
-            max_abs_cross_track_m, abs(float(cross_track))
-        )
+        max_abs_cross_track_m = max(max_abs_cross_track_m, abs(cross_track))
         if yaw is not None:
             max_abs_heading_error_deg = max(
                 max_abs_heading_error_deg,
                 abs(normalize_angle_deg(float(start_yaw_deg) - float(yaw))),
             )
+        _update_tof_ray(grid, config, rel_x, rel_y, direction, front_cm)
 
-        if abs(cross_track) >= float(config.motion_cross_track_abort_m):
-            stop_chassis(chassis)
-            recorder.event(
-                time.monotonic(),
-                "CROSS_TRACK_LIMIT",
-                "odometry reports unsafe drift; stopping rather than chasing a wall",
-                logical_node=current_cell,
-                destination=target_cell,
-                cross_track_m=round(float(cross_track), 4),
-                progress_m=round(float(progress), 3),
-            )
-            print(
-                "[MOVE] CROSS_TRACK_LIMIT {}: error={:+.3f} m, progress={:.3f} m".format(
-                    DIR_NAME[direction], float(cross_track), float(progress)
-                ),
-                flush=True,
-            )
-            return False, "CROSS_TRACK_LIMIT", moved
-
-        # During translation, a tilted gimbal no longer measures the obstacle
-        # along the travel direction. Stop immediately and restore BOTH axes
-        # before allowing the next movement command or ray update.
-        live_pitch = gimbal_tracker.get_pitch()
-        if (
-            live_pitch is None
-            or abs(
-                float(live_pitch) - float(config.gimbal_scan_pitch_deg)
-            ) > float(config.gimbal_pitch_unsafe_deg)
-        ):
-            stop_chassis(chassis)
-            print(
-                "[MOVE] Unsafe gimbal pitch={} during {}; correcting while stopped.".format(
-                    "---" if live_pitch is None else "{:+.1f}".format(float(live_pitch)),
-                    DIR_NAME[direction],
-                ),
-                flush=True,
-            )
-            if not _point_gimbal(
-                gimbal, sensors, gimbal_tracker, direction, config, stop_event
-            ):
-                return False, "GIMBAL_PITCH_DRIFT", moved
-            front_cm = _wait_for_move_tof_v03(sensors, config, stop_event)
-            if front_cm is None:
-                return False, "TOF_STALE_AFTER_GIMBAL", moved
-
-        # At most one mid-cell lateral check. The chassis MUST be fully
-        # stopped before the gimbal points away from travel direction. This
-        # checkpoint belongs to _drive_one_cell, never the 4-way scan routine.
-        if (
-            checkpoint_enabled
-            and not checkpoint_done
-            and remaining > float(config.step_tolerance_m)
-            and progress >= (
-                float(config.cell_size_m) * float(config.midcell_side_check_ratio)
-            )
-        ):
-            checkpoint_done = True
-            ok_side, side_reason, mid_bias = _midcell_wall_checkpoint(
-                chassis, gimbal, sensors, gimbal_tracker, recorder, config,
-                direction, wall_sides, current_cell, target_cell,
-                progress, stop_event,
-                baseline_ranges=scan_ranges,
-            )
-            if not ok_side:
-                stop_chassis(chassis)
-                return False, side_reason, moved
-
-            # Replace stale pre-move scan bias with freshly sampled mid-cell
-            # side bias; never add them together.
-            scan_side_correction = mid_bias
-            scan_side_progress_origin = max(0.0, float(progress))
-            publish_state(
-                status="Side clearance verified at {:.2f} m: {}".format(
-                    progress, side_reason
-                ),
-                logical_cell=current_cell,
-                gimbal_direction=direction,
-                tof_cm=sensors.get_front_cm(),
-                moves=moves,
-                force=True,
-            )
-            # Re-sample updated pose, heading, and fresh forward ToF.
-            continue
-
-        if rel_x is not None and rel_y is not None:
-            _update_tof_ray(
-                grid,
-                config,
-                rel_x,
-                rel_y,
-                direction,
-                front_cm,
-            )
-
-        if (
-            remaining <= config.step_tolerance_m
-            and abs(cross_track) <= config.cell_center_tolerance_m
-        ):
+        # Planned cell completion, not a wall/obstacle safety stop.
+        if remaining <= float(config.step_tolerance_m):
             stop_chassis(chassis)
             recorder.record_sample(
-                time.monotonic(),
-                rel_x,
-                rel_y,
-                yaw,
-                direction,
-                front_cm,
-                None,
-                None,
-                None,
-                None,
-                "CELL_COMPLETE",
-            )
-            publish_state(
-                status="Reached cell {}".format(target_cell),
-                logical_cell=target_cell,
-                gimbal_direction=direction,
-                tof_cm=front_cm,
-                moves=moves + 1,
-                force=True,
-            )
-            print(
-                "[MOVE] Reached {}: progress={:.3f} m cross_track={:+.3f} m "
-                "| peak cross={:.3f} m yaw_error={:.2f} deg".format(
-                    target_cell,
-                    config.cell_size_m - remaining,
-                    cross_track,
-                    max_abs_cross_track_m,
-                    max_abs_heading_error_deg,
-                ),
-                flush=True,
+                time.monotonic(), rel_x, rel_y, yaw, direction, front_cm,
+                None, None, None, None, "CELL_COMPLETE",
             )
             recorder.event(
-                time.monotonic(),
-                "CELL_MOTION_QUALITY",
-                "per-cell odometry path and heading deviation",
+                time.monotonic(), "CELL_MOTION_QUALITY",
+                "cross-track and yaw are observations only",
                 logical_node=target_cell,
                 peak_cross_track_m=round(max_abs_cross_track_m, 4),
                 peak_heading_error_deg=round(max_abs_heading_error_deg, 3),
-                midcell_side_checked=bool(checkpoint_done),
+                midcell_side_checked=False,
+            )
+            publish_state(
+                status="Reached cell {}".format(target_cell),
+                logical_cell=target_cell, gimbal_direction=direction,
+                tof_cm=front_cm, moves=moves + 1, force=True,
+            )
+            print(
+                "[MOVE] Reached {} progress={:.3f}m cross_track={:+.3f}m".format(
+                    target_cell, config.cell_size_m - remaining, cross_track
+                ), flush=True,
             )
             return True, "CELL_COMPLETE", moved
 
-        if front_cm is None:
-            stop_chassis(chassis)
-            front_cm = _wait_for_move_tof_v03(
-                sensors,
-                config,
-                stop_event,
-            )
-            if front_cm is None:
-                return False, "TOF_STALE", moved
-
-        if front_cm <= config.stop_front_cm:
-            blocked, confirmed_cm = _confirm_front_blocked(
-                chassis,
-                sensors,
-                config,
-                stop_event,
-            )
-            if blocked:
-                # If most of the calibrated cell was already traversed, the
-                # physical robot is effectively in the target cell.  Keeping
-                # current_cell at the parent would corrupt subsequent scans.
-                along_progress = max(0.0, config.cell_size_m - max(0.0, remaining))
-                if along_progress >= (
-                    config.cell_size_m
-                    * config.blocked_near_target_accept_ratio
-                ):
-                    publish_state(
-                        status="Reached cell {} near front wall".format(target_cell),
-                        logical_cell=target_cell,
-                        gimbal_direction=direction,
-                        tof_cm=confirmed_cm,
-                        moves=moves + 1,
-                        force=True,
-                    )
-                    print(
-                        "[MOVE] Accepted {} near wall at progress {:.3f} m, ToF {:.1f} cm".format(
-                            target_cell,
-                            along_progress,
-                            float(confirmed_cm or front_cm),
-                        ),
-                        flush=True,
-                    )
-                    return True, "CELL_COMPLETE_NEAR_WALL", moved
-                return False, "FRONT_BLOCKED", moved
-
-            # Transient low ToF reading cleared while stationary.
-            front_cm = confirmed_cm if confirmed_cm is not None else front_cm
-
-        speed = config.travel_speed_mps
-        if wall_sides:
-            # The requested 0.25 m/s is an OPEN-corridor ceiling only.
-            # Beside a confirmed foam wall, keep a lower, independent cap.
-            speed = min(
-                speed,
-                float(config.motion_wall_adjacent_speed_cap_mps),
-            )
-        if abs(cross_track) >= float(config.motion_cross_track_slow_m):
-            speed = min(speed, float(config.motion_slow_cross_track_speed_mps))
-        if front_cm < config.slow_front_cm:
-            span = max(1.0, config.slow_front_cm - config.stop_front_cm)
-            ratio = (front_cm - config.stop_front_cm) / span
-            ratio = max(0.0, min(1.0, ratio))
-            speed = min(
-                speed,
-                max(0.04, float(config.travel_speed_mps) * ratio),
-            )
-
-        # Once the longitudinal 60 cm target is reached, do not keep pushing
-        # forward merely because the robot is a few centimetres off the cell
-        # centre-line.  Finish with a small perpendicular correction instead.
-        along_speed = 0.0 if remaining <= config.step_tolerance_m else speed
-
-        x_cmd = drive_x_unit * along_speed
-        y_cmd = drive_y_unit * along_speed
-
-        # Keep the robot near the centre-line of the current 60 cm cell.
-        correction = max(
-            -config.cross_track_max_mps,
-            min(
-                config.cross_track_max_mps,
-                config.cross_track_kp * cross_track,
-            ),
+        x_cmd, y_cmd, z_cmd, _yaw_error = _basic_motion_command(
+            config, direction, start_yaw_deg, yaw
         )
-        if direction in (0, 2):
-            # map +Y is LEFT, chassis +Y is RIGHT.
-            y_cmd += correction
-        else:
-            # Positive cross-track x means we drifted forward; correct backward.
-            x_cmd -= correction
-
-        # V02: use the four-way stopped scan as a small physical corridor
-        # centering bias. This is independent of wheel odometry, which can slip
-        # on mecanum motion.
-        if abs(scan_side_correction) > 1e-9:
-            # The stopped scan is a snapshot, not a continuous side sensor.
-            # Apply its bias strongly only at the beginning of the cell and
-            # fade it out after ~35 cm so it cannot push across the corridor.
-            fade_distance = max(0.10, min(config.cell_size_m, 0.35))
-            fade = max(
-                0.0,
-                min(1.0, 1.0 - max(0.0, progress - scan_side_progress_origin) / fade_distance),
+        if not command_logged:
+            ux, uy = DIR_VEC_DRIVE[direction]
+            print(
+                "[MOTION] requested={:.3f} final={:.3f} direction={} "
+                "x={:+.3f} y={:+.3f} yaw_correction={:+.2f}".format(
+                    float(config.travel_speed_mps), x_cmd * ux + y_cmd * uy,
+                    DIR_NAME[direction], x_cmd, y_cmd, z_cmd,
+                ), flush=True,
             )
-            applied_scan_side = scan_side_correction * fade
-            right_x_unit, right_y_unit = DIR_RIGHT_VEC_DRIVE[direction]
-            x_cmd += right_x_unit * applied_scan_side
-            y_cmd += right_y_unit * applied_scan_side
-
-        # Camera assistance is deliberately secondary to odometry. It only
-        # contributes when both corridor boundaries are visible with enough
-        # confidence. Positive correction means "move right" in camera/travel
-        # coordinates, then gets rotated into chassis x/y here.
-        vision_correction = 0.0
-        vision_error = 0.0
-        vision_confidence = 0.0
-        if vision is not None and vision.running:
-            (
-                proposed_vision_correction,
-                vision_error,
-                vision_confidence,
-            ) = vision.correction_mps()
-            if config.vision_steering_enabled:
-                vision_correction = proposed_vision_correction
-                right_x_unit, right_y_unit = DIR_RIGHT_VEC_DRIVE[direction]
-                x_cmd += right_x_unit * vision_correction
-                y_cmd += right_y_unit * vision_correction
-
-        z_cmd = 0.0
-        mode = "MOVE_{}".format(DIR_NAME[direction])
-
-        if config.heading_hold_enabled:
-            x_cmd, y_cmd, z_cmd, mode, _ = _fixed_heading_control_v02(
-                config,
-                start_yaw_deg,
-                yaw,
-                x_cmd,
-                y_cmd,
-                mode,
-            )
-
-        # Never add the odometry and side-scan biases into an aggressive
-        # sideways lunge near a mapped wall. Keep the longitudinal component
-        # intact; heading recovery may have already set translation to zero.
-        if wall_sides:
-            x_cmd, y_cmd = bound_travel_lateral(
-                x_cmd,
-                y_cmd,
-                DIR_RIGHT_VEC_DRIVE[direction],
-                config.motion_total_lateral_max_mps,
-            )
-
-        # Keep combined odometry+vision lateral correction bounded.
-        component_limit = max(
-            config.travel_speed_mps,
-            config.travel_speed_mps
-            + config.cross_track_max_mps
-            + config.vision_max_correction_mps,
-        )
-        x_cmd = max(-component_limit, min(component_limit, x_cmd))
-        y_cmd = max(-component_limit, min(component_limit, y_cmd))
+            command_logged = True
 
         chassis.drive_speed(
-            x=x_cmd,
-            y=y_cmd,
-            z=z_cmd,
-            timeout=config.drive_timeout_sec,
+            x=x_cmd, y=y_cmd, z=z_cmd, timeout=config.drive_timeout_sec,
         )
-
         recorder.record_sample(
-            time.monotonic(),
-            rel_x,
-            rel_y,
-            yaw,
-            direction,
-            front_cm,
-            None,
-            None,
-            None,
-            None,
-            mode,
-            vision_error=vision_error,
-            vision_confidence=vision_confidence,
-            vision_correction_mps=vision_correction,
+            time.monotonic(), rel_x, rel_y, yaw, direction, front_cm,
+            None, None, None, None, "BASIC_MOVE_{}".format(DIR_NAME[direction]),
         )
-
         publish_state(
             status="Moving {} to {}".format(DIR_NAME[direction], target_cell),
-            logical_cell=current_cell,
-            gimbal_direction=direction,
-            tof_cm=front_cm,
-            moves=moves,
-            force=False,
+            logical_cell=current_cell, gimbal_direction=direction,
+            tof_cm=front_cm, moves=moves, force=False,
         )
-
         time.sleep(config.loop_delay_sec)
-
-    stop_chassis(chassis)
-    return False, "CELL_TIMEOUT", math.hypot(
-        float(pose.get_xy()[0] or x0) - float(x0),
-        float(pose.get_xy()[1] or y0) - float(y0),
-    )
-
-
 
 def _canonical_edge(
     cell: Tuple[int, int],
@@ -2152,33 +1465,6 @@ def _plan_frontier_move(
 
     candidates.sort(key=lambda item: item[0])
     return candidates[0][1]
-
-
-def _wait_for_move_tof_v03(
-    sensors: ToFOnlySensorManager,
-    config: Classwork8Config,
-    stop_event: Optional[threading.Event],
-) -> Optional[float]:
-    """Retry a fresh ToF sample instead of ending a mission on one stale gap."""
-    attempts = max(1, int(config.tof_recovery_retries) + 1)
-
-    for attempt in range(attempts):
-        value = _wait_for_fresh_tof(
-            sensors,
-            config.tof_recovery_wait_sec,
-            stop_event,
-        )
-        if value is not None:
-            return value
-
-        if stop_event is not None and stop_event.is_set():
-            return None
-
-        if attempt + 1 < attempts:
-            sensors.reset_filters()
-            _sleep_interruptible(0.15, stop_event)
-
-    return None
 
 
 def _closed_maze_completion_v04(
@@ -2686,13 +1972,13 @@ def run(
                 recorder.event(
                     time.monotonic(),
                     "SCAN_REUSED",
-                    "Visited cell: confirmed topology reused; live motion ToF remains enabled",
+                    "Visited cell: confirmed topology reused; live ToF observation remains enabled",
                     logical_node=current_cell,
                     open_directions=sorted(open_dirs),
                 )
                 print(
                     "[SCAN_REUSED] {} already scanned; skip 4-way sweep. "
-                    "Fresh travel-direction ToF remains required.".format(current_cell),
+                    "Travel-direction ToF remains observation only.".format(current_cell),
                     flush=True,
                 )
                 publish_state(
@@ -2966,46 +2252,7 @@ def run(
                 moves += 1
                 continue
 
-            if reason == "FRONT_BLOCKED":
-                blocked_edges.add((current_cell, move_direction))
-
-                edge_key = _canonical_edge(
-                    current_cell,
-                    move_direction,
-                )
-                if edge_key not in traversed_edges:
-                    _set_edge_state(
-                        edge_states,
-                        current_cell,
-                        move_direction,
-                        "WALL",
-                    )
-
-                recorder.event(
-                    time.monotonic(),
-                    "BLOCKED_EDGE",
-                    (
-                        "confirmed ToF block while expanding frontier"
-                        if is_new
-                        else "confirmed ToF block while relocating to frontier"
-                    ),
-                    logical_node=current_cell,
-                    direction=DIR_NAME[move_direction],
-                    travelled_m=round(moved, 3),
-                )
-                publish_state(
-                    status=(
-                        "Blocked {} - replanning frontier route".format(
-                            DIR_NAME[move_direction]
-                        )
-                    ),
-                    logical_cell=current_cell,
-                    gimbal_direction=move_direction,
-                    tof_cm=sensors.get_front_cm(),
-                    moves=moves,
-                    force=True,
-                )
-                continue
+            # BASIC: no blocked-edge / replanning recovery.
 
             finish_reason = (
                 "FRONTIER_RELOCATE_{}".format(reason)
