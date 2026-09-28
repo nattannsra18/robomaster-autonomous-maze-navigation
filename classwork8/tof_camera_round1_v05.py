@@ -83,6 +83,7 @@ class GimbalTracker:
         self._lock = threading.Lock()
         self.pitch = None
         self.yaw = None
+        self.yaw_ground = None  # Diagnostic only; not a second chassis controller.
         self._angle_history = deque(maxlen=4000)
 
     def callback(self, data):
@@ -91,9 +92,11 @@ class GimbalTracker:
                 return
             pitch = float(data[0])
             yaw = float(data[1])
+            ground = float(data[3]) if len(data) >= 4 else None
             with self._lock:
                 self.pitch = pitch
                 self.yaw = yaw
+                self.yaw_ground = ground
                 self._angle_history.append((time.monotonic(), pitch, yaw))
         except Exception:
             return
@@ -109,6 +112,10 @@ class GimbalTracker:
     def get_angles(self) -> Tuple[Optional[float], Optional[float]]:
         with self._lock:
             return self.pitch, self.yaw
+
+    def get_yaws(self) -> Tuple[Optional[float], Optional[float]]:
+        with self._lock:
+            return self.yaw, self.yaw_ground
 
     def pitch_samples_since(self, start_monotonic: float) -> List[float]:
         """Measured pitch during a yaw sweep, including transient excursions."""
@@ -270,6 +277,7 @@ def _point_gimbal(
     direction: int,
     config: Classwork8Config,
     stop_event: Optional[threading.Event],
+    _allow_endpoint_retry: bool = True,
 ) -> bool:
     """Staged, single-axis mapping scan: level pitch -> yaw only -> level pitch.
 
@@ -282,8 +290,6 @@ def _point_gimbal(
     """
     target_yaw = float(config.gimbal_yaw_for_direction(direction))
     target_pitch = float(config.gimbal_scan_pitch_deg)
-    deadline = time.monotonic() + float(config.gimbal_turn_timeout_sec)
-
     def _stopped() -> bool:
         return stop_event is not None and stop_event.is_set()
 
@@ -293,7 +299,8 @@ def _point_gimbal(
     def _level_pitch(stage: str) -> bool:
         """Pitch moves only while yaw_speed is exactly zero."""
         stable = 0
-        while time.monotonic() < deadline:
+        pitch_deadline = time.monotonic() + float(config.gimbal_turn_timeout_sec)
+        while time.monotonic() < pitch_deadline:
             if _stopped():
                 _stop_axes()
                 return False
@@ -330,7 +337,7 @@ def _point_gimbal(
 
         _stop_axes()
         print(
-            "[GIMBAL] {} pitch timeout: target {:+.1f} current {}.".format(
+            "[GIMBAL_FAIL] {} pitch timeout: target {:+.1f} current {}.".format(
                 stage,
                 target_pitch,
                 "---" if tracker.get_pitch() is None
@@ -353,8 +360,9 @@ def _point_gimbal(
     yaw_stable = 0
     max_pitch_during_yaw = 0.0
     started_yaw = time.monotonic()
+    yaw_deadline = started_yaw + float(config.gimbal_turn_timeout_sec)
 
-    while time.monotonic() < deadline:
+    while time.monotonic() < yaw_deadline:
         if _stopped():
             _stop_axes()
             return False
@@ -397,7 +405,7 @@ def _point_gimbal(
     else:
         _stop_axes()
         print(
-            "[GIMBAL] Yaw timeout at {}. Measured yaw={}.".format(
+            "[GIMBAL_FAIL] Yaw timeout at {}. Measured yaw={}.".format(
                 DIR_NAME[int(direction) % 4],
                 tracker.get_yaw(),
             ),
@@ -427,6 +435,12 @@ def _point_gimbal(
         or abs(target_yaw - float(final_yaw))
         > float(config.gimbal_tolerance_deg)
     ):
+        if _allow_endpoint_retry and not _stopped():
+            print("[GIMBAL] Final endpoint out of tolerance; one bounded retry.", flush=True)
+            return _point_gimbal(
+                gimbal, sensors, tracker, direction, config, stop_event,
+                _allow_endpoint_retry=False,
+            )
         print(
             "[GIMBAL] Final orientation unstable: target pitch={:+.1f}, "
             "yaw={:+.1f}; actual pitch={}, yaw={}.".format(
@@ -1063,6 +1077,87 @@ def _scan_four_directions(
     return ranges, open_dirs
 
 
+
+def _heading_error(target: float, actual: float) -> float:
+    return normalize_angle_deg(float(target) - float(actual))
+
+
+def _heading_snapshot(phase: str, pose: PoseTracker, tracker: GimbalTracker,
+                      reference: float) -> Optional[float]:
+    """Compare chassis attitude with relative/ground gimbal yaw across phases."""
+    actual = pose.get_yaw()
+    rel, ground = tracker.get_yaws()
+    error = None if actual is None else _heading_error(reference, actual)
+    proxy = None if rel is None or ground is None else normalize_angle_deg(ground - rel)
+    def fmt(v):
+        return "---" if v is None else "{:+.2f}".format(float(v))
+    print(
+        "[HEADING_TRACE] phase={} chassis={} ref={} diff={} "
+        "gimbal_relative={} gimbal_ground={} ground_minus_relative={}".format(
+            phase, fmt(actual), fmt(reference), fmt(error), fmt(rel),
+            fmt(ground), fmt(proxy)
+        ), flush=True,
+    )
+    return actual
+
+
+def _align_chassis_after_scan(chassis, pose: PoseTracker, config: Classwork8Config,
+                              target: float, stop_event: Optional[threading.Event]
+                              ) -> Tuple[bool, str]:
+    """Single bounded, stationary heading correction before departing a cell."""
+    stop_chassis(chassis)
+    actual = pose.get_yaw()
+    if actual is None:
+        return False, "HEADING_FEEDBACK_LOST"
+    initial_error = abs(_heading_error(target, actual))
+    print("[HEADING_ALIGN] target={:+.2f} actual={:+.2f} diff={:+.2f}".format(
+        target, actual, _heading_error(target, actual)), flush=True)
+    if not config.heading_hold_enabled:
+        return True, "HEADING_HOLD_DISABLED"
+    if initial_error <= float(config.heading_align_tolerance_deg):
+        return True, "ALREADY_ALIGNED"
+    if initial_error > float(config.heading_align_max_error_deg):
+        return False, "HEADING_LARGE_DRIFT"
+    started = time.monotonic()
+    deadline = started + float(config.heading_align_timeout_sec)
+    stable = 0
+    try:
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP"
+            actual = pose.get_yaw()
+            if actual is None:
+                return False, "HEADING_FEEDBACK_LOST"
+            error = _heading_error(target, actual)
+            if abs(error) <= float(config.heading_align_tolerance_deg):
+                stop_chassis(chassis)
+                stable += 1
+                if stable >= 3:
+                    print("[HEADING_ALIGN] OK final={:+.2f} error={:+.2f}".format(
+                        actual, error), flush=True)
+                    return True, "ALIGNED"
+            else:
+                stable = 0
+                # A wrong z-to-attitude sign must not induce runaway rotation.
+                if time.monotonic() - started > 0.55 and abs(error) > initial_error + 1.0:
+                    print("[HEADING_FAIL] SIGN_MISMATCH: {:.2f} -> {:.2f}; "
+                          "inspect heading_drive_sign.".format(
+                        initial_error, abs(error)), flush=True)
+                    return False, "HEADING_SIGN_MISMATCH"
+                z = max(-float(config.heading_align_max_z_dps),
+                        min(float(config.heading_align_max_z_dps),
+                            error * float(config.heading_kp_z)
+                            / float(config.heading_drive_sign)))
+                chassis.drive_speed(x=0.0, y=0.0, z=z,
+                                    timeout=config.drive_timeout_sec)
+            time.sleep(0.05)
+        print("[HEADING_FAIL] ALIGN_TIMEOUT actual={} target={}".format(
+            pose.get_yaw(), target), flush=True)
+        return False, "HEADING_ALIGN_TIMEOUT"
+    finally:
+        stop_chassis(chassis)
+
+
 def _basic_motion_command(
     config: Classwork8Config,
     direction: int,
@@ -1130,6 +1225,8 @@ def _drive_one_cell(
     max_abs_cross_track_m = 0.0
     max_abs_heading_error_deg = 0.0
     command_logged = False
+    heading_probe = None
+    last_heading_log = 0.0
 
     # No environment-triggered stop, slowdown, auto-recovery or motion watchdog.
     while True:
@@ -1216,6 +1313,27 @@ def _drive_one_cell(
         x_cmd, y_cmd, z_cmd, _yaw_error = _basic_motion_command(
             config, direction, start_yaw_deg, yaw
         )
+        now = time.monotonic()
+        if _yaw_error is not None:
+            if now - last_heading_log >= 0.5:
+                print("[HEADING_MOVE] yaw={:+.2f} reference={:+.2f} "
+                      "diff={:+.2f} z={:+.2f} cross_track={:+.3f}".format(
+                    float(yaw), float(start_yaw_deg), float(_yaw_error),
+                    z_cmd, cross_track), flush=True)
+                last_heading_log = now
+            if abs(z_cmd) >= 2.0 and abs(_yaw_error) >= 1.5:
+                if heading_probe is None:
+                    heading_probe = (now, abs(_yaw_error))
+                elif now - heading_probe[0] >= 0.65:
+                    if abs(_yaw_error) >= heading_probe[1] + 2.0:
+                        stop_chassis(chassis)
+                        print("[HEADING_FAIL] DIVERGED {:.2f} -> {:.2f}; "
+                              "verify heading_drive_sign.".format(
+                            heading_probe[1], abs(_yaw_error)), flush=True)
+                        return False, "HEADING_CORRECTION_DIVERGED", moved
+                    heading_probe = (now, abs(_yaw_error))
+            else:
+                heading_probe = None
         if not command_logged:
             ux, uy = DIR_VEC_DRIVE[direction]
             print(
@@ -1979,6 +2097,8 @@ def run(
                 finish_reason = "USER_STOP"
                 break
 
+            _heading_snapshot("PRE_SCAN_{}".format(current_cell),
+                              pose, gimbal_tracker, float(raw_start_yaw))
             cache_valid = _should_reuse_scan(
                 current_cell,
                 scanned_cells,
@@ -2054,6 +2174,8 @@ def run(
                     break
 
                 ranges, open_dirs = scan
+                _heading_snapshot("POST_SCAN_{}".format(current_cell),
+                                  pose, gimbal_tracker, float(raw_start_yaw))
                 scanned_cells.add(current_cell)
 
                 if start_scan_ranges is None and current_cell == (0, 0) and moves == 0:
@@ -2180,6 +2302,17 @@ def run(
                 )
                 break
 
+            _heading_snapshot("PRE_DEPARTURE_{}".format(current_cell),
+                              pose, gimbal_tracker, float(raw_start_yaw))
+            align_ok, align_reason = _align_chassis_after_scan(
+                chassis, pose, config, float(raw_start_yaw), stop_event)
+            recorder.event(time.monotonic(), "HEADING_ALIGNMENT", align_reason,
+                           logical_node=current_cell, yaw=pose.get_yaw(),
+                           reference=float(raw_start_yaw))
+            if not align_ok:
+                finish_reason = align_reason
+                break
+
             move_direction = int(plan["move_direction"])
             next_cell = tuple(plan["next_cell"])
             is_new = bool(plan["is_new"])
@@ -2258,6 +2391,8 @@ def run(
                 publish_state,
             )
 
+            _heading_snapshot("POST_MOVE_{}".format(next_cell),
+                              pose, gimbal_tracker, float(raw_start_yaw))
             if ok:
                 previous_cell = current_cell
                 current_cell = next_cell
