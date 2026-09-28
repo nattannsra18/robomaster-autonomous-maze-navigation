@@ -48,7 +48,7 @@ class DriftDiagnosticTests(unittest.TestCase):
         for initial in (-269.0, -250.0, -90.0):
             speed = +30.0 if initial < -5.0 else -30.0 if initial > 5.0 else +30.0
             self.assertGreater(speed, 0.0)
-        self.assertIn('if not gimbal_ready:', SOURCE)
+        self.assertIn('if gimbal_ready is False:', SOURCE)
         self.assertIn('if command_ok is False:', SOURCE)
         self.assertNotIn('if not command_ok:', SOURCE)
         self.assertIn('None is normal for SDK async send', SOURCE)
