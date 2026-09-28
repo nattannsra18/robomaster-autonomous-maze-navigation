@@ -2,7 +2,7 @@
 
 RoboMaster EP on clear, supervised floor. Run without other controller apps.
 The only chassis drive_speed call in this file commands x=y=z=0. Gimbal
-sweeps are deliberately small, slow and optional. Ctrl+C stops both modules.
+yaw motion is bounded to 12 degrees, low speed and optional. Ctrl+C stops both modules.
 
 Stages separate connection alone, FREE-mode transition, SDK input overlay,
 and the effect of short gimbal yaw sweeps. ESC wheel RPM, chassis yaw,
@@ -161,12 +161,112 @@ def _stage(name, duration, telem, started, stop, abort_on_drift=False):
     print("[STAGE_END] {}".format(name), flush=True)
 
 
+def _gimbal_closed_loop_probe(chassis, gimbal, telem, started, stop):
+    """Repeat SDK yaw commands as the WORKING mapper does (about 30 ms).
+
+    No nonzero chassis commands. A pulse is only a successful test when fresh
+    angle feedback shows at least 3 degrees of actual inward movement.
+    Stop at 12 degrees travel or after 2 seconds; a lack of response within
+    0.8 seconds fails. Abort on >1 degree chassis yaw rotation.
+    """
+    before = telem.snapshot()
+    initial = before["gimbal_relative"]
+    chassis_initial = before["yaw"]
+    if (initial is None or chassis_initial is None or
+            not math.isfinite(initial) or not math.isfinite(chassis_initial)):
+        print("[GIMBAL_FAIL] Missing initial yaw feedback.", flush=True)
+        return False
+    stamp = telem.stamps.get("gimbal_relative")
+    if stamp is None or time.monotonic() - stamp > 0.5:
+        print("[GIMBAL_FAIL] Initial gimbal feedback is stale.", flush=True)
+        return False
+
+    speed = +30.0 if initial < -5.0 else -30.0 if initial > 5.0 else +30.0
+    sign = math.copysign(1.0, speed)
+    began = time.monotonic()
+    last_log = -1.0
+    sends = 0
+    reached = False
+    print(
+        "[GIMBAL_PROBE] CLOSED_LOOP initial={:+.2f} direction={} "
+        "speed={:+.1f} deg/s, command every 0.03s; chassis x=y=z=0".format(
+            initial, "RIGHT" if speed > 0.0 else "LEFT", speed
+        ), flush=True,
+    )
+    try:
+        while not stop.is_set() and time.monotonic() - began < 2.0:
+            now = time.monotonic()
+            feedback = telem.snapshot()
+            actual = feedback["gimbal_relative"]
+            body = feedback["yaw"]
+            age = telem.stamps.get("gimbal_relative")
+            if (actual is None or age is None or
+                    now - age > 0.5 or not math.isfinite(actual)):
+                print("[GIMBAL_FAIL] Gimbal feedback missing/stale.", flush=True)
+                return False
+            delta = (actual - initial) * sign
+            body_delta = (
+                None if body is None else
+                (body - chassis_initial + 180.0) % 360.0 - 180.0
+            )
+            if now - last_log >= 0.20:
+                print(
+                    "[GIMBAL_CONTROL] t={:.2f} rel={:+.2f} inward={:+.2f} "
+                    "body_delta={} esc_rpm={} sends={}".format(
+                        now - began, actual, delta, _fmt(body_delta),
+                        feedback["esc"], sends
+                    ), flush=True,
+                )
+                last_log = now
+            if body_delta is None or abs(body_delta) > 1.0:
+                print(
+                    "[ABORT] Chassis yaw changed more than 1 degree "
+                    "during stationary gimbal probe.", flush=True,
+                )
+                stop.set()
+                return False
+            if delta >= 12.0:
+                reached = True
+                break
+            if delta < -1.0:
+                print("[GIMBAL_FAIL] Moving outward/opposite feedback.", flush=True)
+                return False
+            if now - began > 0.8 and delta < 1.0:
+                print(
+                    "[GIMBAL_FAIL] No yaw response despite repeated commands.",
+                    flush=True,
+                )
+                return False
+            result = gimbal.drive_speed(pitch_speed=0.0, yaw_speed=speed)
+            sends += 1
+            if result is False:
+                print("[GIMBAL_FAIL] SDK explicitly rejected speed command.", flush=True)
+                return False
+            # None is the official SDK fire-and-forget return, not rejection.
+            stop.wait(0.03)
+    finally:
+        gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+        chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.2)
+    final = telem.snapshot()["gimbal_relative"]
+    inward = None if final is None else (final - initial) * sign
+    print(
+        "[GIMBAL_PROBE] sent={} initial={:+.2f} final={} inward={} "
+        "reached_12deg={}".format(
+            sends, initial, _fmt(final), _fmt(inward), reached
+        ), flush=True,
+    )
+    success = inward is not None and inward >= 3.0 and not stop.is_set()
+    if not success:
+        print("[GIMBAL_FAIL] Measured inward travel <3 degrees.", flush=True)
+    return success
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--conn", default="ap", choices=("ap", "sta", "rndis"))
     parser.add_argument(
         "--with-gimbal", action="store_true",
-        help="resume gimbal and test ONE supervised 1.2-second 30 deg/s inward yaw pulse; abort if feedback does not move",
+        help="test a supervised bounded inward Gimbal yaw command repeated every 30ms with real angle feedback",
     )
     args = parser.parse_args()
     ep = robot.Robot()
@@ -223,71 +323,17 @@ def main():
         if stop.is_set() or not args.with_gimbal:
             return
 
-        # Previous probe started around -269 deg: a LEFT pulse was directed
-        # farther into the extreme. First resume and choose only an INWARD
-        # pulse. Do not use action.wait_for_completed() on this robot.
+        # The main mapper repeatedly drives yaw every 30 ms using live
+        # gimbal feedback. Use that same streaming control pattern here.
+        # Earlier probes sent just ONE command and then slept; that did not
+        # reproduce the working mapping controller.
         _stop_both(chassis, gimbal)
         gimbal_ready = gimbal.resume()
         print("[GIMBAL_PROBE] resume={!r}".format(gimbal_ready), flush=True)
-        if not gimbal_ready:
-            print("[GIMBAL_FAIL] resume command rejected; stopping.", flush=True)
+        if gimbal_ready is False:
+            print("[GIMBAL_FAIL] resume returned False.", flush=True)
             return
-        time.sleep(0.30)
-        before = telem.snapshot()
-        initial = before["gimbal_relative"]
-        if initial is None or not math.isfinite(initial):
-            print("[GIMBAL_FAIL] no valid yaw feedback; stopping.", flush=True)
-            return
-        age = telem.stamps.get("gimbal_relative")
-        if age is None or time.monotonic() - age > 0.6:
-            print("[GIMBAL_FAIL] stale gimbal feedback; stopping.", flush=True)
-            return
-        # Away from mechanical extremes. -269 -> positive (RIGHT).
-        speed = +30.0 if initial < -5.0 else -30.0 if initial > 5.0 else +30.0
-        print(
-            "[GIMBAL_PROBE] initial={:+.2f} direction={} command={:+.1f} deg/s "
-            "duration=1.2s; no chassis movement commanded.".format(
-                initial, "RIGHT" if speed > 0 else "LEFT", speed
-            ),
-            flush=True,
-        )
-        command_ok = gimbal.drive_speed(pitch_speed=0.0, yaw_speed=speed)
-        print("[GIMBAL_PROBE] drive_speed result={!r}".format(command_ok), flush=True)
-        # The official RoboMaster SDK's Client.send_msg() has no return
-        # statement. Successful fire-and-forget drive_speed therefore often
-        # returns None. Only an explicit False signals a send exception here;
-        # verify actual movement from fresh gimbal feedback below.
-        if command_ok is False:
-            print("[GIMBAL_FAIL] drive_speed explicitly returned False; stopping.", flush=True)
-            return
-        if command_ok is None:
-            print(
-                "[GIMBAL_PROBE] None is normal for SDK async send; "
-                "waiting for measured yaw response.",
-                flush=True,
-            )
-        try:
-            _stage("GIMBAL_INWARD_PULSE", 1.2, telem, started, stop, True)
-        finally:
-            gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
-            chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.2)
-        time.sleep(0.20)
-        final = telem.snapshot()["gimbal_relative"]
-        delta = None if final is None else float(final) - float(initial)
-        print(
-            "[GIMBAL_PROBE] final={} moved_deg={}".format(
-                _fmt(final), _fmt(delta)
-            ), flush=True,
-        )
-        if delta is None or delta * math.copysign(1.0, speed) <= 3.0:
-            print(
-                "[GIMBAL_FAIL] no verified inward gimbal motion (>3 deg). "
-                "Do not interpret the pulse as a successful gimbal test; "
-                "inspect gimbal state, obstruction and angle feedback.",
-                flush=True,
-            )
-            return
-        if stop.is_set():
+        if not _gimbal_closed_loop_probe(chassis, gimbal, telem, started, stop):
             return
         _stage("GIMBAL_AFTER_STOP", 3.0, telem, started, stop, True)
     except KeyboardInterrupt:
