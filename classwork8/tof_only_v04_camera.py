@@ -1559,6 +1559,12 @@ def run(
             "gimbal_direction": current_gimbal_direction,
             "gimbal_direction_name": DIR_NAME[current_gimbal_direction],
             "gimbal_yaw_deg": gimbal_tracker.get_yaw(),
+            "gimbal_pitch_deg": gimbal_tracker.get_pitch(),
+            "gimbal_scan_pitch_target_deg": config.gimbal_scan_pitch_deg,
+            "gimbal_pitch_tolerance_deg": config.gimbal_pitch_tolerance_deg,
+            "target_detection_active": bool(
+                target_survey.camera is not None and target_survey.camera.running
+            ),
             "tof_cm": tof_cm,
             "moves": int(moves),
             "coverage": grid.coverage_percent(),
