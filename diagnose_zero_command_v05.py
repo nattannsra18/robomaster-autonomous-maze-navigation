@@ -6,13 +6,14 @@ cause it? Only commands x=y=z=0, never commands nonzero wheel motion.
 Run with robot on a clear supervised floor and a visual nose reference.
 """
 import argparse
+import logging
 import math
 import sys
 import threading
 import time
 
 from diagnose_chassis_drift_v05 import Telemetry, _fmt
-from robomaster import robot
+from robomaster import logger as sdk_logger, robot
 
 
 def angle_change(initial, current):
@@ -32,7 +33,8 @@ def sample_stage(label, seconds, telemetry, t0, initial_yaw, stop, repeat_zero=N
             print("[ZERO_REPEAT] stage={} result={!r}".format(label, ack), flush=True)
             next_zero = now + 0.20
             if ack is False:
-                print("[ABORT] SDK explicitly returned False for zero command.", flush=True)
+                print("[ABORT] Repeated zero command was not acknowledged. "
+                      "Check SDK warning above; stop the repeated test.", flush=True)
                 stop.set()
                 break
         v = telemetry.snapshot()
@@ -67,6 +69,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--conn", choices=("ap", "sta", "rndis"), default="ap")
     args = parser.parse_args()
+    # Default RoboMaster SDK suppresses WARNING details that explain why
+    # synchronous chassis.drive_speed may return False.
+    sdk_logger.setLevel(logging.WARNING)
     ep = robot.Robot()
     chassis = None
     telemetry = Telemetry()
@@ -125,16 +130,22 @@ def main():
         ok = chassis.drive_speed(x=0.0, y=0.0, z=0.0)
         print("[ZERO_SEND] no_timeout result={!r}".format(ok), flush=True)
         if ok is False:
-            return
-        sample_stage("FREE_SINGLE_ZERO_NO_TIMEOUT", 5.0,
+            print("[ZERO_ACK_FAILURE] no_timeout was not acknowledged. "
+                  "SDK warnings above may reveal timeout/retcode/exception. "
+                  "Physical motion is measured separately.", flush=True)
+        sample_stage("FREE_SINGLE_ZERO_NO_TIMEOUT" +
+                     ("_ACK_FALSE" if ok is False else "_ACK_OK"), 5.0,
                      telemetry, t0, initial, stop)
         if stop.is_set():
             return
         ok = chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.2)
         print("[ZERO_SEND] timeout_0.2 result={!r}".format(ok), flush=True)
         if ok is False:
-            return
-        sample_stage("FREE_SINGLE_ZERO_WITH_TIMEOUT", 5.0,
+            print("[ZERO_ACK_FAILURE] timeout_0.2 was not acknowledged. "
+                  "SDK warnings above may reveal timeout/retcode/exception.",
+                  flush=True)
+        sample_stage("FREE_SINGLE_ZERO_WITH_TIMEOUT" +
+                     ("_ACK_FALSE" if ok is False else "_ACK_OK"), 5.0,
                      telemetry, t0, initial, stop)
         if stop.is_set():
             return
@@ -151,8 +162,9 @@ def main():
     finally:
         if chassis is not None:
             try:
-                chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.2)
-                print("[ZERO_TEST] Final chassis zero sent.", flush=True)
+                final_ack = chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.2)
+                print("[ZERO_TEST] Final chassis zero result={!r}.".format(final_ack),
+                      flush=True)
             except Exception as exc:
                 print("[STOP_WARN] {}".format(exc), flush=True)
         for name, unsub in reversed(subs):
