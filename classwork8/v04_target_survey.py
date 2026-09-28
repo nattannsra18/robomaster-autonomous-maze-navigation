@@ -128,6 +128,50 @@ class V04TargetSurvey:
         finally:
             gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
 
+    def _align_camera_view(self, gimbal, tracker, desired_yaw, desired_pitch, stop_event):
+        """Bounded camera-only yaw/pitch alignment BEFORE recording any image.
+
+        Correct yaw with the camera level, then reposition camera pitch. On
+        real hardware a pitch-only adjustment can perturb yaw, so verify BOTH
+        axes from feedback after a fresh settling interval. Never command the
+        chassis or alter the V04 map/navigation scan.
+        """
+        c = self.config
+        for attempt in range(1, 4):
+            if stop_event.is_set():
+                return False
+            measured_pitch, measured_yaw = tracker.get_angles()
+            if (measured_yaw is None or
+                    abs(float(measured_yaw) - float(desired_yaw)) >
+                    float(c.gimbal_tolerance_deg)):
+                if not self._pitch(
+                    gimbal, tracker, float(c.gimbal_scan_pitch_deg), stop_event
+                ):
+                    return False
+                if not self._camera_yaw(gimbal, tracker, desired_yaw, stop_event):
+                    return False
+            if not self._pitch(gimbal, tracker, desired_pitch, stop_event):
+                return False
+            if not self._wait(0.12, stop_event):
+                return False
+            measured_pitch, measured_yaw = tracker.get_angles()
+            if (measured_pitch is not None and measured_yaw is not None and
+                    abs(float(measured_pitch) - float(desired_pitch)) <=
+                    float(c.target_camera_pitch_tolerance_deg) and
+                    abs(float(measured_yaw) - float(desired_yaw)) <=
+                    float(c.gimbal_tolerance_deg)):
+                return True
+            print(
+                "[TARGET_V04] View alignment retry {}/3: desired yaw={:+.1f}, "
+                "pitch={:+.1f}; actual yaw={}, pitch={}.".format(
+                    attempt, float(desired_yaw), float(desired_pitch),
+                    "---" if measured_yaw is None else "{:+.1f}".format(float(measured_yaw)),
+                    "---" if measured_pitch is None else "{:+.1f}".format(float(measured_pitch)),
+                ),
+                flush=True,
+            )
+        return False
+
     def _view(self, chassis, gimbal, tracker, stop_event, cell,
               direction, tof_cm, *, side_offset=0.0, recorder=None):
         """Capture at a fully stopped pose and restore horizontal pitch ALWAYS."""
@@ -147,26 +191,49 @@ class V04TargetSurvey:
                 target_hold_max_windows=1,
             )
             detector = TargetDetector(view_config)
-        positioned = False
+        desired_yaw = float(c.gimbal_yaw_for_direction(direction)) + float(side_offset)
         try:
-            positioned = self._pitch(gimbal, tracker, pitch, stop_event)
-            if not positioned:
-                raise RuntimeError("CAMERA_PITCH_NOT_REACHED")
-            epoch = time.monotonic()  # NEVER verify frames captured before pitch settled
+            # Do not begin capturing at a yaw that has drifted after camera pitch.
+            # An optional camera view can be skipped; its ToF-level restoration
+            # below remains mandatory before V04 navigation is permitted.
+            if not self._align_camera_view(
+                gimbal, tracker, desired_yaw, pitch, stop_event
+            ):
+                print(
+                    "[TARGET_V04] {} view skipped: camera yaw/pitch not stable "
+                    "(requested yaw={:+.1f}, pitch={:+.1f}).".format(
+                        "SIDE" if is_side else "CARDINAL", desired_yaw, pitch
+                    ), flush=True,
+                )
+                if recorder is not None:
+                    recorder.event(
+                        time.monotonic(), "V04_CAMERA_VIEW_SKIPPED",
+                        "UNSTABLE_CAMERA_POSE",
+                        logical_node=cell, direction=direction, side_offset_deg=side_offset,
+                    )
+                return 0
+            epoch = time.monotonic()  # NEVER verify frames captured before pose settled
             verified, pending, debug, windows = survey_targets_with_hold(
                 detector, self.camera, view_config,
                 not_before=epoch, stop_event=stop_event)
-            measured = tracker.get_pitch()
-            if (measured is None or
-                    abs(float(measured) - pitch) > float(c.target_camera_pitch_tolerance_deg)):
+            measured, measured_yaw = tracker.get_angles()
+            if (measured is None or measured_yaw is None or
+                    abs(float(measured) - pitch) >
+                    float(c.target_camera_pitch_tolerance_deg) or
+                    abs(float(measured_yaw) - desired_yaw) >
+                    float(c.gimbal_tolerance_deg)):
+                # Image evidence must match a known camera bearing. Discard it
+                # instead of inventing a target coordinate or ending V04 SLAM.
                 verified, pending = [], []
-                print("[TARGET_V04] Camera pitch drifted; discarded observations.", flush=True)
+                print(
+                    "[TARGET_V04] Discarded camera evidence: pose changed "
+                    "during capture (desired yaw={:+.1f}, actual yaw={}).".format(
+                        desired_yaw,
+                        "---" if measured_yaw is None else
+                        "{:+.1f}".format(float(measured_yaw))
+                    ), flush=True,
+                )
             if is_side:
-                measured_yaw = tracker.get_yaw()
-                desired_yaw = float(c.gimbal_yaw_for_direction(direction)) + side_offset
-                if (measured_yaw is None or
-                        abs(float(measured_yaw) - desired_yaw) > float(c.gimbal_tolerance_deg)):
-                    raise RuntimeError("CAMERA_SIDE_YAW_LOST")
                 for item in verified:
                     self.registry.add_side_view_sighting(
                         item.detection, cell, direction,
@@ -244,9 +311,11 @@ class V04TargetSurvey:
                     offset = sign * float(c.target_camera_side_yaw_offset_deg)
                     try:
                         if not self._camera_yaw(gimbal, tracker, nominal + offset, stop_event):
-                            raise RuntimeError("CAMERA_SIDE_YAW_FAILED")
+                            print("[TARGET_V04] Skipping optional side view: yaw not reached.", flush=True)
+                            continue
                         if not self._pitch(gimbal, tracker, float(c.gimbal_scan_pitch_deg), stop_event):
-                            raise RuntimeError("CAMERA_SIDE_LEVEL_FAILED")
+                            print("[TARGET_V04] Skipping optional side view: horizontal pitch not reached.", flush=True)
+                            continue
                         self._view(chassis, gimbal, tracker, stop_event, cell,
                                    direction, distance, side_offset=offset,
                                    recorder=recorder)
@@ -258,6 +327,10 @@ class V04TargetSurvey:
                                 raise RuntimeError("CAMERA_SIDE_RESTORE_PITCH_FAILED")
                             if not self._camera_yaw(gimbal, tracker, nominal, stop_event):
                                 raise RuntimeError("CAMERA_SIDE_RESTORE_YAW_FAILED")
+                            # Yaw-only motion can disturb pitch. Re-level ToF
+                            # before the next view or any V04 movement.
+                            if not self._pitch(gimbal, tracker, float(c.gimbal_scan_pitch_deg), stop_event):
+                                raise RuntimeError("CAMERA_SIDE_RESTORE_FINAL_LEVEL_FAILED")
         if not self._pitch(gimbal, tracker, float(c.gimbal_scan_pitch_deg), stop_event):
             if not stop_event.is_set():
                 raise RuntimeError("CAMERA_FINAL_LEVEL_FAILED")
