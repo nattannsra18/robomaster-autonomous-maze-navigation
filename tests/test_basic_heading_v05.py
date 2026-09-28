@@ -37,6 +37,10 @@ class FakeChassis:
         self.response_sign = response_sign
         self.commands = []
         self.wheel_commands = []
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
 
     def drive_wheels(self, w1=0, w2=0, w3=0, w4=0, timeout=None):
         self.wheel_commands.append((w1, w2, w3, w4))
