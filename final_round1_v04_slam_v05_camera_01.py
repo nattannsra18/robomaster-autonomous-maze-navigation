@@ -108,7 +108,7 @@ def main():
             pass
         raise
     # Presentation only: V05 live-preview GUI. It does NOT supply motion logic.
-    from classwork8.gui_v05 import run_with_gui
+    from classwork8.gui_v04_camera import run_with_gui
     run_with_gui(run, config, ep_robot)
 
 
