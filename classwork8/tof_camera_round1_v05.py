@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 import statistics
 import threading
 from collections import deque
@@ -589,6 +590,73 @@ def _point_gimbal(
     return True
 
 
+def _camera_side_view_yaws(base_yaw_deg: float, config: Classwork8Config) -> List[float]:
+    """Bounded viewpoints around one cardinal scan heading, not mapping rays."""
+    if not config.target_camera_multi_angle_enabled:
+        return []
+    offset = float(config.target_camera_side_yaw_offset_deg)
+    return [float(base_yaw_deg) - offset, float(base_yaw_deg) + offset]
+
+
+def _set_camera_observation_yaw(
+    gimbal,
+    tracker: GimbalTracker,
+    config: Classwork8Config,
+    target_yaw: float,
+    stop_event: Optional[threading.Event],
+) -> bool:
+    """Yaw-only side camera positioning while stationary and ToF is level.
+
+    No mapping data is sampled at an offset yaw. The caller must always
+    restore the nominal cardinal heading and horizontal scan pitch afterward.
+    """
+    desired = float(target_yaw)
+    if not -115.0 <= desired <= 215.0:
+        return False
+    deadline = time.monotonic() + float(config.gimbal_turn_timeout_sec)
+    stable = 0
+    try:
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                return False
+            pitch, yaw = tracker.get_angles()
+            if pitch is None or yaw is None:
+                time.sleep(0.025)
+                continue
+            if abs(float(pitch) - float(config.gimbal_scan_pitch_deg)) > float(config.gimbal_pitch_tolerance_deg):
+                print("[CAMERA] Side yaw refused: horizontal pitch not stable.", flush=True)
+                return False
+            error = desired - float(yaw)
+            if abs(error) <= float(config.gimbal_tolerance_deg):
+                gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+                stable += 1
+                if stable >= int(config.gimbal_stable_samples):
+                    if not _sleep_interruptible(config.gimbal_settle_sec, stop_event):
+                        return False
+                    final_pitch, final_yaw = tracker.get_angles()
+                    return (
+                        final_pitch is not None and final_yaw is not None
+                        and abs(float(final_pitch) - float(config.gimbal_scan_pitch_deg)) <= float(config.gimbal_pitch_tolerance_deg)
+                        and abs(float(final_yaw) - desired) <= float(config.gimbal_tolerance_deg)
+                    )
+            else:
+                stable = 0
+                speed = max(
+                    float(config.gimbal_min_yaw_speed_dps),
+                    min(float(config.gimbal_yaw_speed_dps),
+                        abs(error) * float(config.gimbal_yaw_kp)),
+                )
+                gimbal.drive_speed(
+                    pitch_speed=0.0, yaw_speed=math.copysign(speed, error),
+                )
+            time.sleep(0.03)
+        print("[CAMERA] Side yaw timeout: desired={:+.1f}, measured={}".format(
+            desired, tracker.get_yaw()), flush=True)
+        return False
+    finally:
+        gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+
+
 def _set_camera_observation_pitch(
     gimbal,
     tracker: GimbalTracker,
@@ -888,6 +956,128 @@ def _flanked_by_confirmed_walls(
         and edge_states.get((flank[0], flank[1], int(direction) % 4)) == "WALL"
         for flank in flanks
     )
+
+
+def _survey_side_camera_views(
+    chassis,
+    gimbal,
+    sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker,
+    recorder: RunRecorder,
+    config: Classwork8Config,
+    stop_event: Optional[threading.Event],
+    current_cell: Tuple[int, int],
+    direction: int,
+    selected_pitch: float,
+    camera_service: CameraService,
+    target_detector: TargetDetector,
+    target_registry: TargetRegistry,
+    target_debug_holder: List[object],
+    survey_bridge: LiveSurveyBridge,
+) -> bool:
+    """Verify off-axis signs with a stationary camera; never assign target XY.
+
+    Cardinal ToF mapping has already finished and is unaffected. All off-axis
+    observations go into separate bearing-only evidence, not target_count.
+    """
+    base_yaw = float(config.gimbal_yaw_for_direction(direction))
+    side_config = replace(
+        config,
+        target_sample_frames=min(
+            int(config.target_sample_frames), int(config.target_camera_side_sample_frames)
+        ),
+        target_hold_max_sec=min(
+            float(config.target_hold_max_sec), float(config.target_camera_side_hold_max_sec)
+        ),
+        target_hold_max_windows=1,
+    )
+    for desired in _camera_side_view_yaws(base_yaw, config):
+        if stop_event is not None and stop_event.is_set():
+            return False
+        # Stop chassis explicitly, and restore the mapping heading in finally
+        # even if a camera side-view turn, pitch move or capture fails.
+        stop_chassis(chassis)
+        restored = False
+        try:
+            if not _set_camera_observation_yaw(
+                gimbal, tracker, config, desired, stop_event
+            ):
+                print("[TARGET_SIDE] Could not reach yaw {:+.1f}; skipping view.".format(
+                    desired), flush=True)
+                continue
+            if not _set_camera_observation_pitch(
+                gimbal, tracker, config, selected_pitch, stop_event
+            ):
+                print("[TARGET_SIDE] Camera pitch unavailable at yaw {:+.1f}.".format(
+                    desired), flush=True)
+                continue
+            # Each view starts AFTER both axes settled; never verify a cached
+            # image from the preceding camera direction.
+            frame_epoch = time.monotonic()
+            verified, pending, debug, windows = survey_targets_with_hold(
+                target_detector, camera_service, side_config,
+                not_before=frame_epoch, stop_event=stop_event,
+            )
+            current_pitch, current_yaw = tracker.get_angles()
+            if (
+                current_pitch is None or current_yaw is None
+                or abs(float(current_pitch) - selected_pitch)
+                    > float(config.target_camera_pitch_tolerance_deg)
+                or abs(float(current_yaw) - desired)
+                    > float(config.gimbal_tolerance_deg)
+            ):
+                print("[TARGET_SIDE] Pose drift; discarding camera evidence.", flush=True)
+                continue
+            target_debug_holder[0] = debug
+            for item in verified:
+                entry = target_registry.add_side_view_sighting(
+                    item.detection, current_cell, direction,
+                    camera_yaw_deg=float(current_yaw),
+                    camera_pitch_deg=float(current_pitch),
+                    side_yaw_offset_deg=desired - base_yaw,
+                    confidence=float(item.confidence),
+                    verified_frames=int(item.verified_frames),
+                    verified=True,
+                )
+                recorder.event(
+                    time.monotonic(), "TARGET_SIDE_VIEW",
+                    "{} {} at yaw {:+.1f} (bearing only)".format(
+                        item.detection.color.upper(), item.detection.shape.upper(),
+                        float(current_yaw)),
+                    logical_node=current_cell,
+                    sighting_id=entry["sighting_id"],
+                    direction=DIR_NAME[direction],
+                    camera_yaw_deg=float(current_yaw),
+                    camera_yaw_offset_deg=desired - base_yaw,
+                    localization_status="SIGHTING_ONLY",
+                )
+            for item in pending:
+                detection = item["detection"]
+                target_registry.add_side_view_sighting(
+                    detection, current_cell, direction,
+                    camera_yaw_deg=float(current_yaw),
+                    camera_pitch_deg=float(current_pitch),
+                    side_yaw_offset_deg=desired - base_yaw,
+                    confidence=float(item["confidence_sum"]) / max(1, int(item["frames"])),
+                    verified_frames=int(item["frames"]),
+                    verified=False,
+                )
+            print("[TARGET_SIDE] {} yaw={:+.1f}, verified={} pending={} windows={}; "
+                  "side views are not unique target coordinates.".format(
+                      DIR_NAME[direction], float(current_yaw), len(verified),
+                      len(pending), windows), flush=True)
+        finally:
+            restored = _point_gimbal(
+                gimbal, sensors, tracker, direction, config, stop_event,
+            )
+            survey_bridge.set_status(
+                "Horizontal ToF restored after side camera view"
+                if restored else "ERROR: cannot restore ToF after side view"
+            )
+            if not restored:
+                print("[TARGET_SIDE] Restore FAILED: abort scan, no movement.", flush=True)
+                return False
+    return True
 
 
 def _scan_four_directions(
@@ -1361,6 +1551,18 @@ def _scan_four_directions(
                     flush=True,
                 )
                 return None
+
+            # Camera-only offset views improve corner coverage. They are not
+            # additional ToF rays and cannot change logical WALL/OPEN edges.
+            # Failed restoration blocks mapping and all subsequent movement.
+            if camera_position_ok and config.target_camera_multi_angle_enabled:
+                if not _survey_side_camera_views(
+                    chassis, gimbal, sensors, gimbal_tracker, recorder, config,
+                    stop_event, current_cell, direction, selected_pitch,
+                    camera_service, target_detector, target_registry,
+                    target_debug_holder, survey_bridge,
+                ):
+                    return None
 
             live_preview_status = survey_bridge.latest_preview()
             recorder.event(
