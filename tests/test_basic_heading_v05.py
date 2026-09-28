@@ -108,8 +108,12 @@ class HeadingTests(unittest.TestCase):
         self.assertAlmostEqual(config.travel_speed_mps, 0.30)
         self.assertAlmostEqual(config.target_camera_pitch_deg, -20.0)
         self.assertAlmostEqual(config.gimbal_scan_pitch_deg, 0.0)
-        self.assertAlmostEqual(config.gimbal_yaw_speed_dps, 140.0)
-        self.assertAlmostEqual(config.gimbal_min_yaw_speed_dps, 7.0)
+        self.assertAlmostEqual(config.gimbal_yaw_speed_dps, 170.0)
+        self.assertAlmostEqual(config.gimbal_min_yaw_speed_dps, 9.0)
+        self.assertAlmostEqual(config.gimbal_pitch_max_speed_dps, 38.0)
+        self.assertAlmostEqual(config.gimbal_pitch_kp, 2.2)
+        self.assertAlmostEqual(config.gimbal_settle_sec, 0.08)
+        self.assertAlmostEqual(config.target_camera_settle_sec, 0.08)
 
     def test_attitude_age_detects_missing_feedback(self):
         pose = V05PoseTracker()
