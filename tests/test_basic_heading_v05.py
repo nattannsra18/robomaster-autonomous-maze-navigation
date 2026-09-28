@@ -1,4 +1,5 @@
 """Offline post-scan heading alignment and gimbal/chassis yaw diagnostics."""
+import inspect
 import sys
 import types
 import unittest
@@ -18,7 +19,7 @@ if "libmedia_codec" not in sys.modules:
 from classwork8.config import Classwork8Config
 from classwork8.tof_camera_round1_v05 import (
     GimbalTracker, _align_chassis_after_scan, _heading_error,
-    _fixed_heading_control_v02,
+    _fixed_heading_control_v02, _point_gimbal,
 )
 
 
@@ -81,6 +82,21 @@ class HeadingTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "HEADING_SIGN_MISMATCH")
         self.assertEqual(chassis.commands[-1], (0.0, 0.0, 0.0))
+
+    def test_gimbal_has_independent_pitch_and_yaw_time_budgets(self):
+        source = inspect.getsource(_point_gimbal)
+        self.assertIn("pitch_deadline = time.monotonic()", source)
+        self.assertIn("yaw_deadline = started_yaw +", source)
+        self.assertIn("_allow_endpoint_retry=False", source)
+
+    def test_requested_new_defaults(self):
+        config = Classwork8Config()
+        config.validate()
+        self.assertAlmostEqual(config.travel_speed_mps, 0.30)
+        self.assertAlmostEqual(config.target_camera_pitch_deg, -20.0)
+        self.assertAlmostEqual(config.gimbal_scan_pitch_deg, 0.0)
+        self.assertAlmostEqual(config.gimbal_yaw_speed_dps, 140.0)
+        self.assertAlmostEqual(config.gimbal_min_yaw_speed_dps, 7.0)
 
     def test_heading_steering_does_not_reduce_forward_speed(self):
         config = Classwork8Config()
