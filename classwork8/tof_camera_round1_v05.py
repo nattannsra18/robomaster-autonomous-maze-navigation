@@ -15,7 +15,6 @@ from robomaster_mission.mission import (
     PoseTracker,
     SensorManager,
     normalize_angle_deg,
-    stop_chassis,
     wait_for_position,
     wait_for_yaw,
 )
@@ -32,6 +31,27 @@ from .target_detection import (
     save_topology,
 )
 from .vision import CorridorVision
+
+
+def stop_chassis(chassis) -> None:
+    """V05 ONLY: stop in individual-wheel mode, never zero chassis speed mode.
+
+    Real-robot isolation tests showed slow physical left rotation after
+    chassis.drive_speed(0,0,0) switched SDK status 8 -> 1. In contrast,
+    drive_wheels(0,0,0,0) returned True, switched status to 0, and held
+    chassis yaw during and after the independent gimbal sweep. Preserve the
+    legacy mission stop helper unchanged for other programs.
+    """
+    if chassis is None:
+        return
+    ack = chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0)
+    if ack is not True:
+        # Fail closed rather than silently fall back to the speed-mode
+        # zero command that reproduced physical yaw creep on this robot.
+        raise RuntimeError(
+            "V05_WHEEL_STOP_NOT_ACKNOWLEDGED: drive_wheels(0,0,0,0) "
+            "did not confirm the stop; halt the run and inspect the robot"
+        )
 
 
 # Logical map directions relative to the chassis heading at mission start.
@@ -1989,7 +2009,7 @@ def run(
             raise RuntimeError(
                 "FREE_MODE_FAILED: refusing scan; chassis could be coupled to gimbal"
             )
-        stop_chassis(chassis)  # Clear any stale commanded yaw after mode change.
+        stop_chassis(chassis)  # Explicitly enter the measured-stable zero-wheel mode.
 
         # Subscribe BEFORE recentering so we can verify the actual gimbal angle
         # even if the DJI action-completion packet is delayed/lost.
@@ -2203,7 +2223,7 @@ def run(
                     force=True,
                 )
             else:
-                # Clear any previous drive_speed command before every scan.
+                # Enter the experimentally stable zero-wheel mode before each scan.
                 stop_chassis(chassis)
                 _heading_snapshot(
                     "SCAN_STOP_SENT_{}".format(current_cell),
