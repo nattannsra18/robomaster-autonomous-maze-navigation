@@ -1,7 +1,4 @@
-"""V04 navigation presentation + V05 image preview only.
-V05-only rescan/skip-scan controls are deliberately not displayed.
-"""
-"""Realtime discovered-grid GUI for Final Round 1 V05.
+"""Realtime discovered-grid GUI for V04 SLAM + V05 camera only.
 
 V04 also exports the logical GUI map as a PNG automatically when a run ends.
 
