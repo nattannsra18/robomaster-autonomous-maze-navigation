@@ -134,7 +134,7 @@ def configure_before_run(config) -> bool:
             ("gimbal_min_yaw_speed_dps", "Yaw minimum speed (deg/s)", "float", "Low-speed correction near a requested scan direction"),
             ("gimbal_yaw_kp", "Yaw correction Kp", "float", "Smooth proportional yaw-only controller"),
             ("gimbal_tolerance_deg", "Yaw settle tolerance (deg)", "float", "Default 2.5; avoids stopping on harmless +2.2 deg end-settle noise"),
-            ("gimbal_turn_timeout_sec", "Gimbal orientation timeout (s)", "float", "Whole pitch -> yaw -> pitch sequence"),
+            ("gimbal_turn_timeout_sec", "Gimbal phase timeout (s)", "float", "Each PRE pitch, yaw and POST pitch gets its own timeout"),
             ("gimbal_yaw_pitch_guard_deg", "Pitch warning during yaw (deg)", "float", "Log a transient warning; mapping still requires pitch/yaw level before ToF"),
             ("gimbal_scan_pitch_deg", "Scan pitch target (deg)", "float", "Horizontal relative gimbal pitch; start with 0 degrees"),
             ("gimbal_pitch_kp", "Pitch correction Kp", "float", "Use a gentle gain to avoid nodding during yaw sweeps"),
