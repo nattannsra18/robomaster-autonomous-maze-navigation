@@ -61,3 +61,30 @@ def target_plot_geometry(target: dict, cell_size_m: float):
             origin[1] + dy * float(cell_size_m),
         )
     return endpoint, origin, True
+
+
+def visible_map_targets(targets):
+    """Show only range-supported, temporally verified sign records in the GUI.
+
+    A SIGHTING_ONLY record has verified color/shape, but no confirmed range to
+    its physical position. Keep that record in targets.json; omit the LOS ray
+    and hollow location hint from the live map and its PNG export. Even the
+    visible near-wall coordinates remain estimates, not survey-grade fixes.
+    """
+    visible = []
+    for target in targets or []:
+        if target.get("localization_status") == "SIGHTING_ONLY":
+            continue
+        if not bool(target.get("range_confirmed_wall", False)):
+            continue
+        xy = target.get("estimated_target_xy_m")
+        if not isinstance(xy, (list, tuple)) or len(xy) != 2:
+            continue
+        try:
+            import math
+            if not all(math.isfinite(float(value)) for value in xy):
+                continue
+        except (TypeError, ValueError):
+            continue
+        visible.append(target)
+    return visible
