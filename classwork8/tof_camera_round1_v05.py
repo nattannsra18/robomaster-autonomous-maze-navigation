@@ -720,9 +720,12 @@ def _scan_four_directions(
     else:
         order = [3, 0, 1, 2]  # LEFT -> FRONT -> RIGHT -> BACK
     ranges: Dict[int, Optional[float]] = {}
+    # Safety probe distances only remain valid until the chassis moves;
+    # mapping rays below each retain their own true sampled pose.
+    safety_ranges: Dict[int, Optional[float]] = {}
     open_dirs: Set[int] = set()
 
-    # Caller sends x=y=z=0 before any stationary scan.
+    # Caller enters acknowledged zero-wheel mode before stationary scan.
     for direction in order:
         if stop_event is not None and stop_event.is_set():
             return None
@@ -867,7 +870,6 @@ def _scan_four_directions(
             )
             return None
 
-        ranges[direction] = distance_cm
         print(
             "[SCAN] {} ToF = {} cm".format(
                 DIR_NAME[direction],
@@ -875,6 +877,59 @@ def _scan_four_directions(
             ),
             flush=True,
         )
+        # Correct immediately at the current direction, before scanning
+        # the next normal direction. Never wait for the completed four-way
+        # sweep. An unobserved opposite wall is briefly probed on demand,
+        # then the gimbal returns to this wall for monitored movement.
+        if config.wall_clearance_enabled:
+            safety_ranges[direction] = distance_cm
+            adjusted, failure = _maintain_wall_clearance_checkpoint(
+                chassis, gimbal, pose, sensors, gimbal_tracker, config,
+                safety_ranges, direction, float(start_x), float(start_y),
+                float(start_yaw_deg), stop_event,
+            )
+            if failure is not None:
+                print("[CLEARANCE_FAIL] {} during {} scan.".format(
+                    failure, DIR_NAME[direction]), flush=True)
+                return None
+            if adjusted:
+                recorder.event(
+                    time.monotonic(), "CLEARANCE_ADJUST",
+                    "in-direction immediate short shift away from close wall",
+                    logical_node=current_cell,
+                    direction=DIR_NAME[direction],
+                )
+                print(
+                    "[CLEARANCE_DURING_SCAN] {} adjusted; re-reading THIS "
+                    "direction only before continuing sweep.".format(
+                        DIR_NAME[direction]
+                    ), flush=True,
+                )
+                # Restart ToF median at the adjusted pose, without restarting
+                # the four-way scan. Previous mapped rays were sampled at
+                # their original measured poses; invalidate safety cache.
+                if not _point_gimbal(
+                    gimbal, sensors, gimbal_tracker, direction, config,
+                    stop_event,
+                ):
+                    return None
+                sensors.reset_filters()
+                distance_cm = _sample_tof(sensors, config, stop_event)
+                if (distance_cm is None or
+                        abs(float(gimbal_tracker.get_pitch() or 0.0)
+                            - float(config.gimbal_scan_pitch_deg))
+                        > float(config.gimbal_pitch_tolerance_deg)):
+                    print("[CLEARANCE_FAIL] Fresh same-direction ToF/pitch "
+                          "unavailable after movement.", flush=True)
+                    return None
+                safety_ranges.clear()
+                safety_ranges[direction] = distance_cm
+                print(
+                    "[CLEARANCE_DURING_SCAN] {} final ToF={:.1f}cm".format(
+                        DIR_NAME[direction], distance_cm
+                    ), flush=True,
+                )
+        ranges[direction] = distance_cm
 
         # Camera targets are physically lower than the horizontal ToF ray.
         # Keep the proven mapping range above, then (only while chassis is
@@ -2513,50 +2568,6 @@ def run(
                     break
 
                 ranges, open_dirs = scan
-
-                # One ToF on a scanning gimbal cannot provide a simultaneous
-                # four-direction wall follower. At each fresh checkpoint scan,
-                # select at most ONE small move away from a close wall. The
-                # opposite scanned range budgets the move; live ToF and pose
-                # verify it while the gimbal faces that wall. If moved, scan
-                # all four directions AGAIN from the new actual pose so
-                # topology/SLAM never treat the old readings as current.
-                corrected, correction_failure = _maintain_wall_clearance_checkpoint(
-                    chassis, gimbal, pose, sensors, gimbal_tracker, config,
-                    ranges, float(raw_start_x), float(raw_start_y),
-                    float(raw_start_yaw), stop_event,
-                )
-                if correction_failure is not None:
-                    finish_reason = correction_failure
-                    print(
-                        "[CLEARANCE_FAIL] {}; navigation stopped.".format(
-                            correction_failure
-                        ), flush=True,
-                    )
-                    break
-                if corrected:
-                    recorder.event(
-                        time.monotonic(),
-                        "CLEARANCE_ADJUST",
-                        "short stationary shift away from a close wall; rescanning",
-                        logical_node=current_cell,
-                    )
-                    stop_chassis(chassis)
-                    rescanned = _scan_four_directions(
-                        gimbal, pose, sensors, gimbal_tracker, grid, recorder,
-                        config, float(raw_start_x), float(raw_start_y),
-                        float(raw_start_yaw), stop_event, publish_state,
-                        current_cell, moves, known_cells, edge_states,
-                        traversed_edges, camera_service, target_detector,
-                        target_registry, target_debug_holder, survey_bridge,
-                    )
-                    if rescanned is None:
-                        finish_reason = (
-                            "USER_STOP" if stop_event.is_set()
-                            else "CLEARANCE_RESCAN_FAILED"
-                        )
-                        break
-                    ranges, open_dirs = rescanned
 
                 _heading_snapshot("POST_SCAN_{}".format(current_cell),
                                   pose, gimbal_tracker, float(raw_start_yaw))
