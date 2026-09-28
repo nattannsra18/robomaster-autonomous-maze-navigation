@@ -1,7 +1,9 @@
 # V05 BASIC motion baseline
 
 Base commit: `91fa79257cbb0f1053cbe4748ff170645e5693d5`. Isolated V05 change only; `classwork8_slam_04.py` and
-`classwork8/tof_only_v04.py` are unchanged.
+`classwork8/tof_only_v04.py` are unchanged. The V05 entrypoint
+`final_round1_tof_camera_01.py` no longer overrides the requested travel
+speed to 0.10: use the configuration value or explicit `--travel-speed MPS`.
 
 Pipeline: `run -> _drive_one_cell -> _basic_motion_command -> chassis.drive_speed`.
 For FRONT/RIGHT/BACK/LEFT, the requested longitudinal speed is passed through
@@ -50,4 +52,10 @@ Verification on your RoboMaster PC:
 ```powershell
 python -m py_compile classwork8\tof_camera_round1_v05.py classwork8\config.py classwork8\config_gui_v05.py tests\test_final_motion_safety_v05.py
 python -m unittest tests.test_final_motion_safety_v05 tests.test_final_gimbal_pitch_v05 tests.test_final_target_detection -v
+```
+
+Example controlled, supervised headless test (choose desired speed):
+
+```powershell
+python final_round1_tof_camera_01.py --no-gui --travel-speed 0.10
 ```
