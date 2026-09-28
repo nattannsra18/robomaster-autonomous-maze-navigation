@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .live_survey import LiveSurveyBridge
+from .live_survey_v04_camera import LiveSurveyBridge
 from .target_map_visual import (
     confirmed_map_targets,
     target_plot_geometry,
@@ -89,6 +89,7 @@ class RealtimeMapGUI:
         self._last_preview_timestamp = -1.0
         self._last_map_render_timestamp = 0.0
         self._preview_visible = False
+        self._camera_popup_auto_opened = False
         self._preview_popup = None
         self._popup_label = None
         self._popup_photo = None
@@ -576,6 +577,11 @@ class RealtimeMapGUI:
             elif timestamp > self._last_preview_timestamp:
                 self._last_preview_timestamp = timestamp
                 self._render_vision_preview(preview["frame"], True)
+                # Automatically show the camera once on its first live frame.
+                # This popup is non-modal and never commands the robot.
+                if not self._camera_popup_auto_opened:
+                    self._open_camera_popup()
+                    self._camera_popup_auto_opened = True
                 self._render_camera_popup(preview["frame"])
                 self._preview_visible = True
             self.live_target_var.set(
