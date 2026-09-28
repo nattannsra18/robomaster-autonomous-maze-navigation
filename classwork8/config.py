@@ -57,11 +57,11 @@ class Classwork8Config:
     # physical chassis-edge clearances. Each new cell scans all four sides;
     # correction is stationary, bounded, and followed by a fresh full scan.
     wall_clearance_enabled: bool = False
-    wall_clearance_front_cm: float = 18.0
-    wall_clearance_right_cm: float = 18.0
-    wall_clearance_back_cm: float = 18.0
-    wall_clearance_left_cm: float = 18.0
-    wall_clearance_deadband_cm: float = 1.5
+    wall_clearance_front_cm: float = 15.0
+    wall_clearance_right_cm: float = 15.0
+    wall_clearance_back_cm: float = 15.0
+    wall_clearance_left_cm: float = 15.0
+    wall_clearance_deadband_cm: float = 0.5
     wall_clearance_max_step_cm: float = 4.0
     wall_clearance_speed_mps: float = 0.035
 
