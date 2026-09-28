@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from .live_survey import LiveSurveyBridge
-from .target_map_visual import target_plot_geometry
+from .target_map_visual import target_plot_geometry, visible_map_targets
 
 
 class RealtimeMapGUI:
@@ -372,8 +372,7 @@ class RealtimeMapGUI:
                 "Blue = realtime odometry trajectory\n"
                 "Light blue = travelled logical path\n"
                 "Purple dashed = planned route to nearest frontier\n"
-                "Solid Txx = tentative near-wall estimate\n"
-                "Hollow Txx? LOS = sighting ray, NOT target position\n"
+                "Solid Txx = verified color/shape with near-wall position estimate\n"
                 "Green S = mission start\n"
                 "Red R = robot\n"
                 "Orange arrow = current ToF/Gimbal direction"
@@ -680,10 +679,8 @@ class RealtimeMapGUI:
             self.vision_var.set("Camera: unavailable; ToF mapping continues")
 
         self.target_var.set(
-            "Target records: {} | distant sightings: {} | near-wall candidates: {}".format(
-                int(snapshot.get("target_count", 0)),
-                int(snapshot.get("target_sighting_count", 0)),
-                int(snapshot.get("target_position_candidate_count", 0)),
+            "Targets on map: {} (range-supported)".format(
+                len(visible_map_targets(snapshot.get("targets") or []))
             )
         )
 
@@ -811,13 +808,13 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
-        for target in snapshot.get("targets") or []:
-            hint, _origin, sighting = target_plot_geometry(
+        for target in visible_map_targets(snapshot.get("targets") or []):
+            hint, _origin, _sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
-            if sighting and hint is not None:
-                # Only extend the visual viewport; the observation is NOT a
-                # visited cell and creates no walls in the actual map.
+            if hint is not None:
+                # A plotted near-wall target can extend the viewport without
+                # creating a visited cell or any new map wall.
                 display_cells.append((
                     -round(hint[0] / float(snapshot.get("cell_size_m", 0.60))),
                     -round(hint[1] / float(snapshot.get("cell_size_m", 0.60))),
@@ -957,8 +954,8 @@ class RealtimeMapGUI:
             "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
-        for target in snapshot.get("targets") or []:
-            hint, origin, sighting = target_plot_geometry(
+        for target in visible_map_targets(snapshot.get("targets") or []):
+            hint, _origin, _sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
             if hint is None:
@@ -968,30 +965,15 @@ class RealtimeMapGUI:
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            if sighting:
-                if origin is not None:
-                    oxp, oyp = metric_to_image(*origin)
-                    draw.line(
-                        (oxp, oyp, tx, ty),
-                        fill=colour, width=max(2, int(size * 0.025)),
-                    )
-                draw.ellipse(
-                    (tx - radius, ty - radius, tx + radius, ty + radius),
-                    fill=self.COLOURS["background"],
-                    outline=colour, width=3,
-                )
-                label = str(target.get("target_id", "T")) + "?"
-                draw.text((tx + radius + 2, ty - 5), label, fill=colour, font=font)
-            else:
-                draw.ellipse(
-                    (tx - radius, ty - radius, tx + radius, ty + radius),
-                    fill=colour, outline="white", width=2,
-                )
-                draw.text(
-                    (tx - radius * 0.6, ty - 5),
-                    str(target.get("target_id", "T")),
-                    fill="white", font=font,
-                )
+            draw.ellipse(
+                (tx - radius, ty - radius, tx + radius, ty + radius),
+                fill=colour, outline="white", width=2,
+            )
+            draw.text(
+                (tx - radius * 0.6, ty - 5),
+                str(target.get("target_id", "T")),
+                fill="white", font=font,
+            )
 
         sx, sy = logical_center((0, 0))
         r = max(9.0, size * 0.16)
@@ -1116,12 +1098,12 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
-        for target in snapshot.get("targets") or []:
-            hint, _origin, sighting = target_plot_geometry(
+        for target in visible_map_targets(snapshot.get("targets") or []):
+            hint, _origin, _sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
-            if sighting and hint is not None:
-                # Camera sighting alters the VIEWPORT only, not map coverage.
+            if hint is not None:
+                # Range-supported target estimates alter view bounds, not coverage.
                 display_cells.append((
                     -round(hint[0] / float(snapshot.get("cell_size_m", 0.60))),
                     -round(hint[1] / float(snapshot.get("cell_size_m", 0.60))),
@@ -1293,8 +1275,8 @@ class RealtimeMapGUI:
             "blue": "#2563eb", "yellow": "#ca8a04",
             "orange": "#ea580c",
         }
-        for target in snapshot.get("targets") or []:
-            hint, origin, sighting = target_plot_geometry(
+        for target in visible_map_targets(snapshot.get("targets") or []):
+            hint, _origin, _sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
             if hint is None:
@@ -1304,32 +1286,15 @@ class RealtimeMapGUI:
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            if sighting:
-                if origin is not None:
-                    oxp, oyp = metric_to_canvas(*origin)
-                    canvas.create_line(
-                        oxp, oyp, tx, ty, fill=colour, width=2,
-                        dash=(4, 4),
-                    )
-                canvas.create_oval(
-                    tx - radius, ty - radius, tx + radius, ty + radius,
-                    fill=colours["background"], outline=colour, width=3,
-                )
-                canvas.create_text(
-                    tx + radius + 4, ty, anchor="w",
-                    text=str(target.get("target_id", "T")) + "? LOS",
-                    fill=colour, font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
-                )
-            else:
-                canvas.create_oval(
-                    tx - radius, ty - radius, tx + radius, ty + radius,
-                    fill=colour, outline="white", width=2,
-                )
-                canvas.create_text(
-                    tx, ty, text=str(target.get("target_id", "T")),
-                    fill="white",
-                    font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
-                )
+            canvas.create_oval(
+                tx - radius, ty - radius, tx + radius, ty + radius,
+                fill=colour, outline="white", width=2,
+            )
+            canvas.create_text(
+                tx, ty, text=str(target.get("target_id", "T")),
+                fill="white",
+                font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
+            )
 
         # Start marker.
         sx, sy = logical_center((0, 0))
