@@ -9,6 +9,9 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+
+import cv2
+import numpy as np
 from unittest.mock import patch
 
 if "libmedia_codec" not in sys.modules:
@@ -22,7 +25,7 @@ if "libmedia_codec" not in sys.modules:
     sys.modules["libmedia_codec"] = shim
 
 from classwork8.config import Classwork8Config
-from classwork8.target_detection import TargetRegistry
+from classwork8.target_detection import TargetDetector, TargetRegistry
 from classwork8.tof_camera_round1_v05 import (
     GimbalTracker, _camera_side_view_yaws,
     _set_camera_observation_yaw, _survey_side_camera_views,
@@ -97,6 +100,19 @@ class SideSurveyTests(unittest.TestCase):
         self.assertFalse(_set_camera_observation_yaw(
             self.gimbal, self.tracker, self.cfg, 20.0, None))
         self.assertTrue(all(y == 0 for _, y in self.gimbal.commands))
+
+    def test_two_off_center_signs_are_detected_without_centering(self):
+        cfg = Classwork8Config()
+        cfg.target_min_contour_area_px = 80.0
+        cfg.target_min_confidence = 0.40
+        frame = np.full((360, 640, 3), 125, dtype=np.uint8)
+        # Both shapes remain wholly inside the ROI/frame, but neither is
+        # centered. A truly cropped sign is intentionally rejected.
+        cv2.rectangle(frame, (19, 218), (62, 260), (0, 0, 210), -1)
+        cv2.rectangle(frame, (562, 218), (606, 262), (210, 0, 0), -1)
+        detected, _debug = TargetDetector(cfg).detect(frame)
+        self.assertTrue(any(x.color == "red" and x.shape == "square" for x in detected))
+        self.assertTrue(any(x.color == "blue" and x.shape == "square" for x in detected))
 
     def test_registry_keeps_side_views_separate_from_unique_targets(self):
         registry = TargetRegistry(self.cfg)
