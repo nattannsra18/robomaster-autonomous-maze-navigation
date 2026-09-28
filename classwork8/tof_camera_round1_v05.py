@@ -473,7 +473,7 @@ def _point_gimbal(
         return False
 
     _stop_axes()
-    if not _sleep_interruptible(0.12, stop_event):
+    if not _sleep_interruptible(0.06, stop_event):
         return False
 
     # Only after yaw is stopped may pitch be corrected again. This also
@@ -769,6 +769,7 @@ def _scan_four_directions(
             direction,
             config,
             stop_event,
+            _allow_endpoint_retry=False,  # Strict one primary yaw sweep/side.
         ):
             print(
                 "[SCAN] Gimbal FAILED for {}. measured_yaw={}".format(
@@ -806,18 +807,35 @@ def _scan_four_directions(
         ):
             print(
                 "[SCAN] {} pitch drift after ToF sampling (pitch={}); "
-                "stop and retry orientation once.".format(
+                "restore pitch only; no extra yaw sweep.".format(
                     DIR_NAME[direction],
                     "---" if pitch_after_sample is None
                     else "{:+.1f}".format(float(pitch_after_sample)),
                 ),
                 flush=True,
             )
-            if not _point_gimbal(
-                gimbal, sensors, gimbal_tracker, direction, config, stop_event
+            if not _set_camera_observation_pitch(
+                gimbal, gimbal_tracker, config,
+                config.gimbal_scan_pitch_deg, stop_event,
+                tolerance_deg=config.gimbal_pitch_tolerance_deg,
+                clamp_camera_limits=False,
             ):
                 return None
+            final_pitch, final_yaw = gimbal_tracker.get_angles()
+            if (
+                final_pitch is None or final_yaw is None
+                or abs(
+                    float(final_pitch) - float(config.gimbal_scan_pitch_deg)
+                ) > float(config.gimbal_pitch_tolerance_deg)
+                or abs(_heading_error(
+                    config.gimbal_yaw_for_direction(direction), final_yaw
+                )) > float(config.gimbal_tolerance_deg)
+            ):
+                return None
+            sensors.reset_filters()
             distance_cm = _sample_tof(sensors, config, stop_event)
+            if distance_cm is None:
+                return None
             final_pitch = gimbal_tracker.get_pitch()
             if (
                 final_pitch is None
@@ -1090,14 +1108,27 @@ def _scan_four_directions(
             finally:
                 # This restore is mandatory. The ToF ray is not safe for
                 # navigation or topology if the camera remains angled down.
-                restore_ok = _point_gimbal(
-                    gimbal,
-                    sensors,
-                    gimbal_tracker,
-                    direction,
-                    config,
-                    stop_event,
+                # The camera already faces THIS direction. Restore pitch
+                # directly without an additional yaw controller/sweep.
+                restore_ok = _set_camera_observation_pitch(
+                    gimbal, gimbal_tracker, config,
+                    config.gimbal_scan_pitch_deg, stop_event,
+                    tolerance_deg=config.gimbal_pitch_tolerance_deg,
+                    clamp_camera_limits=False,
                 )
+                restored_pitch, restored_yaw = gimbal_tracker.get_angles()
+                restore_ok = bool(
+                    restore_ok and restored_pitch is not None
+                    and restored_yaw is not None
+                    and abs(float(restored_pitch) - config.gimbal_scan_pitch_deg)
+                    <= config.gimbal_pitch_tolerance_deg
+                    and abs(_heading_error(
+                        config.gimbal_yaw_for_direction(direction),
+                        restored_yaw,
+                    )) <= config.gimbal_tolerance_deg
+                )
+                if restore_ok:
+                    sensors.reset_filters()
                 survey_bridge.set_status(
                     "Live preview; ToF horizontal restored"
                     if restore_ok else "ERROR: cannot restore horizontal ToF"
