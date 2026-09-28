@@ -29,6 +29,12 @@ def top_level_function(path, name):
 
 
 class CameraIsolationTests(unittest.TestCase):
+    def test_hybrid_python_files_compile(self):
+        # ast.parse alone does not reject a misplaced __future__ import.
+        for path in (RUNNER, HYBRID, CAMERA, GUI):
+            with self.subTest(path=path.name):
+                compile(path.read_text(encoding="utf-8"), str(path), "exec")
+
     def test_v04_navigation_and_mapper_are_unmodified(self):
         for name in MOTION_AND_SLAM:
             with self.subTest(function=name):
