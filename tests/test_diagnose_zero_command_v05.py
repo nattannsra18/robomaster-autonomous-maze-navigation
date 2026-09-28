@@ -1,5 +1,6 @@
 """Offline safety checks for the no-motion zero-command differential probe."""
 import ast
+import logging
 import unittest
 from pathlib import Path
 
@@ -52,6 +53,23 @@ class ZeroCommandDiagnosticTests(unittest.TestCase):
             before = main_source.split('sample_stage("' + stage, 1)[0]
             preceding = before.rsplit("if ok is False:", 1)[1]
             self.assertNotIn("return", preceding)
+
+    def test_noise_filter_preserves_sdk_ack_warnings(self):
+        from diagnose_zero_command_v05 import UnregisteredTelemetryNoiseFilter
+
+        filt = UnregisteredTelemetryNoiseFilter()
+        messages = [
+            ("Msg: unpack_protocol, not registered_protocol, cmdset:0x24, cmdid:0x21", False),
+            ("Connection: recv, msg.unpack_protocol failed, msg:<Msg cmdset:0x24, cmdid:0x21>", False),
+            ("Chassis: send_sync_proto, retcode:1", True),
+            ("Client: send_sync_msg wait cmdset:0x3f cmdid:0x21 timeout!", True),
+            ("not registered_protocol, cmdset:0x24, cmdid:0x22", True),
+        ]
+        for msg, expected in messages:
+            record = logging.LogRecord("sdk", logging.WARNING, "sdk.py", 1, msg, (), None)
+            self.assertEqual(filt.filter(record), expected, msg)
+        self.assertEqual(filt.suppressed, 2)
+        self.assertIn("sdk_logger.removeFilter(noise_filter)", SOURCE)
 
     def test_yaw_wrap(self):
         from diagnose_zero_command_v05 import angle_change
