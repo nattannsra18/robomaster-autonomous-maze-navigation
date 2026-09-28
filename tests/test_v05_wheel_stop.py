@@ -63,7 +63,14 @@ class V05WheelStopTests(unittest.TestCase):
         self.assertIsNot(v05.stop_chassis, legacy.stop_chassis)
         func = inspect.getsource(v05.stop_chassis)
         self.assertIn("drive_wheels(w1=0, w2=0, w3=0, w4=0)", func)
-        self.assertNotIn("chassis.drive_speed(", func)
+        calls = [
+            node.func.attr for node in ast.walk(ast.parse(func))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "chassis"
+        ]
+        self.assertEqual(calls, ["drive_wheels"])
         tree = ast.parse(SOURCE)
         from_imports = [
             alias.name for node in ast.walk(tree)
