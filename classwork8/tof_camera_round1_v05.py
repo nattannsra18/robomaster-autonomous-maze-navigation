@@ -991,6 +991,9 @@ def _survey_side_camera_views(
         ),
         target_hold_max_windows=1,
     )
+    # Use a separate detector configured with the shorter side-view frame
+    # budget. The live centered-view detector/preview keeps its own settings.
+    side_detector = TargetDetector(side_config)
     for desired in _camera_side_view_yaws(base_yaw, config):
         if stop_event is not None and stop_event.is_set():
             return False
@@ -1015,7 +1018,7 @@ def _survey_side_camera_views(
             # image from the preceding camera direction.
             frame_epoch = time.monotonic()
             verified, pending, debug, windows = survey_targets_with_hold(
-                target_detector, camera_service, side_config,
+                side_detector, camera_service, side_config,
                 not_before=frame_epoch, stop_event=stop_event,
             )
             current_pitch, current_yaw = tracker.get_angles()
