@@ -26,12 +26,20 @@ SOURCE = (Path(__file__).resolve().parents[1] / "classwork8" /
 
 
 class DummyChassis:
-    def __init__(self, result=True):
+    def __init__(self, result=True, stop_error=None):
         self.result = result
+        self.stop_error = stop_error
         self.wheel_calls = []
         self.speed_calls = []
+        self.call_order = []
+
+    def stop(self):
+        self.call_order.append("cancel_timer")
+        if self.stop_error is not None:
+            raise self.stop_error
 
     def drive_wheels(self, w1=0, w2=0, w3=0, w4=0):
+        self.call_order.append("wheel_zero")
         self.wheel_calls.append((w1, w2, w3, w4))
         return self.result
 
@@ -45,6 +53,7 @@ class V05WheelStopTests(unittest.TestCase):
         chassis = DummyChassis(True)
         self.assertIsNone(v05.stop_chassis(chassis))
         self.assertEqual(chassis.wheel_calls, [(0, 0, 0, 0)])
+        self.assertEqual(chassis.call_order, ["cancel_timer", "wheel_zero"])
         self.assertEqual(chassis.speed_calls, [])
         self.assertIsNone(v05.stop_chassis(None))
 
@@ -57,7 +66,16 @@ class V05WheelStopTests(unittest.TestCase):
                 ):
                     v05.stop_chassis(chassis)
                 self.assertEqual(chassis.wheel_calls, [(0, 0, 0, 0)])
+                self.assertEqual(chassis.call_order, ["cancel_timer", "wheel_zero"])
                 self.assertEqual(chassis.speed_calls, [])
+
+    def test_failed_timer_cancel_still_sends_wheel_stop_and_aborts(self):
+        chassis = DummyChassis(stop_error=RuntimeError("timer error"))
+        with self.assertRaisesRegex(RuntimeError, "V05_STOP_TIMER_CANCEL_FAILED"):
+            v05.stop_chassis(chassis)
+        self.assertEqual(chassis.call_order, ["cancel_timer", "wheel_zero"])
+        self.assertEqual(chassis.wheel_calls, [(0, 0, 0, 0)])
+        self.assertEqual(chassis.speed_calls, [])
 
     def test_v05_helper_is_local_legacy_is_unchanged(self):
         self.assertIsNot(v05.stop_chassis, legacy.stop_chassis)
@@ -70,7 +88,7 @@ class V05WheelStopTests(unittest.TestCase):
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "chassis"
         ]
-        self.assertEqual(calls, ["drive_wheels"])
+        self.assertEqual(calls, ["stop", "drive_wheels"])
         tree = ast.parse(SOURCE)
         from_imports = [
             alias.name for node in ast.walk(tree)
