@@ -44,6 +44,16 @@ def stop_chassis(chassis) -> None:
     """
     if chassis is None:
         return
+    # SDK Chassis.drive_speed(..., timeout=...) arms a Timer that later
+    # invokes drive_speed(0,0,0). It could otherwise switch us BACK into
+    # the drifting chassis speed mode even after a successful wheel stop.
+    # SDK Chassis.stop() cancels only that timer (Module.stop is a no-op).
+    timer_error = None
+    try:
+        chassis.stop()
+    except Exception as exc:
+        timer_error = exc
+    # Still issue a physical zero-wheel command if timer cancellation failed.
     ack = chassis.drive_wheels(w1=0, w2=0, w3=0, w4=0)
     if ack is not True:
         # Fail closed rather than silently fall back to the speed-mode
@@ -52,6 +62,11 @@ def stop_chassis(chassis) -> None:
             "V05_WHEEL_STOP_NOT_ACKNOWLEDGED: drive_wheels(0,0,0,0) "
             "did not confirm the stop; halt the run and inspect the robot"
         )
+    if timer_error is not None:
+        raise RuntimeError(
+            "V05_STOP_TIMER_CANCEL_FAILED: wheel zero was sent, but the "
+            "previous drive_speed timer may remain active"
+        ) from timer_error
 
 
 # Logical map directions relative to the chassis heading at mission start.
