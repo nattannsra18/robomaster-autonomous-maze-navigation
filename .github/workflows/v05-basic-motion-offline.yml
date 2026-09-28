@@ -1,0 +1,26 @@
+name: V05 Basic Motion Offline Checks
+on:
+  push:
+    branches:
+      - refactor/v05-basic-motion-91fa792
+  workflow_dispatch:
+
+jobs:
+  offline:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - name: Install offline-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install robomaster==0.1.1.68 numpy==1.24.4 opencv-python-headless==4.8.1.78
+      - name: Syntax validation
+        run: |
+          python -m compileall -q classwork8 final_round1_tof_camera_01.py tests
+      - name: Offline regressions (no robot connected)
+        run: |
+          python -m unittest tests.test_basic_heading_v05 tests.test_final_gimbal_pitch_v05 tests.test_final_motion_safety_v05 tests.test_basic_gui_config_v05 tests.test_final_target_detection -v
