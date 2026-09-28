@@ -12,7 +12,7 @@ from dataclasses import replace
 
 from robomaster_mission.mission import stop_chassis
 from .camera_service import CameraService
-from .live_survey import LiveSurveyBridge
+from .live_survey_v04_camera import LiveSurveyBridge
 from .target_detection import TargetDetector, TargetRegistry, survey_targets_with_hold
 
 
