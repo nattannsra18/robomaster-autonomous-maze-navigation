@@ -333,11 +333,13 @@ class RealtimeMapGUI:
             text="APPLY CAMERA PITCH AT NEXT SCAN",
             command=self._apply_camera_pitch,
         ).pack(fill="x", pady=(1, 3))
-        ttk.Button(
+        ttk.Label(
             right,
-            text="RESCAN CURRENT CELL",
-            command=self._request_rescan,
-        ).pack(fill="x", pady=(0, 4))
+            text="Time limit: exactly four ToF scan directions per cell. "
+                 "Camera pitch edits apply on the next new cell; repeat scans "
+                 "of the current cell are disabled.",
+            wraplength=285,
+        ).pack(anchor="w", pady=(0, 4))
         ttk.Label(
             right,
             textvariable=self.pitch_status_var,
@@ -484,10 +486,9 @@ class RealtimeMapGUI:
             return
         self._apply_camera_pitch()
         self._on_roi_bottom_change()
-        self.survey_bridge.request_rescan()
         self.pitch_status_var.set(
-            "Rescan queued: the robot will finish the active scan then "
-            "inspect this cell again before choosing a movement."
+            "Four-scan time budget: no repeat scan of this cell. "
+            "Updated camera pitch applies at the next new cell."
         )
 
     def _save_camera_sample(self) -> None:
