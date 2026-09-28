@@ -51,7 +51,7 @@ class DriftDiagnosticTests(unittest.TestCase):
         self.assertIn('if gimbal_ready is False:', SOURCE)
         self.assertIn('if result is False:', SOURCE)
         self.assertNotIn('if not command_ok:', SOURCE)
-        self.assertIn('None is normal for SDK async send', SOURCE)
+        self.assertIn('None is the official SDK fire-and-forget return', SOURCE)
 
     def test_probe_with_none_async_return_repeats_until_feedback_moves(self):
         from diagnose_chassis_drift_v05 import _gimbal_closed_loop_probe
