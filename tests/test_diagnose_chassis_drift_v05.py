@@ -34,7 +34,7 @@ class DriftDiagnosticTests(unittest.TestCase):
         self.assertIn("gimbal.resume()", SOURCE)
         self.assertIn('speed = +30.0 if initial < -5.0', SOURCE)
         self.assertIn('_stage("GIMBAL_INWARD_PULSE", 1.2', SOURCE)
-        self.assertIn('delta * speed <= 3.0', SOURCE)
+        self.assertIn('delta * math.copysign(1.0, speed) <= 3.0', SOURCE)
         self.assertIn('"[GIMBAL_FAIL] no verified inward gimbal motion', SOURCE)
         self.assertNotIn('GIMBAL_LEFT_PULSE', SOURCE)
         self.assertNotIn('GIMBAL_RIGHT_PULSE', SOURCE)
