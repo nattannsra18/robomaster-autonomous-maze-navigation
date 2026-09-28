@@ -166,7 +166,7 @@ def main():
     parser.add_argument("--conn", default="ap", choices=("ap", "sta", "rndis"))
     parser.add_argument(
         "--with-gimbal", action="store_true",
-        help="also make TWO small 0.6-second 12 deg/s yaw pulses; otherwise no gimbal movement",
+        help="resume gimbal and test ONE supervised 1.2-second 30 deg/s inward yaw pulse; abort if feedback does not move",
     )
     args = parser.parse_args()
     ep = robot.Robot()
@@ -223,20 +223,63 @@ def main():
         if stop.is_set() or not args.with_gimbal:
             return
 
-        # The ONLY nonzero speed here belongs to the gimbal, never chassis.
-        for name, speed in (("GIMBAL_LEFT_PULSE", -12.0),
-                            ("GIMBAL_RIGHT_PULSE", +12.0)):
-            _stop_both(chassis, gimbal)
-            gimbal.drive_speed(pitch_speed=0.0, yaw_speed=speed)
-            try:
-                _stage(name, 0.6, telem, started, stop, True)
-            finally:
-                gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
-            if stop.is_set():
-                return
-            _stage(name + "_AFTER_STOP", 4.0, telem, started, stop, True)
-            if stop.is_set():
-                return
+        # Previous probe started around -269 deg: a LEFT pulse was directed
+        # farther into the extreme. First resume and choose only an INWARD
+        # pulse. Do not use action.wait_for_completed() on this robot.
+        _stop_both(chassis, gimbal)
+        gimbal_ready = gimbal.resume()
+        print("[GIMBAL_PROBE] resume={!r}".format(gimbal_ready), flush=True)
+        if not gimbal_ready:
+            print("[GIMBAL_FAIL] resume command rejected; stopping.", flush=True)
+            return
+        time.sleep(0.30)
+        before = telem.snapshot()
+        initial = before["gimbal_relative"]
+        if initial is None or not math.isfinite(initial):
+            print("[GIMBAL_FAIL] no valid yaw feedback; stopping.", flush=True)
+            return
+        age = telem.stamps.get("gimbal_relative")
+        if age is None or time.monotonic() - age > 0.6:
+            print("[GIMBAL_FAIL] stale gimbal feedback; stopping.", flush=True)
+            return
+        # Away from mechanical extremes. -269 -> positive (RIGHT).
+        speed = +30.0 if initial < -5.0 else -30.0 if initial > 5.0 else +30.0
+        print(
+            "[GIMBAL_PROBE] initial={:+.2f} direction={} command={:+.1f} deg/s "
+            "duration=1.2s; no chassis movement commanded.".format(
+                initial, "RIGHT" if speed > 0 else "LEFT", speed
+            ),
+            flush=True,
+        )
+        command_ok = gimbal.drive_speed(pitch_speed=0.0, yaw_speed=speed)
+        print("[GIMBAL_PROBE] drive_speed result={!r}".format(command_ok), flush=True)
+        if not command_ok:
+            print("[GIMBAL_FAIL] drive_speed rejected; stopping.", flush=True)
+            return
+        try:
+            _stage("GIMBAL_INWARD_PULSE", 1.2, telem, started, stop, True)
+        finally:
+            gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+            chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=0.2)
+        time.sleep(0.20)
+        final = telem.snapshot()["gimbal_relative"]
+        delta = None if final is None else float(final) - float(initial)
+        print(
+            "[GIMBAL_PROBE] final={} moved_deg={}".format(
+                _fmt(final), _fmt(delta)
+            ), flush=True,
+        )
+        if delta is None or delta * speed <= 3.0:
+            print(
+                "[GIMBAL_FAIL] no verified inward gimbal motion (>3 deg). "
+                "Do not interpret the pulse as a successful gimbal test; "
+                "inspect gimbal state, obstruction and angle feedback.",
+                flush=True,
+            )
+            return
+        if stop.is_set():
+            return
+        _stage("GIMBAL_AFTER_STOP", 3.0, telem, started, stop, True)
     except KeyboardInterrupt:
         print("[DIAG] Manual stop.", flush=True)
         stop.set()
