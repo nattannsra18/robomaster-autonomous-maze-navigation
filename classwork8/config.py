@@ -37,6 +37,7 @@ class Classwork8Config:
     heading_recover_release_deg: float = 1.0
     heading_recover_max_z_dps: float = 24.0
     heading_drive_sign: float = 1.0  # Verify physical z/attitude sign in traces.
+    yaw_isolation_mode: bool = False  # Explicit diagnosis: never command chassis yaw.
     heading_align_tolerance_deg: float = 1.5
     heading_align_max_error_deg: float = 12.0
     heading_align_max_z_dps: float = 10.0
