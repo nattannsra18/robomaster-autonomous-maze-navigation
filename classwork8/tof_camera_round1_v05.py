@@ -1225,6 +1225,26 @@ def _align_chassis_after_scan(chassis, pose: PoseTracker, config: Classwork8Conf
         stop_chassis(chassis)
 
 
+# A live moving yaw fault must abort before the existing 0.65-second
+# divergence probe can send progressively larger turning commands.
+# Field run 2026-09-28 reached 5.51 deg then 40.87 deg while moving.
+V05_MOVING_YAW_ABORT_DEG = 4.0
+
+
+def _moving_heading_over_limit(
+    config: Classwork8Config,
+    target_yaw_deg: float,
+    actual_yaw_deg: Optional[float],
+) -> bool:
+    if (
+        not config.heading_hold_enabled
+        or config.yaw_isolation_mode
+        or actual_yaw_deg is None
+    ):
+        return False
+    return abs(_heading_error(target_yaw_deg, actual_yaw_deg)) > V05_MOVING_YAW_ABORT_DEG
+
+
 def _basic_motion_command(
     config: Classwork8Config,
     direction: int,
@@ -1345,6 +1365,21 @@ def _drive_one_cell(
                 max_abs_heading_error_deg,
                 abs(normalize_angle_deg(float(start_yaw_deg) - float(yaw))),
             )
+        # Abort a large yaw departure before producing another nonzero
+        # chassis command. The original delayed divergence probe did not
+        # fire until the field run had already rotated >40 degrees.
+        if _moving_heading_over_limit(config, start_yaw_deg, yaw):
+            current_error = _heading_error(start_yaw_deg, yaw)
+            stop_chassis(chassis)
+            print(
+                "[HEADING_FAIL] MOVING_YAW_LIMIT reference={:+.2f} "
+                "actual={:+.2f} error={:+.2f} limit={:.1f}; "
+                "four-wheel zero stop acknowledged".format(
+                    float(start_yaw_deg), float(yaw), float(current_error),
+                    V05_MOVING_YAW_ABORT_DEG,
+                ), flush=True,
+            )
+            return False, "MOVING_YAW_LIMIT", moved
         # Validate observation geometry for mapping ONLY. Incorrect gimbal
         # pitch/yaw must not corrupt SLAM, but cannot alter chassis speed.
         sensor_pitch = gimbal_tracker.get_pitch()
