@@ -269,7 +269,7 @@ def main():
                 _fmt(final), _fmt(delta)
             ), flush=True,
         )
-        if delta is None or delta * speed <= 3.0:
+        if delta is None or delta * math.copysign(1.0, speed) <= 3.0:
             print(
                 "[GIMBAL_FAIL] no verified inward gimbal motion (>3 deg). "
                 "Do not interpret the pulse as a successful gimbal test; "
