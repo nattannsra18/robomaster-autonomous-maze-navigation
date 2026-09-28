@@ -1241,6 +1241,11 @@ def _scan_four_directions(
             force=True,
         )
 
+    print(
+        "[SCAN_BUDGET] cell={} directions=4 order={} extra_yaw_scans=0".format(
+            current_cell, ",".join(DIR_NAME[d] for d in order)
+        ), flush=True,
+    )
     return ranges, open_dirs
 
 
@@ -2527,13 +2532,9 @@ def run(
 
             _heading_snapshot("PRE_SCAN_{}".format(current_cell),
                               pose, gimbal_tracker, float(raw_start_yaw))
-            cache_valid = _should_reuse_scan(
-                current_cell,
-                scanned_cells,
-                edge_states,
-                True,  # Hard limit: a completed cell is NEVER swept again.
-                False,  # A GUI pitch edit cannot add four extra scan directions.
-            )
+            # Hard time budget: NEVER scan a completed cell again, even if
+            # one direction returned None and its topology remains unknown.
+            cache_valid = current_cell in scanned_cells
 
             if cache_valid:
                 # Cache contains only confirmed topology, not a fresh ToF
