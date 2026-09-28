@@ -696,7 +696,7 @@ def _scan_four_directions(
             pose, gimbal_tracker, float(start_yaw_deg),
         )
         print(
-            "[SCAN] Pointing Gimbal {} (target {:+.0f} deg)...".format
+            "[SCAN] Pointing Gimbal {} (target {:+.0f} deg)...".format(
                 DIR_NAME[direction],
                 config.gimbal_yaw_for_direction(direction),
             ),
