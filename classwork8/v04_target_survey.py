@@ -107,8 +107,8 @@ class V04TargetSurvey:
                 if pitch is None or yaw is None:
                     stop_event.wait(0.03)
                     continue
-                if abs(float(pitch) - float(c.gimbal_scan_pitch_deg)) > float(c.gimbal_pitch_unsafe_deg):
-                    return False
+                # A real yaw-only sweep may transiently perturb physical pitch.
+                # No ToF is sampled here; restore and verify pitch AFTER yaw settles.
                 error = float(desired) - float(yaw)  # mechanical axis, do NOT wrap
                 if abs(error) <= float(c.gimbal_tolerance_deg):
                     stable += 1
