@@ -53,10 +53,16 @@ def _defaults(config: Classwork8Config) -> None:
     config.step_tolerance_m = 0.005
     config.odom_scale_x = 1.00
     config.odom_scale_y = 1.00
-    config.travel_speed_mps = 0.10
+    config.travel_speed_mps = 0.20
+    config.midcell_side_check_enabled = False  # opt in through the GUI
+    config.side_start_auto_recovery_enabled = True  # guarded 2.5 cm nudges; ToF + odometry
+    config.supervised_hold_on_safety_dead_end = True  # do not auto-finish on trapped/deferred frontier
 
     config.tof_recovery_wait_sec = 1.20
     config.tof_recovery_retries = 2
+    # Enable bounded wall-follow correction in this mission only; CRITICAL
+    # side and forward ranges still stop the chassis.
+    config.wall_follow_recovery_enabled = True
 
     config.closed_maze_auto_stop = True
     config.closed_maze_perimeter_wall_ratio = 0.70
@@ -67,8 +73,10 @@ def _defaults(config: Classwork8Config) -> None:
     config.target_camera_resolution = "360p"
     config.target_min_confidence = 0.50
     config.target_save_confidence = 0.60
-    config.target_sample_frames = 6
-    config.target_verify_frames = 4
+    config.target_sample_frames = 10
+    config.target_verify_frames = 3
+    config.target_hold_max_sec = 3.0
+    config.target_hold_max_windows = 3
 
     # Do not run the older corridor-steering camera pipeline in this baseline.
     config.vision_enabled = False

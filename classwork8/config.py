@@ -62,7 +62,8 @@ class Classwork8Config:
     # wall, measures that wall while stationary, and then returns ToF to the
     # travel direction before driving resumes. Never scan sideways in motion.
     # These ranges are ToF sensor-to-wall, not chassis-side physical clearance.
-    midcell_side_check_enabled: bool = True
+    wall_follow_recovery_enabled: bool = False  # opt in through Final Round-1 GUI
+    midcell_side_check_enabled: bool = False
     midcell_side_check_ratio: float = 0.48
     # These are sensor-to-wall distances, NOT physical chassis clearance.
     # Field log: RIGHT was 14.5 cm at start and 14.7 cm mid-leg; an old 22 cm
@@ -72,6 +73,33 @@ class Classwork8Config:
     # Only an independently repeated stationary SIDE measurement can clear
     # one suspicious low range. Sustained 6.5 cm must still halt the chassis.
     side_start_recheck_enabled: bool = True
+    # Independent of the optional halfway checkpoint: stop, scan opposite,
+    # and permit only short, odometry-checked moves AWAY from a start-side wall.
+    # Keep the mission alive at an exhausted/no-safe-frontier situation for
+    # supervised correction and explicit RESCAN, instead of auto Stop & Save.
+    # Motion safety and the operator Stop & Save remain fully active.
+    supervised_hold_on_safety_dead_end: bool = False
+    side_start_auto_recovery_enabled: bool = False
+    # Optional experimental: align chassis with mission-start yaw by <=1 deg
+    # ONLY after fresh four-way rays pass the clearance gate. A single ToF
+    # does not measure chassis-corner clearance; leave OFF until physically
+    # checking the robot's swept footprint and supervising the first trial.
+    side_start_heading_recovery_enabled: bool = False
+    side_start_heading_min_error_deg: float = 1.5
+    side_start_heading_max_step_deg: float = 1.0
+    side_start_heading_max_initial_error_deg: float = 8.0
+    side_start_heading_speed_dps: float = 5.0
+    side_start_heading_other_clearance_cm: float = 22.0
+    side_start_recovery_step_m: float = 0.025
+    side_start_recovery_max_attempts: int = 3
+    side_start_recovery_speed_mps: float = 0.055
+    # A stopped, stable 4..8-degree offset can only make short z=0 escape nudges;
+    # it may NOT resume ordinary cell travel or rotate beside the close wall.
+    side_start_escape_max_stable_yaw_deg: float = 8.0
+    side_start_escape_max_yaw_spread_deg: float = 0.75
+    side_start_escape_max_in_pulse_drift_deg: float = 1.0
+    side_start_recovery_opposite_min_cm: float = 20.0
+    side_start_recovery_max_center_offset_m: float = 0.085
     side_start_release_margin_cm: float = 2.0
     side_start_recheck_max_spread_cm: float = 2.0
     midcell_side_soft_margin_cm: float = 18.0
@@ -110,9 +138,9 @@ class Classwork8Config:
     # Turn slowly with YAW ONLY; restore level PITCH after yaw finishes.
     # The observed transient yaw/pitch excursion is logged, but ToF is sampled
     # only AFTER both axes settle to their configured scan angles.
-    gimbal_yaw_speed_dps: float = 90.0
-    gimbal_min_yaw_speed_dps: float = 12.0
-    gimbal_yaw_kp: float = 2.0
+    gimbal_yaw_speed_dps: float = 120.0
+    gimbal_min_yaw_speed_dps: float = 28.0
+    gimbal_yaw_kp: float = 4.8
     gimbal_tolerance_deg: float = 2.5
     gimbal_stable_samples: int = 3
     gimbal_turn_timeout_sec: float = 10.0
@@ -127,9 +155,9 @@ class Classwork8Config:
     # The 27 Sep stationary log alternated around -1.7 / +1.7 deg because
     # the old 2 deg tolerance accepted both endpoints. Slow correction near
     # level and use a tighter acceptance window; do not force a 4 deg/s pulse.
-    gimbal_pitch_kp: float = 1.5
-    gimbal_pitch_min_speed_dps: float = 3.0
-    gimbal_pitch_max_speed_dps: float = 24.0
+    gimbal_pitch_kp: float = 2.0
+    gimbal_pitch_min_speed_dps: float = 4.0
+    gimbal_pitch_max_speed_dps: float = 35.0
     gimbal_pitch_tolerance_deg: float = 0.8
     gimbal_pitch_unsafe_deg: float = 6.0
     gimbal_pitch_drive_sign: float = 1.0
@@ -153,14 +181,19 @@ class Classwork8Config:
     scan_hard_wall_cm: float = 25.0
     scan_ambiguous_retries: int = 1
     scan_ambiguous_retry_settle_sec: float = 0.10
+    # A long echo over a low foam wall cannot independently authorize an
+    # OPEN edge. Require two separated stationary medians and reject mixed
+    # near/long returns rather than mapping the exterior as a new cell.
+    scan_open_confirm_samples: int = 2
+    scan_open_max_spread_cm: float = 35.0
     scan_samples: int = 5
     scan_sample_interval_sec: float = 0.06
     max_moves: int = 500
 
     # Conservative mecanum translation. No 90-degree chassis scan turns.
     # Requested open-route ceiling. Mapped wall-adjacent legs remain speed-capped.
-    travel_speed_mps: float = 0.25
-    stop_front_cm: float = 18.0
+    travel_speed_mps: float = 0.20
+    stop_front_cm: float = 13.0
     slow_front_cm: float = 35.0
     drive_timeout_sec: float = 0.15
     loop_delay_sec: float = 0.04
@@ -207,7 +240,7 @@ class Classwork8Config:
     target_max_frame_age_sec: float = 0.60
     # Camera looks down only while stopped, after the horizontal ToF ray has
     # been sampled. Mapping/driving ALWAYS restore gimbal_scan_pitch_deg.
-    target_camera_pitch_deg: float = -15.0
+    target_camera_pitch_deg: float = -20.0
     target_camera_pitch_min_deg: float = -20.0
     target_camera_pitch_max_deg: float = 10.0
     target_camera_pitch_tolerance_deg: float = 1.5
@@ -215,6 +248,12 @@ class Classwork8Config:
     target_camera_settle_sec: float = 0.15
     target_preview_fps: float = 10.0
     target_survey_open_directions: bool = True
+    # Extra CAMERA-only stationary views for signs near wall/cell corners.
+    # Horizontal ToF rays and logical edge classifications stay cardinal.
+    target_camera_multi_angle_enabled: bool = True
+    target_camera_side_yaw_offset_deg: float = 20.0
+    target_camera_side_hold_max_sec: float = 1.20
+    target_camera_side_sample_frames: int = 6
 
     # Lighting-robust OpenCV detector.
     target_clahe_clip_limit: float = 2.0
@@ -241,7 +280,12 @@ class Classwork8Config:
     target_min_confidence: float = 0.50
     target_save_confidence: float = 0.60
     target_sample_frames: int = 8
-    target_verify_frames: int = 4
+    target_verify_frames: int = 3
+    # Hold a stationary target view for additional independent-frame checks
+    # if some visible candidates were not yet verified. Bound the delay.
+    target_hold_max_sec: float = 3.0
+    target_hold_max_windows: int = 3
+    target_pending_min_frames: int = 2
     target_frame_interval_sec: float = 0.040
     target_verify_max_jump_px: float = 50.0
     target_merge_centroid_px: float = 18.0
@@ -300,10 +344,20 @@ class Classwork8Config:
             raise ValueError("gimbal yaw speed must be above minimum and at most 120 deg/s")
         if self.gimbal_turn_timeout_sec <= 0.0:
             raise ValueError("gimbal turn timeout must be positive")
+        if not 0.0 < self.target_camera_side_yaw_offset_deg <= 25.0:
+            raise ValueError("camera side yaw offset must be >0 and <=25 deg")
+        if not 0.1 <= self.target_camera_side_hold_max_sec <= 3.0:
+            raise ValueError("camera side view hold must be 0.1..3.0 sec")
+        if not 3 <= int(self.target_camera_side_sample_frames) <= 12:
+            raise ValueError("camera side sample count must be 3..12")
         if self.tof_max_mapping_cm <= self.mapping_min_cm:
             raise ValueError("ToF mapping range is invalid")
         if self.tof_open_cm <= self.stop_front_cm:
             raise ValueError("tof_open_cm must be greater than stop_front_cm")
+        if not 2 <= int(self.scan_open_confirm_samples) <= 4:
+            raise ValueError("scan_open_confirm_samples must be 2..4")
+        if not 0.0 < float(self.scan_open_max_spread_cm) <= 50.0:
+            raise ValueError("scan_open_max_spread_cm must be >0 and <=50")
         if self.travel_speed_mps <= 0.0:
             raise ValueError("travel_speed_mps must be positive")
         if self.odom_scale_x <= 0.0 or self.odom_scale_y <= 0.0:
@@ -320,6 +374,32 @@ class Classwork8Config:
             raise ValueError("midcell_side_check_ratio must be between 0.10 and 0.85")
         if not 0.0 < self.midcell_side_hard_stop_cm < self.midcell_side_soft_margin_cm <= self.scan_side_wall_max_cm:
             raise ValueError("midcell side clearance thresholds must increase up to scan_side_wall_max_cm")
+        if not 0.5 <= self.side_start_heading_min_error_deg <= 5.0:
+            raise ValueError("heading alignment error threshold must be 0.5..5 deg")
+        if not 0.1 < self.side_start_heading_max_step_deg <= 2.0:
+            raise ValueError("heading alignment step must be >0.1 and <=2 deg")
+        if not self.side_start_heading_max_initial_error_deg >= self.side_start_heading_min_error_deg:
+            raise ValueError("heading alignment max initial error is invalid")
+        if not 0.0 < self.side_start_heading_speed_dps <= 8.0:
+            raise ValueError("heading alignment speed must be <=8 deg/s")
+        if self.side_start_heading_other_clearance_cm < self.stop_front_cm:
+            raise ValueError("heading alignment clearance must be >= emergency stop range")
+        if not 0.0 < self.side_start_recovery_step_m <= 0.03:
+            raise ValueError("side-start recovery step must be >0 and <=3 cm")
+        if not 1 <= self.side_start_recovery_max_attempts <= 3:
+            raise ValueError("side-start recovery attempt limit must be 1..3")
+        if not 0.0 < self.side_start_recovery_speed_mps <= 0.08:
+            raise ValueError("side-start recovery speed must be <=0.08 m/s")
+        if not self.heading_recover_trigger_deg <= self.side_start_escape_max_stable_yaw_deg <= 8.0:
+            raise ValueError("escape stable-yaw cap must be between heading trigger and 8 deg")
+        if not 0.1 <= self.side_start_escape_max_yaw_spread_deg <= 1.0:
+            raise ValueError("escape stationary yaw spread must be 0.1..1 deg")
+        if not 0.25 <= self.side_start_escape_max_in_pulse_drift_deg <= 1.5:
+            raise ValueError("escape in-pulse yaw drift must be 0.25..1.5 deg")
+        if self.side_start_recovery_opposite_min_cm < 20.0:
+            raise ValueError("side-start opposite clearance must be >=20 cm")
+        if not 0.0 < self.side_start_recovery_max_center_offset_m < self.cell_size_m / 2:
+            raise ValueError("side-start centre offset limit is invalid")
         if not 0.0 < self.side_start_release_margin_cm <= 5.0:
             raise ValueError("side start release margin must be 0..5 cm")
         if not 0.0 < self.side_start_recheck_max_spread_cm <= 5.0:
@@ -379,6 +459,10 @@ class Classwork8Config:
             raise ValueError("target frame counts must be positive")
         if self.target_verify_frames > self.target_sample_frames:
             raise ValueError("target_verify_frames cannot exceed target_sample_frames")
+        if self.target_hold_max_sec <= 0 or not 1 <= self.target_hold_max_windows <= 8:
+            raise ValueError("target hold time/windows must be positive and bounded")
+        if not 1 <= self.target_pending_min_frames <= self.target_verify_frames:
+            raise ValueError("target pending frames must be within verify frame count")
         if self.target_merge_distance_m <= 0.0:
             raise ValueError("target_merge_distance_m must be positive")
         if not 0.0 <= self.closed_maze_perimeter_wall_ratio <= 1.0:

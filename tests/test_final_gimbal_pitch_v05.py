@@ -145,6 +145,33 @@ class PitchHoldTests(unittest.TestCase):
             for pitch, yaw in coupled.commands
         ))
 
+    def test_small_post_settle_yaw_drift_is_retried_once(self):
+        self.tracker.pitch = 0.0
+        self.tracker.yaw = -90.0
+        original_get_angles = self.tracker.get_angles
+        count = {"value": 0}
+
+        def one_settle_disturbance():
+            count["value"] += 1
+            # Pre-pitch (2), yaw (2), post-pitch (2), final check (7).
+            if count["value"] == 7:
+                with self.tracker._lock:
+                    self.tracker.pitch = -0.6
+                    self.tracker.yaw = -87.4  # 2.6 deg outside 2.5 tolerance
+            return original_get_angles()
+
+        self.tracker.get_angles = one_settle_disturbance
+        success = _point_gimbal(
+            self.gimbal, self.sensors, self.tracker, 3, self.config, None
+        )
+        self.assertTrue(success)
+        self.assertEqual(self.sensors.resets, 1)
+        self.assertLessEqual(
+            abs(self.tracker.get_yaw() + 90.0),
+            self.config.gimbal_tolerance_deg,
+        )
+        self.assertTrue(any(abs(yaw) > 0 for _pitch, yaw in self.gimbal.commands))
+
     def test_pitch_that_cannot_be_relevelled_still_blocks_tof(self):
         self.config.gimbal_turn_timeout_sec = 0.18
         self.tracker.pitch = 7.0

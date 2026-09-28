@@ -424,6 +424,8 @@ class PoseTracker:
         self.yaw: Optional[float] = None
         self.pitch: Optional[float] = None
         self.roll: Optional[float] = None
+        self.yaw_sequence: int = 0
+        self.yaw_received_at: Optional[float] = None
 
     def position_callback(self, data):
         try:
@@ -446,6 +448,8 @@ class PoseTracker:
                 self.yaw = normalize_angle_deg(yaw)
                 self.pitch = float(pitch)
                 self.roll = float(roll)
+                self.yaw_sequence += 1
+                self.yaw_received_at = time.monotonic()
         except Exception as exc:
             print("Attitude callback error:", exc)
 
@@ -456,6 +460,15 @@ class PoseTracker:
     def get_yaw(self) -> Optional[float]:
         with self._lock:
             return self.yaw
+
+    def get_yaw_sample(self) -> Tuple[Optional[float], int, Optional[float]]:
+        """Atomic yaw, attitude callback sequence and monotonic receive time.
+
+        Allows physical recovery to distinguish NEW frames from rereading one
+        cached yaw value. The original get_yaw API is unchanged.
+        """
+        with self._lock:
+            return self.yaw, self.yaw_sequence, self.yaw_received_at
 
     def has_position(self) -> bool:
         x, y = self.get_xy()

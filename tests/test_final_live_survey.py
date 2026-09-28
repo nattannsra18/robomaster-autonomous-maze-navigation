@@ -98,7 +98,7 @@ class LiveSurveyTests(unittest.TestCase):
         self.assertTrue(bridge.set_skip_visited_scans(True))
         self.assertEqual(bridge.set_yaw_speed(60.0), 60.0)
         self.assertEqual(self.config.gimbal_yaw_speed_dps, 60.0)
-        self.assertEqual(bridge.set_yaw_speed(300.0), 90.0)
+        self.assertEqual(bridge.set_yaw_speed(300.0), 120.0)
         bridge.request_rescan()
         self.assertTrue(bridge.rescan_requested())
         self.assertTrue(bridge.consume_rescan())

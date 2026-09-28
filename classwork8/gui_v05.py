@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import Callable
 
 from .live_survey import LiveSurveyBridge
-from .target_map_visual import target_plot_geometry
+from .target_map_visual import (
+    confirmed_map_targets,
+    target_plot_geometry,
+    target_marker_offsets,
+)
 
 
 class RealtimeMapGUI:
@@ -266,7 +270,7 @@ class RealtimeMapGUI:
         ).pack(anchor="w", pady=(0, 3))
         self.yaw_speed_slider = tk.Scale(
             right,
-            from_=15, to=90, resolution=5,
+            from_=15, to=120, resolution=5,
             orient="horizontal",
             variable=self.yaw_speed_var,
             label="Max Gimbal yaw speed (deg/s)",
@@ -372,8 +376,8 @@ class RealtimeMapGUI:
                 "Blue = realtime odometry trajectory\n"
                 "Light blue = travelled logical path\n"
                 "Purple dashed = planned route to nearest frontier\n"
-                "Solid Txx = tentative near-wall estimate\n"
-                "Hollow Txx? LOS = sighting ray, NOT target position\n"
+                "Solid Txx = near-wall target position estimate\n"
+                "Distant / pending signs stay in saved records, not on map\n"
                 "Green S = mission start\n"
                 "Red R = robot\n"
                 "Orange arrow = current ToF/Gimbal direction"
@@ -680,10 +684,10 @@ class RealtimeMapGUI:
             self.vision_var.set("Camera: unavailable; ToF mapping continues")
 
         self.target_var.set(
-            "Target records: {} | distant sightings: {} | near-wall candidates: {}".format(
-                int(snapshot.get("target_count", 0)),
-                int(snapshot.get("target_sighting_count", 0)),
-                int(snapshot.get("target_position_candidate_count", 0)),
+            "Wall-position signs on map: {} | corner/side views: {} verified "
+            "(bearing-only; not counted as unique targets)".format(
+                len(confirmed_map_targets(snapshot.get("targets"))),
+                snapshot.get("target_side_view_verified_count", 0),
             )
         )
 
@@ -811,7 +815,7 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
-        for target in snapshot.get("targets") or []:
+        for target in confirmed_map_targets(snapshot.get("targets")):
             hint, _origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
@@ -954,44 +958,40 @@ class RealtimeMapGUI:
 
         target_colours = {
             "red": "#dc2626", "green": "#16a34a",
-            "blue": "#2563eb", "yellow": "#ca8a04",
+            "blue": "#2563eb", "yellow": "#facc15",
             "orange": "#ea580c",
         }
-        for target in snapshot.get("targets") or []:
+        targets = confirmed_map_targets(snapshot.get("targets"))
+        badge_offsets = target_marker_offsets(
+            targets, float(snapshot.get("cell_size_m", 0.60))
+        )
+        for target, (offset_x, offset_y) in zip(targets, badge_offsets):
             hint, origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
             if hint is None:
                 continue
-            tx, ty = metric_to_image(*hint)
+            anchor_x, anchor_y = metric_to_image(*hint)
+            tx = anchor_x + offset_x * size
+            ty = anchor_y + offset_y * size
+            if offset_x or offset_y:
+                # Short leader points to the common ToF range estimate.
+                draw.line((anchor_x, anchor_y, tx, ty),
+                          fill=self.COLOURS["muted"], width=1)
             colour = target_colours.get(
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            if sighting:
-                if origin is not None:
-                    oxp, oyp = metric_to_image(*origin)
-                    draw.line(
-                        (oxp, oyp, tx, ty),
-                        fill=colour, width=max(2, int(size * 0.025)),
-                    )
-                draw.ellipse(
-                    (tx - radius, ty - radius, tx + radius, ty + radius),
-                    fill=self.COLOURS["background"],
-                    outline=colour, width=3,
-                )
-                label = str(target.get("target_id", "T")) + "?"
-                draw.text((tx + radius + 2, ty - 5), label, fill=colour, font=font)
-            else:
-                draw.ellipse(
-                    (tx - radius, ty - radius, tx + radius, ty + radius),
-                    fill=colour, outline="white", width=2,
-                )
-                draw.text(
-                    (tx - radius * 0.6, ty - 5),
-                    str(target.get("target_id", "T")),
-                    fill="white", font=font,
-                )
+            draw.ellipse(
+                (tx - radius, ty - radius, tx + radius, ty + radius),
+                fill=colour, outline="white", width=2,
+            )
+            draw.text(
+                (tx - radius * 0.6, ty - 5),
+                str(target.get("target_id", "T")),
+                fill="#1f2937" if target.get("color") == "yellow" else "white",
+                font=font,
+            )
 
         sx, sy = logical_center((0, 0))
         r = max(9.0, size * 0.16)
@@ -1116,7 +1116,7 @@ class RealtimeMapGUI:
         known_cells.add((0, 0))
 
         display_cells = [self._display_cell(cell) for cell in known_cells]
-        for target in snapshot.get("targets") or []:
+        for target in confirmed_map_targets(snapshot.get("targets")):
             hint, _origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
@@ -1290,46 +1290,40 @@ class RealtimeMapGUI:
         # derived from the observing cell + gimbal direction + ToF distance.
         target_colours = {
             "red": "#dc2626", "green": "#16a34a",
-            "blue": "#2563eb", "yellow": "#ca8a04",
+            "blue": "#2563eb", "yellow": "#facc15",
             "orange": "#ea580c",
         }
-        for target in snapshot.get("targets") or []:
+        targets = confirmed_map_targets(snapshot.get("targets"))
+        badge_offsets = target_marker_offsets(
+            targets, float(snapshot.get("cell_size_m", 0.60))
+        )
+        for target, (offset_x, offset_y) in zip(targets, badge_offsets):
             hint, origin, sighting = target_plot_geometry(
                 target, float(snapshot.get("cell_size_m", 0.60))
             )
             if hint is None:
                 continue
-            tx, ty = metric_to_canvas(*hint)
+            anchor_x, anchor_y = metric_to_canvas(*hint)
+            tx = anchor_x + offset_x * size
+            ty = anchor_y + offset_y * size
+            if offset_x or offset_y:
+                canvas.create_line(
+                    anchor_x, anchor_y, tx, ty,
+                    fill=colours["muted"], width=1,
+                )
             colour = target_colours.get(
                 str(target.get("color", "")).lower(), "#7c3aed"
             )
             radius = max(8.0, size * 0.12)
-            if sighting:
-                if origin is not None:
-                    oxp, oyp = metric_to_canvas(*origin)
-                    canvas.create_line(
-                        oxp, oyp, tx, ty, fill=colour, width=2,
-                        dash=(4, 4),
-                    )
-                canvas.create_oval(
-                    tx - radius, ty - radius, tx + radius, ty + radius,
-                    fill=colours["background"], outline=colour, width=3,
-                )
-                canvas.create_text(
-                    tx + radius + 4, ty, anchor="w",
-                    text=str(target.get("target_id", "T")) + "? LOS",
-                    fill=colour, font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
-                )
-            else:
-                canvas.create_oval(
-                    tx - radius, ty - radius, tx + radius, ty + radius,
-                    fill=colour, outline="white", width=2,
-                )
-                canvas.create_text(
-                    tx, ty, text=str(target.get("target_id", "T")),
-                    fill="white",
-                    font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
-                )
+            canvas.create_oval(
+                tx - radius, ty - radius, tx + radius, ty + radius,
+                fill=colour, outline="white", width=2,
+            )
+            canvas.create_text(
+                tx, ty, text=str(target.get("target_id", "T")),
+                fill="#1f2937" if target.get("color") == "yellow" else "white",
+                font=("Segoe UI", max(7, int(size * 0.09)), "bold"),
+            )
 
         # Start marker.
         sx, sy = logical_center((0, 0))

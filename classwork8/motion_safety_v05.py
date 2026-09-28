@@ -44,6 +44,8 @@ def side_checkpoint_decision(
     baseline_cm: Optional[Dict[int, Optional[float]]] = None,
     max_baseline_drop_cm: float = 4.0,
     recenter_deadband_cm: float = 1.5,
+    allow_soft_recovery: bool = False,
+    opposite_clearance_cm: Optional[float] = None,
 ) -> Tuple[bool, str, float]:
     """Evaluate a stationary side scan: (may_continue, label, right_bias).
 
@@ -61,6 +63,7 @@ def side_checkpoint_decision(
     baseline_cm = baseline_cm or {}
     valid = {}
     reference = {}
+    approaching_side = None
 
     for side in wall_sides:
         value = readings_cm.get(side)
@@ -81,7 +84,28 @@ def side_checkpoint_decision(
             baseline = float(baseline)
             reference[side] = baseline
             if baseline - distance >= float(max_baseline_drop_cm):
-                return False, "SIDE_RANGE_DROP_{}".format(name), 0.0
+                if approaching_side is not None:
+                    return False, "SIDE_RANGE_DROP_BOTH", 0.0
+                approaching_side = side
+
+    # A stationary scan of the OPPOSITE direction is essential. Never recover
+    # from a short side return using cached data or only the approaching wall.
+    if approaching_side is not None:
+        name = "LEFT" if approaching_side == left_dir else "RIGHT"
+        clearance = opposite_clearance_cm
+        if (
+            not allow_soft_recovery or clearance is None
+            or float(clearance) <= float(soft_margin_cm)
+        ):
+            return False, "SIDE_RANGE_DROP_{}".format(name), 0.0
+        # Hard stop above was checked first; recovery is deliberately a slow
+        # bias while advancing, not a blind lateral strafe into another wall.
+        away_sign = 1.0 if approaching_side == left_dir else -1.0
+        return (
+            True,
+            "MIDCELL_SOFT_WALL_RECOVERY_AWAY_{}".format(name),
+            away_sign * max(0.0, float(max_bias_mps)),
+        )
 
     if not valid:
         return True, "SIDE_WALL_NOT_VISIBLE_NO_AUTO_STEER", 0.0
@@ -165,3 +189,182 @@ def bound_travel_lateral(
     )
     difference = bounded - lateral
     return x_cmd + rx * difference, y_cmd + ry * difference
+
+
+def side_start_recovery_preflight(
+    confirmed_side_cm: Optional[float],
+    fresh_opposite_cm: Optional[float],
+    *,
+    hard_stop_cm: float,
+    release_margin_cm: float,
+    opposite_min_cm: float,
+    step_m: float,
+) -> Tuple[bool, str]:
+    """Authorize ONLY an away-from-wall nudge with a fresh opposite-direction ray.
+
+    This checks sensor-to-wall distances, not body clearance. Physical sensor
+    offsets and low obstacles must be checked at the real robot. Never move
+    on a missing reading, or without additional room beyond the small step.
+    """
+    if confirmed_side_cm is None or float(confirmed_side_cm) <= 0.0:
+        return False, "RECOVERY_NO_CONFIRMED_SIDE_RANGE"
+    if fresh_opposite_cm is None or float(fresh_opposite_cm) <= 0.0:
+        return False, "RECOVERY_NO_FRESH_OPPOSITE_RANGE"
+    if float(confirmed_side_cm) >= float(hard_stop_cm) + float(release_margin_cm):
+        return False, "RECOVERY_NOT_NEEDED"
+    if float(step_m) <= 0.0:
+        return False, "RECOVERY_INVALID_STEP"
+    required = max(
+        float(opposite_min_cm),
+        float(hard_stop_cm) + float(release_margin_cm) +
+        float(step_m) * 100.0 + 3.0,
+    )
+    if float(fresh_opposite_cm) < required:
+        return False, "RECOVERY_OPPOSITE_TOO_CLOSE"
+    return True, "RECOVERY_SAFE_OPPOSITE_RAY"
+
+
+def heading_alignment_preflight(
+    yaw_error_deg: Optional[float],
+    side_ranges_cm: Dict[int, Optional[float]],
+    critical_side: int,
+    *,
+    min_error_deg: float,
+    max_step_deg: float,
+    max_initial_error_deg: float,
+    critical_side_min_cm: float,
+    other_side_min_cm: float,
+) -> Tuple[bool, str, float]:
+    """Plan only a small correction toward mission-start heading, never a guess.
+
+    These are *central ToF rays*, not physical chassis-corner clearance. A
+    verified chassis-swept envelope and attended field test are also required
+    before enabling automatic chassis rotation in a narrow real maze.
+    """
+    if yaw_error_deg is None:
+        return False, "HEADING_RECOVERY_NO_YAW", 0.0
+    error = float(yaw_error_deg)
+    if abs(error) < float(min_error_deg):
+        return False, "HEADING_RECOVERY_ALREADY_ALIGNED", 0.0
+    if abs(error) > float(max_initial_error_deg):
+        return False, "HEADING_RECOVERY_YAW_TOO_LARGE", 0.0
+    for direction in range(4):
+        value = side_ranges_cm.get(direction)
+        if value is None or float(value) <= 0.0:
+            return False, "HEADING_RECOVERY_RANGE_UNAVAILABLE", 0.0
+        required = (
+            float(critical_side_min_cm)
+            if direction == int(critical_side) % 4
+            else float(other_side_min_cm)
+        )
+        if float(value) < required:
+            return False, "HEADING_RECOVERY_NO_ROTATION_CLEARANCE_" + str(direction), 0.0
+    correction = max(-float(max_step_deg), min(float(max_step_deg), error))
+    return True, "HEADING_RECOVERY_SMALL_CORRECTION", correction
+
+
+
+def stationary_escape_heading_preflight(
+    yaw_errors_deg,
+    *,
+    trigger_deg: float,
+    max_stable_offset_deg: float,
+    max_spread_deg: float,
+) -> Tuple[bool, str, Optional[float]]:
+    """Validate THREE stopped heading readings before a no-turn wall escape.
+
+    A consistently offset chassis may make a short commanded motion directly
+    away from the wall (z=0); this never licenses chassis rotation or a normal
+    full-cell move. Any missing/nonfinite/inconsistent sample blocks motion.
+    """
+    import math
+    import statistics
+
+    if len(yaw_errors_deg) != 3 or any(value is None for value in yaw_errors_deg):
+        return False, "RECOVERY_HEADING_SAMPLES_MISSING", None
+    try:
+        errors = [float(value) for value in yaw_errors_deg]
+    except (TypeError, ValueError, OverflowError):
+        return False, "RECOVERY_HEADING_SAMPLES_INVALID", None
+    if not all(math.isfinite(value) for value in errors):
+        return False, "RECOVERY_HEADING_SAMPLES_INVALID", None
+    if max(errors) - min(errors) > float(max_spread_deg):
+        return False, "RECOVERY_HEADING_UNSTABLE", None
+    reference = float(statistics.median(errors))
+    if max(abs(value) for value in errors) > float(max_stable_offset_deg):
+        return False, "RECOVERY_HEADING_PRE_PULSE_UNSAFE", reference
+    if max(abs(value) for value in errors) <= float(trigger_deg):
+        return True, "RECOVERY_HEADING_STABLE_ALIGNED", reference
+    return True, "RECOVERY_STABLE_OFFSET_ESCAPE_ONLY", reference
+
+
+def stationary_scan_motion(
+    before_xy: Optional[Tuple[float, float]],
+    after_xy: Optional[Tuple[float, float]],
+    before_yaw_deg: Optional[float],
+    after_yaw_deg: Optional[float],
+    *,
+    warn_translation_m: float = 0.004,
+    warn_yaw_deg: float = 0.35,
+) -> Tuple[Optional[float], Optional[float], bool]:
+    """Measure chassis odometry/attitude drift during a gimbal-only scan.
+
+    Diagnostic, not proof of physical immobility: wheel slip and passive
+    movement may not be visible to wheel odometry.
+    """
+    import math
+
+    distance = None
+    yaw_change = None
+    if before_xy is not None and after_xy is not None:
+        try:
+            coordinates = tuple(before_xy) + tuple(after_xy)
+            if len(coordinates) == 4 and all(math.isfinite(float(v)) for v in coordinates):
+                distance = math.hypot(
+                    float(after_xy[0]) - float(before_xy[0]),
+                    float(after_xy[1]) - float(before_xy[1]),
+                )
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if before_yaw_deg is not None and after_yaw_deg is not None:
+        try:
+            first, second = float(before_yaw_deg), float(after_yaw_deg)
+            if math.isfinite(first) and math.isfinite(second):
+                yaw_change = (second - first + 180.0) % 360.0 - 180.0
+        except (TypeError, ValueError, OverflowError):
+            pass
+    warning = (
+        (distance is not None and distance >= float(warn_translation_m))
+        or (yaw_change is not None and abs(yaw_change) >= float(warn_yaw_deg))
+    )
+    return distance, yaw_change, bool(warning)
+
+def supervised_recheck_pose_ok(
+    paused_xy: Optional[Tuple[float, float]],
+    current_xy: Optional[Tuple[float, float]],
+    yaw_error_deg: Optional[float],
+    *,
+    max_position_change_m: float = 0.03,
+    max_yaw_error_deg: float = 1.0,
+) -> Tuple[bool, str]:
+    """Do not reuse an old logical map after moving/lifting the physical robot.
+
+    This validates reported wheel odometry, not actual unreported wheel slip.
+    It does NOT authorize motor motion: every attempted leg must independently
+    pass its existing fresh ToF, heading and odometry safety gates.
+    """
+    import math
+
+    if paused_xy is None or current_xy is None or yaw_error_deg is None:
+        return False, "SUPERVISED_POSE_UNAVAILABLE"
+    values = tuple(paused_xy) + tuple(current_xy) + (yaw_error_deg,)
+    if len(values) != 5 or not all(math.isfinite(float(v)) for v in values):
+        return False, "SUPERVISED_POSE_INVALID"
+    if math.hypot(
+        float(current_xy[0]) - float(paused_xy[0]),
+        float(current_xy[1]) - float(paused_xy[1]),
+    ) > float(max_position_change_m):
+        return False, "RELOCALIZATION_REQUIRED"
+    if abs(float(yaw_error_deg)) > float(max_yaw_error_deg):
+        return False, "SUPERVISED_HEADING_NOT_ALIGNED"
+    return True, "SUPERVISED_FRESH_RECHECK_ALLOWED"

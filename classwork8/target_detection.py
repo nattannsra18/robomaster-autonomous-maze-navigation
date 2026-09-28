@@ -36,11 +36,14 @@ COLOR_RANGES = {
     "blue": [
         ((88, 65, 35), (138, 255, 255)),
     ],
+    # Keep these hue bands DISJOINT. Previous yellow 18..39 and orange 5..24
+    # overlapped at H=18..24, so a warm yellow sign could be saved as orange
+    # depending on the colour confidence / duplicate-suppression ordering.
     "yellow": [
         ((18, 65, 55), (39, 255, 255)),
     ],
     "orange": [
-        ((5, 80, 50), (24, 255, 255)),
+        ((5, 80, 50), (17, 255, 255)),
     ],
 }
 
@@ -95,6 +98,9 @@ class VerifiedTarget:
 class TargetDetector:
     def __init__(self, config) -> None:
         self.config = config
+        # Evidence from the most recent distinct-frame stationary survey.
+        self.last_candidate_evidence: List[dict] = []
+        self.last_capture_timestamp: Optional[float] = None
         self._clahe = cv2.createCLAHE(
             clipLimit=float(config.target_clahe_clip_limit),
             tileGridSize=(
@@ -430,6 +436,9 @@ class TargetDetector:
         self,
         camera_service,
         not_before: Optional[float] = None,
+        *,
+        stop_event=None,
+        max_duration_sec: Optional[float] = None,
     ) -> Tuple[List[VerifiedTarget], Optional[np.ndarray]]:
         """Require consecutive matches on distinct fresh camera frames.
 
@@ -441,6 +450,9 @@ class TargetDetector:
         # A sign that passes consecutive verification at frame 4 must not be
         # discarded merely because a later frame is glared or blurred.
         verified_tracks: List[dict] = []
+        candidate_evidence: List[dict] = []
+        self.last_candidate_evidence = []
+        self.last_capture_timestamp = None
         last_debug = None
 
         sample_count = max(
@@ -452,10 +464,14 @@ class TargetDetector:
             1.0,
             sample_count * max(0.06, interval_sec) * 3.0,
         )
+        if max_duration_sec is not None:
+            deadline = min(deadline, time.monotonic() + max(0.01, float(max_duration_sec)))
         used_frame_count = 0
         last_capture_timestamp: Optional[float] = None
 
         while used_frame_count < sample_count and time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                break
             if hasattr(camera_service, "latest_with_timestamp"):
                 sample = camera_service.latest_with_timestamp(
                     max_age_sec=float(self.config.target_max_frame_age_sec)
@@ -488,6 +504,39 @@ class TargetDetector:
             used_frame_count += 1
             detections, debug = self.detect(frame)
             last_debug = debug
+
+            # Record *independent capture frames*, including candidates that
+            # never pass the stricter consecutive-track verification. Each
+            # frame can contribute at most one hit to each same-view sign.
+            used_evidence = set()
+            for detection in detections:
+                nearest = None
+                nearest_distance = None
+                for index, evidence in enumerate(candidate_evidence):
+                    if index in used_evidence:
+                        continue
+                    old = evidence["detection"]
+                    if old.color != detection.color or old.shape != detection.shape:
+                        continue
+                    delta = math.hypot(
+                        old.centroid[0] - detection.centroid[0],
+                        old.centroid[1] - detection.centroid[1],
+                    )
+                    if delta <= float(self.config.target_merge_centroid_px) and (
+                        nearest_distance is None or delta < nearest_distance
+                    ):
+                        nearest, nearest_distance = index, delta
+                if nearest is None:
+                    candidate_evidence.append({
+                        "detection": detection, "frames": 1,
+                        "confidence_sum": float(detection.confidence),
+                    })
+                    used_evidence.add(len(candidate_evidence) - 1)
+                else:
+                    candidate_evidence[nearest]["detection"] = detection
+                    candidate_evidence[nearest]["frames"] += 1
+                    candidate_evidence[nearest]["confidence_sum"] += float(detection.confidence)
+                    used_evidence.add(nearest)
 
             next_tracks: List[dict] = []
             used_previous = set()
@@ -586,15 +635,104 @@ class TargetDetector:
             ))
 
         verified.sort(key=lambda item: item.confidence, reverse=True)
+        self.last_candidate_evidence = candidate_evidence
+        self.last_capture_timestamp = last_capture_timestamp
         return verified, last_debug
+
+
+def _matches_same_view(first, second, max_distance_px: float) -> bool:
+    """Match two targets without collapsing neighbouring same-colour signs."""
+    return (
+        first.color == second.color
+        and first.shape == second.shape
+        and math.hypot(
+            first.centroid[0] - second.centroid[0],
+            first.centroid[1] - second.centroid[1],
+        ) <= float(max_distance_px)
+    )
+
+
+def survey_targets_with_hold(detector, camera_service, config, *,
+                             not_before=None, stop_event=None):
+    """Bounded stationary survey; return (verified, pending_evidence, debug, windows).
+
+    Keep the current gimbal view when distinct camera frames show a candidate
+    that has not yet been verified. A pending entry is *not* a physical target
+    coordinate. Never use a cached capture in a later verification window.
+    """
+    deadline = time.monotonic() + float(config.target_hold_max_sec)
+    max_windows = max(1, int(config.target_hold_max_windows))
+    merged_verified = []
+    evidence = []
+    debug = None
+    windows = 0
+    minimum = max(1, int(config.target_pending_min_frames))
+    merge_distance = float(config.target_merge_centroid_px)
+    last_capture = not_before
+
+    while windows < max_windows and time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            break
+        remaining = deadline - time.monotonic()
+        found, latest_debug = detector.verify_latest(
+            camera_service, not_before=last_capture, stop_event=stop_event,
+            max_duration_sec=remaining,
+        )
+        windows += 1
+        if latest_debug is not None:
+            debug = latest_debug
+        if detector.last_capture_timestamp is not None:
+            last_capture = detector.last_capture_timestamp
+        for item in found:
+            old_index = next((i for i, previous in enumerate(merged_verified)
+                              if _matches_same_view(previous.detection,
+                                                    item.detection, merge_distance)), None)
+            if old_index is None:
+                merged_verified.append(item)
+            elif item.verified_frames > merged_verified[old_index].verified_frames:
+                merged_verified[old_index] = item
+        for candidate in detector.last_candidate_evidence:
+            detection = candidate["detection"]
+            old_index = next((i for i, previous in enumerate(evidence)
+                              if _matches_same_view(previous["detection"],
+                                                    detection, merge_distance)), None)
+            if old_index is None:
+                evidence.append(dict(candidate))
+            else:
+                evidence[old_index]["detection"] = detection
+                evidence[old_index]["frames"] += candidate["frames"]
+                evidence[old_index]["confidence_sum"] += candidate["confidence_sum"]
+
+        unresolved = [candidate for candidate in evidence
+                      if not any(_matches_same_view(candidate["detection"],
+                                                    item.detection, merge_distance)
+                                 for item in merged_verified)]
+        # Leave immediately after the first complete, independently verified
+        # view. Otherwise give each candidate a little more time, never an
+        # unlimited retry loop or a reason to keep moving with a tilted ToF.
+        if not unresolved or last_capture is None:
+            break
+
+    pending = [candidate for candidate in evidence
+               if candidate["frames"] >= minimum
+               and not any(_matches_same_view(candidate["detection"], item.detection,
+                                              merge_distance)
+                           for item in merged_verified)]
+    return merged_verified, pending, debug, windows
 
 
 class TargetRegistry:
     def __init__(self, config) -> None:
         self.config = config
         self.targets: List[dict] = []
+        self.pending_targets: List[dict] = []
         self.observations: List[dict] = []
+        # An off-axis sighting has no calibrated 2D target coordinate. Store
+        # separately instead of inflating the confirmed unique target count.
+        self.side_view_sightings: List[dict] = []
+        self._next_side_view_id = 1
         self._next_id = 1
+        self._next_pending_id = 1
 
     def _estimate_target_xy(
         self,
@@ -702,6 +840,19 @@ class TargetRegistry:
             "median_lab": [round(float(v), 2) for v in detection.median_lab],
         }
         self.observations.append(observation)
+        # A later confirmed observation upgrades, rather than duplicates, an
+        # earlier tentative same-cell, same-view camera sighting.
+        self.pending_targets = [pending for pending in self.pending_targets
+            if not (
+                pending["color"] == detection.color
+                and pending["shape"] == detection.shape
+                and pending["observation_cells"][0] == observation["approach_cell"]
+                and pending["view_directions"][0] == int(direction) % 4
+                and math.hypot(
+                    pending["centroid_px"][0] - detection.centroid[0],
+                    pending["centroid_px"][1] - detection.centroid[1],
+                ) <= float(self.config.target_merge_centroid_px)
+            )]
 
         match = None
 
@@ -818,18 +969,158 @@ class TargetRegistry:
 
         return match
 
+    def add_side_view_sighting(
+        self,
+        detection: TargetDetection,
+        approach_cell: Tuple[int, int],
+        direction: int,
+        *,
+        camera_yaw_deg: float,
+        camera_pitch_deg: float,
+        side_yaw_offset_deg: float,
+        confidence: float,
+        verified_frames: int,
+        verified: bool,
+    ) -> dict:
+        """Preserve a corner/offset camera observation WITHOUT inventing XY.
+
+        One target may appear at several yaw angles or from several cells.
+        Without calibrated camera intrinsics and cross-view association these
+        are *sightings*, not extra unique targets or firing coordinates.
+        Same-view near-identical observations can be updated conservatively.
+        """
+        approach = [int(approach_cell[0]), int(approach_cell[1])]
+        view_direction = int(direction) % 4
+        yaw = float(camera_yaw_deg)
+        offset = float(side_yaw_offset_deg)
+        centroid = [int(detection.centroid[0]), int(detection.centroid[1])]
+        match = None
+        for item in self.side_view_sightings:
+            if (
+                item["color"] == detection.color
+                and item["shape"] == detection.shape
+                and item["approach_cell"] == approach
+                and item["view_direction"] == view_direction
+                and abs(item["camera_yaw_offset_deg"] - offset) <= 2.0
+                and math.hypot(
+                    item["centroid_px"][0] - centroid[0],
+                    item["centroid_px"][1] - centroid[1],
+                ) <= float(self.config.target_merge_centroid_px)
+            ):
+                match = item
+                break
+        if match is not None:
+            match["verified_frames"] = max(match["verified_frames"], int(verified_frames))
+            match["confidence"] = max(match["confidence"], float(confidence))
+            if verified:
+                match["status"] = "VERIFIED_BEARING_ONLY"
+            return match
+
+        possible_duplicates = [item["target_id"] for item in self.targets if (
+            item["color"] == detection.color
+            and item["shape"] == detection.shape
+            and approach in item.get("observation_cells", [])
+            and view_direction in item.get("view_directions", [])
+        )]
+        item = {
+            "sighting_id": "V{:02d}".format(self._next_side_view_id),
+            "status": "VERIFIED_BEARING_ONLY" if verified else "PENDING_RECHECK",
+            "color": detection.color,
+            "shape": detection.shape,
+            "confidence": float(confidence),
+            "verified_frames": int(verified_frames),
+            "approach_cell": approach,
+            "view_direction": view_direction,
+            "view_direction_name": DIR_NAME[view_direction],
+            "camera_yaw_deg": yaw,
+            "camera_yaw_offset_deg": offset,
+            "camera_pitch_deg": float(camera_pitch_deg),
+            "centroid_px": centroid,
+            "bbox_px": [int(v) for v in detection.bbox],
+            "estimated_target_xy_m": None,
+            "localization_status": "SIGHTING_ONLY",
+            "round2_position_ready": False,
+            "possible_duplicate_of_target_ids": possible_duplicates,
+        }
+        self._next_side_view_id += 1
+        self.side_view_sightings.append(item)
+        return item
+
+    def add_pending(self, evidence: dict, approach_cell: Tuple[int, int],
+                    direction: int, tof_cm: Optional[float]) -> dict:
+        """Save an unverified colour/shape sighting; never offer Round-2 XY."""
+        detection = evidence["detection"]
+        # If already confirmed in this very view, no provisional duplicate.
+        for target in self.targets:
+            if target["color"] != detection.color or target["shape"] != detection.shape:
+                continue
+            if any(view["approach_cell"] == list(approach_cell)
+                   and view["view_direction"] == int(direction) % 4
+                   and math.hypot(view["centroid_px"][0] - detection.centroid[0],
+                                  view["centroid_px"][1] - detection.centroid[1])
+                   <= float(self.config.target_merge_centroid_px)
+                   for view in target.get("reference_views", [])):
+                return target
+        steps = (max(1, int((float(tof_cm) / 100.0) /
+                 max(1e-6, float(self.config.cell_size_m))))
+                 if tof_cm is not None and float(tof_cm) > 0 else 1)
+        dx, dy = DIR_VEC[int(direction) % 4]
+        hint = [int(approach_cell[0] + dx * steps),
+                int(approach_cell[1] + dy * steps)]
+        for pending in self.pending_targets:
+            if (pending["color"] == detection.color
+                and pending["shape"] == detection.shape
+                and pending["observation_cells"][0] == list(approach_cell)
+                and pending["view_directions"][0] == int(direction) % 4
+                and math.hypot(pending["centroid_px"][0] - detection.centroid[0],
+                               pending["centroid_px"][1] - detection.centroid[1])
+                    <= float(self.config.target_merge_centroid_px)):
+                pending["candidate_frames"] = max(int(pending["candidate_frames"]),
+                                                   int(evidence["frames"]))
+                return pending
+        item = {
+            "target_id": "P{:02d}".format(self._next_pending_id),
+            "color": detection.color, "shape": detection.shape,
+            "confidence": float(evidence["confidence_sum"]) / max(1, evidence["frames"]),
+            "candidate_frames": int(evidence["frames"]),
+            "status": "PENDING_RECHECK", "confirmed": False,
+            "localization_status": "SIGHTING_ONLY", "range_confirmed_wall": False,
+            "round2_position_ready": False, "estimated_target_xy_m": None,
+            "sighting_cell_hint": hint,
+            "observation_cells": [list(approach_cell)], "approach_cells": [],
+            "view_directions": [int(direction) % 4],
+            "view_direction_names": [DIR_NAME[int(direction) % 4]],
+            "centroid_px": list(detection.centroid),
+        }
+        self.pending_targets.append(item)
+        self._next_pending_id += 1
+        return item
+
     def public_targets(self) -> List[dict]:
         return json.loads(json.dumps(self.targets))
+
+    def public_pending_targets(self) -> List[dict]:
+        return json.loads(json.dumps(self.pending_targets))
 
     def save(self, run_dir: Path) -> None:
         run_dir = Path(run_dir)
         payload = {
             "version": 2,
             "target_count": len(self.targets),
+            "pending_count": len(self.pending_targets),
+            "side_view_sighting_count": len(self.side_view_sightings),
+            "side_view_verified_count": sum(
+                item["status"] == "VERIFIED_BEARING_ONLY"
+                for item in self.side_view_sightings
+            ),
+            "side_view_sightings": self.side_view_sightings,
+            "pending_targets": self.pending_targets,
             "localization_note": (
                 "SIGHTING_ONLY is a camera bearing, not a target coordinate. "
                 "NEAR_WALL_ESTIMATE is a tentative ToF wall-surface projection; "
-                "Round 2 must revalidate position from a close observation."
+                "Round 2 must revalidate position from a close observation. "
+                "side_view_sightings may include repeated views of one sign "
+                "and are deliberately excluded from unique target_count."
             ),
             "targets": self.targets,
             "observations": self.observations,

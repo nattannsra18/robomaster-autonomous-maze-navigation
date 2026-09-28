@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 import statistics
 import threading
 from collections import deque
@@ -26,6 +27,11 @@ from .motion_safety_v05 import (
     adjacent_wall_sides,
     bound_travel_lateral,
     critical_start_side_recheck,
+    side_start_recovery_preflight,
+    heading_alignment_preflight,
+    stationary_escape_heading_preflight,
+    stationary_scan_motion,
+    supervised_recheck_pose_ok,
     side_checkpoint_decision,
 )
 from .config import Classwork8Config
@@ -35,6 +41,7 @@ from .target_detection import (
     TargetDetector,
     TargetRegistry,
     save_topology,
+    survey_targets_with_hold,
 )
 from .vision import CorridorVision
 
@@ -132,6 +139,77 @@ def _sleep_interruptible(seconds: float, stop_event: Optional[threading.Event]) 
             return False
         time.sleep(min(0.03, max(0.0, deadline - time.monotonic())))
     return True
+
+
+def _fresh_yaw_now(pose, max_age_sec: float = 0.40) -> Optional[float]:
+    """Read a non-stale attitude callback when the tracker supports metadata."""
+    sampler = getattr(pose, "get_yaw_sample", None)
+    if callable(sampler):
+        yaw, _sequence, received_at = sampler()
+        if yaw is None or received_at is None:
+            return None
+        age = time.monotonic() - float(received_at)
+        if not 0.0 <= age <= float(max_age_sec):
+            return None
+    else:
+        # Legacy/fake trackers retain their original get_yaw interface.
+        yaw = pose.get_yaw()
+    if yaw is None or not math.isfinite(float(yaw)):
+        return None
+    return float(yaw)
+
+
+def _stationary_heading_errors(
+    pose,
+    mission_start_yaw_deg: float,
+    stop_event: Optional[threading.Event],
+    *,
+    count: int = 3,
+    max_wait_sec: float = 0.75,
+) -> List[Optional[float]]:
+    """Collect DISTINCT fresh attitude frames, not repeated cached yaw values.
+
+    Production PoseTracker has callback sequence/timestamp. Test doubles and
+    older tracker objects use the legacy polling fallback. Missing callback
+    frames become None and block the heading preflight; no motor command here.
+    """
+    errors: List[Optional[float]] = []
+    sampler = getattr(pose, "get_yaw_sample", None)
+    if callable(sampler):
+        _yaw, last_sequence, _received_at = sampler()
+        deadline = time.monotonic() + max(0.0, float(max_wait_sec))
+        while len(errors) < count and time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                break
+            yaw, sequence, received_at = sampler()
+            if sequence > last_sequence:
+                last_sequence = sequence
+                now = time.monotonic()
+                if (
+                    received_at is None
+                    or not 0.0 <= now - float(received_at) <= 0.40
+                    or yaw is None
+                    or not math.isfinite(float(yaw))
+                ):
+                    errors.append(None)
+                else:
+                    errors.append(normalize_angle_deg(
+                        float(yaw) - float(mission_start_yaw_deg)
+                    ))
+            if len(errors) < count:
+                time.sleep(0.015)
+    else:
+        for _ in range(count):
+            if stop_event is not None and stop_event.is_set():
+                break
+            yaw = _fresh_yaw_now(pose)
+            errors.append(
+                normalize_angle_deg(yaw - float(mission_start_yaw_deg))
+                if yaw is not None else None
+            )
+            if not _sleep_interruptible(0.035, stop_event):
+                break
+    return errors + [None] * max(0, count - len(errors))
 
 
 def _map_xy_from_raw(
@@ -249,6 +327,8 @@ def _update_tof_ray(
     rel_y: float,
     direction: int,
     distance_cm: Optional[float],
+    *,
+    mapped_until_m: Optional[float] = None,
 ) -> None:
     if distance_cm is None or distance_cm < config.mapping_min_cm:
         return
@@ -256,16 +336,50 @@ def _update_tof_ray(
     angle = _direction_angle_rad(direction)
     origin_x = rel_x + math.cos(angle) * config.tof_forward_offset_m
     origin_y = rel_y + math.sin(angle) * config.tof_forward_offset_m
-    hit = distance_cm < config.tof_max_mapping_cm - 1.0
-
+    physical_range_m = float(distance_cm) / 100.0
+    allowed_m = float(config.tof_max_mapping_cm) / 100.0
+    if mapped_until_m is not None:
+        allowed_m = min(allowed_m, max(0.0, float(mapped_until_m)))
+    if allowed_m <= 0.0:
+        return
+    # A long ToF return may be the wall BEHIND a low foam boundary. Only
+    # rasterize space in the current or actually-entered logical cell, never
+    # mark distant exterior space FREE merely because a single ray went long.
+    hit = (
+        physical_range_m <= allowed_m
+        and distance_cm < config.tof_max_mapping_cm - 1.0
+    )
     grid.update_ray(
         origin_x,
         origin_y,
         angle,
-        float(distance_cm) / 100.0,
-        max_range_m=config.tof_max_mapping_cm / 100.0,
+        physical_range_m,
+        max_range_m=allowed_m,
         hit=hit,
     )
+
+
+def _ray_limit_to_cell_face(
+    config: Classwork8Config,
+    origin_cell: Tuple[int, int],
+    rel_x: float,
+    rel_y: float,
+    direction: int,
+) -> float:
+    """Distance from ToF emitter to the far face of the authorized cell.
+
+    For stationary surveys this is the current cell; while driving it is
+    the destination cell. A long echo cannot paint beyond that face.
+    """
+    direction = int(direction) % 4
+    axis, sign = ((0, 1), (1, -1), (0, -1), (1, 1))[direction]
+    face = (float(origin_cell[axis]) + 0.5 * sign) * float(config.cell_size_m)
+    sensor_axis = (float(rel_x), float(rel_y))[axis] + sign * float(config.tof_forward_offset_m)
+    # Stay INSIDE the cell face by at least half an occupancy pixel, rather
+    # than letting raster rounding paint a free pixel across a foam boundary.
+    inset = max(0.02, float(config.resolution_m) * 0.5)
+    return max(0.0, (face - sensor_axis) * sign - inset)
+
 
 
 def _point_gimbal(
@@ -275,6 +389,7 @@ def _point_gimbal(
     direction: int,
     config: Classwork8Config,
     stop_event: Optional[threading.Event],
+    _final_retry: bool = True,
 ) -> bool:
     """Staged, single-axis mapping scan: level pitch -> yaw only -> level pitch.
 
@@ -442,6 +557,14 @@ def _point_gimbal(
             ),
             flush=True,
         )
+        if _final_retry and not _stopped():
+            # A near-threshold endpoint can drift during the final settle.
+            # Re-stabilize ONCE; do not weaken the ray-validation tolerances.
+            print("[GIMBAL] Retrying final orientation once while stopped.", flush=True)
+            return _point_gimbal(
+                gimbal, sensors, tracker, direction, config, stop_event,
+                _final_retry=False,
+            )
         return False
 
     samples = tracker.pitch_samples_since(started_yaw)
@@ -465,6 +588,73 @@ def _point_gimbal(
     )
     sensors.reset_filters()
     return True
+
+
+def _camera_side_view_yaws(base_yaw_deg: float, config: Classwork8Config) -> List[float]:
+    """Bounded viewpoints around one cardinal scan heading, not mapping rays."""
+    if not config.target_camera_multi_angle_enabled:
+        return []
+    offset = float(config.target_camera_side_yaw_offset_deg)
+    return [float(base_yaw_deg) - offset, float(base_yaw_deg) + offset]
+
+
+def _set_camera_observation_yaw(
+    gimbal,
+    tracker: GimbalTracker,
+    config: Classwork8Config,
+    target_yaw: float,
+    stop_event: Optional[threading.Event],
+) -> bool:
+    """Yaw-only side camera positioning while stationary and ToF is level.
+
+    No mapping data is sampled at an offset yaw. The caller must always
+    restore the nominal cardinal heading and horizontal scan pitch afterward.
+    """
+    desired = float(target_yaw)
+    if not -115.0 <= desired <= 215.0:
+        return False
+    deadline = time.monotonic() + float(config.gimbal_turn_timeout_sec)
+    stable = 0
+    try:
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                return False
+            pitch, yaw = tracker.get_angles()
+            if pitch is None or yaw is None:
+                time.sleep(0.025)
+                continue
+            if abs(float(pitch) - float(config.gimbal_scan_pitch_deg)) > float(config.gimbal_pitch_tolerance_deg):
+                print("[CAMERA] Side yaw refused: horizontal pitch not stable.", flush=True)
+                return False
+            error = desired - float(yaw)
+            if abs(error) <= float(config.gimbal_tolerance_deg):
+                gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+                stable += 1
+                if stable >= int(config.gimbal_stable_samples):
+                    if not _sleep_interruptible(config.gimbal_settle_sec, stop_event):
+                        return False
+                    final_pitch, final_yaw = tracker.get_angles()
+                    return (
+                        final_pitch is not None and final_yaw is not None
+                        and abs(float(final_pitch) - float(config.gimbal_scan_pitch_deg)) <= float(config.gimbal_pitch_tolerance_deg)
+                        and abs(float(final_yaw) - desired) <= float(config.gimbal_tolerance_deg)
+                    )
+            else:
+                stable = 0
+                speed = max(
+                    float(config.gimbal_min_yaw_speed_dps),
+                    min(float(config.gimbal_yaw_speed_dps),
+                        abs(error) * float(config.gimbal_yaw_kp)),
+                )
+                gimbal.drive_speed(
+                    pitch_speed=0.0, yaw_speed=math.copysign(speed, error),
+                )
+            time.sleep(0.03)
+        print("[CAMERA] Side yaw timeout: desired={:+.1f}, measured={}".format(
+            desired, tracker.get_yaw()), flush=True)
+        return False
+    finally:
+        gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
 
 
 def _set_camera_observation_pitch(
@@ -747,7 +937,154 @@ def _should_reuse_scan(
     )
 
 
+def _flanked_by_confirmed_walls(
+    cell: Tuple[int, int],
+    direction: int,
+    visited_cells: Set[Tuple[int, int]],
+    edge_states: Dict[Tuple[int, int, int], str],
+) -> bool:
+    """Reject an apparent long gap within an observed continuous wall line.
+
+    Two visited lateral neighbour cells must independently show WALL on the
+    same facing edge. This is a conservative UNKNOWN, not an invented wall:
+    a real narrow doorway remains unresolved until a better observation.
+    """
+    flank_directions = ((int(direction) - 1) % 4, (int(direction) + 1) % 4)
+    flanks = [_neighbor(cell, side) for side in flank_directions]
+    return all(
+        flank in visited_cells
+        and edge_states.get((flank[0], flank[1], int(direction) % 4)) == "WALL"
+        for flank in flanks
+    )
+
+
+def _survey_side_camera_views(
+    chassis,
+    gimbal,
+    sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker,
+    recorder: RunRecorder,
+    config: Classwork8Config,
+    stop_event: Optional[threading.Event],
+    current_cell: Tuple[int, int],
+    direction: int,
+    selected_pitch: float,
+    camera_service: CameraService,
+    target_detector: TargetDetector,
+    target_registry: TargetRegistry,
+    target_debug_holder: List[object],
+    survey_bridge: LiveSurveyBridge,
+) -> bool:
+    """Verify off-axis signs with a stationary camera; never assign target XY.
+
+    Cardinal ToF mapping has already finished and is unaffected. All off-axis
+    observations go into separate bearing-only evidence, not target_count.
+    """
+    base_yaw = float(config.gimbal_yaw_for_direction(direction))
+    side_config = replace(
+        config,
+        target_sample_frames=min(
+            int(config.target_sample_frames), int(config.target_camera_side_sample_frames)
+        ),
+        target_hold_max_sec=min(
+            float(config.target_hold_max_sec), float(config.target_camera_side_hold_max_sec)
+        ),
+        target_hold_max_windows=1,
+    )
+    # Use a separate detector configured with the shorter side-view frame
+    # budget. The live centered-view detector/preview keeps its own settings.
+    side_detector = TargetDetector(side_config)
+    for desired in _camera_side_view_yaws(base_yaw, config):
+        if stop_event is not None and stop_event.is_set():
+            return False
+        # Stop chassis explicitly, and restore the mapping heading in finally
+        # even if a camera side-view turn, pitch move or capture fails.
+        stop_chassis(chassis)
+        restored = False
+        try:
+            if not _set_camera_observation_yaw(
+                gimbal, tracker, config, desired, stop_event
+            ):
+                print("[TARGET_SIDE] Could not reach yaw {:+.1f}; skipping view.".format(
+                    desired), flush=True)
+                continue
+            if not _set_camera_observation_pitch(
+                gimbal, tracker, config, selected_pitch, stop_event
+            ):
+                print("[TARGET_SIDE] Camera pitch unavailable at yaw {:+.1f}.".format(
+                    desired), flush=True)
+                continue
+            # Each view starts AFTER both axes settled; never verify a cached
+            # image from the preceding camera direction.
+            frame_epoch = time.monotonic()
+            verified, pending, debug, windows = survey_targets_with_hold(
+                side_detector, camera_service, side_config,
+                not_before=frame_epoch, stop_event=stop_event,
+            )
+            current_pitch, current_yaw = tracker.get_angles()
+            if (
+                current_pitch is None or current_yaw is None
+                or abs(float(current_pitch) - selected_pitch)
+                    > float(config.target_camera_pitch_tolerance_deg)
+                or abs(float(current_yaw) - desired)
+                    > float(config.gimbal_tolerance_deg)
+            ):
+                print("[TARGET_SIDE] Pose drift; discarding camera evidence.", flush=True)
+                continue
+            target_debug_holder[0] = debug
+            for item in verified:
+                entry = target_registry.add_side_view_sighting(
+                    item.detection, current_cell, direction,
+                    camera_yaw_deg=float(current_yaw),
+                    camera_pitch_deg=float(current_pitch),
+                    side_yaw_offset_deg=desired - base_yaw,
+                    confidence=float(item.confidence),
+                    verified_frames=int(item.verified_frames),
+                    verified=True,
+                )
+                recorder.event(
+                    time.monotonic(), "TARGET_SIDE_VIEW",
+                    "{} {} at yaw {:+.1f} (bearing only)".format(
+                        item.detection.color.upper(), item.detection.shape.upper(),
+                        float(current_yaw)),
+                    logical_node=current_cell,
+                    sighting_id=entry["sighting_id"],
+                    direction=DIR_NAME[direction],
+                    camera_yaw_deg=float(current_yaw),
+                    camera_yaw_offset_deg=desired - base_yaw,
+                    localization_status="SIGHTING_ONLY",
+                )
+            for item in pending:
+                detection = item["detection"]
+                target_registry.add_side_view_sighting(
+                    detection, current_cell, direction,
+                    camera_yaw_deg=float(current_yaw),
+                    camera_pitch_deg=float(current_pitch),
+                    side_yaw_offset_deg=desired - base_yaw,
+                    confidence=float(item["confidence_sum"]) / max(1, int(item["frames"])),
+                    verified_frames=int(item["frames"]),
+                    verified=False,
+                )
+            print("[TARGET_SIDE] {} yaw={:+.1f}, verified={} pending={} windows={}; "
+                  "side views are not unique target coordinates.".format(
+                      DIR_NAME[direction], float(current_yaw), len(verified),
+                      len(pending), windows), flush=True)
+        finally:
+            restored = _point_gimbal(
+                gimbal, sensors, tracker, direction, config, stop_event,
+            )
+            survey_bridge.set_status(
+                "Horizontal ToF restored after side camera view"
+                if restored else "ERROR: cannot restore ToF after side view"
+            )
+            if not restored:
+                print("[TARGET_SIDE] Restore FAILED: abort scan, no movement.", flush=True)
+                return False
+    return True
+
+
 def _scan_four_directions(
+    chassis,
     gimbal,
     pose: PoseTracker,
     sensors: ToFOnlySensorManager,
@@ -782,11 +1119,23 @@ def _scan_four_directions(
     ranges: Dict[int, Optional[float]] = {}
     open_dirs: Set[int] = set()
 
-    stop_chassis_fn_called = False
+    # Reissue zero chassis velocity before scanning. A completed drive-speed
+    # command is not a position brake; allow the wheel/attitude feedback to
+    # settle rather than interpreting post-drive wobble as scan motion.
+    stop_chassis(chassis)
+    if not _sleep_interruptible(0.25, stop_event):
+        return None
 
     for direction in order:
         if stop_event is not None and stop_event.is_set():
             return None
+
+        # No chassis translation or rotation is commanded during this
+        # gimbal-only stage. Keep a measured before/after trace to distinguish
+        # an apparent camera tilt from actual reported chassis drift.
+        stop_chassis(chassis)
+        scan_before_xy = pose.get_xy()
+        scan_before_yaw = _fresh_yaw_now(pose)
 
         print(
             "[SCAN] Pointing Gimbal {} (target {:+.0f} deg)...".format(
@@ -870,6 +1219,7 @@ def _scan_four_directions(
                 )
                 return None
 
+        range_disagreement = False
         # V02: readings between a definite near wall and the normal OPEN
         # threshold are ambiguous.  A foam edge / floor reflection can create
         # one short median even when the branch is physically open.  Re-sample
@@ -893,12 +1243,20 @@ def _scan_four_directions(
                 retry = _sample_tof(sensors, config, stop_event)
                 if retry is not None:
                     retry_values.append(float(retry))
-            distance_cm = max(retry_values)
+            range_disagreement = (
+                min(retry_values) < float(config.tof_open_cm)
+                <= max(retry_values)
+            )
+            # Never turn mixed short/long evidence into a phantom OPEN via max().
+            distance_cm = (
+                None if range_disagreement else float(statistics.median(retry_values))
+            )
             print(
-                "[SCAN] {} ambiguous -> retry candidates {} -> {:.1f} cm".format(
+                "[SCAN] {} ambiguous retry={} -> {}".format(
                     DIR_NAME[direction],
                     [round(v, 1) for v in retry_values],
-                    float(distance_cm),
+                    "UNKNOWN (mixed short/long returns)" if range_disagreement
+                    else "{:.1f} cm".format(float(distance_cm)),
                 ),
                 flush=True,
             )
@@ -919,6 +1277,76 @@ def _scan_four_directions(
                 flush=True,
             )
             return None
+
+        # Low foam walls can let a long ToF ray reach the outside background.
+        # A single high reading is not sufficient to declare a logical OPEN:
+        # require fresh, independent stationary medians after resetting filters.
+        edge_key = _canonical_edge(current_cell, direction)
+        previous_state = edge_states.get(
+            (current_cell[0], current_cell[1], direction)
+        )
+        already_traversed = edge_key in traversed_edges
+        if (
+            distance_cm is not None
+            and distance_cm >= float(config.tof_open_cm)
+            and not already_traversed
+        ):
+            if _flanked_by_confirmed_walls(
+                current_cell, direction, known_cells, edge_states
+            ):
+                print(
+                    "[SCAN_OUTSIDE_REJECTED] {} long echo lies between two "
+                    "previously observed wall edges; keeping this gap UNKNOWN.".format(
+                        DIR_NAME[direction]
+                    ), flush=True,
+                )
+                distance_cm = None
+            elif previous_state == "WALL":
+                print(
+                    "[SCAN_OUTSIDE_REJECTED] {} has a previously confirmed WALL; "
+                    "long echo is not permission to map beyond it.".format(
+                        DIR_NAME[direction]
+                    ), flush=True,
+                )
+                distance_cm = None
+            else:
+                open_readings = [float(distance_cm)]
+                for _ in range(max(1, int(config.scan_open_confirm_samples) - 1)):
+                    sensors.reset_filters()
+                    if not _sleep_interruptible(
+                        config.scan_ambiguous_retry_settle_sec, stop_event
+                    ):
+                        return None
+                    repeat = _sample_tof(sensors, config, stop_event)
+                    if repeat is None:
+                        break
+                    open_readings.append(float(repeat))
+                scan_pitch = gimbal_tracker.get_pitch()
+                open_confirmed = (
+                    len(open_readings) >= int(config.scan_open_confirm_samples)
+                    and min(open_readings) >= float(config.tof_open_cm)
+                    and max(open_readings) - min(open_readings)
+                        <= float(config.scan_open_max_spread_cm)
+                    and scan_pitch is not None
+                    and abs(float(scan_pitch) - float(config.gimbal_scan_pitch_deg))
+                        <= float(config.gimbal_pitch_tolerance_deg)
+                )
+                if not open_confirmed:
+                    print(
+                        "[SCAN_UNCERTAIN] {} repeats={} (not promoting to OPEN)".format(
+                            DIR_NAME[direction],
+                            [round(value, 1) for value in open_readings],
+                        ), flush=True,
+                    )
+                    distance_cm = None
+                else:
+                    distance_cm = float(statistics.median(open_readings))
+        if (
+            already_traversed and distance_cm is not None
+            and float(distance_cm) < float(config.tof_open_cm)
+        ):
+            # Actual chassis passage wins over one spurious short echo.
+            distance_cm = None
 
         ranges[direction] = distance_cm
         print(
@@ -941,6 +1369,11 @@ def _scan_four_directions(
             camera_service is not None
             and camera_service.running
             and target_detector is not None
+            # An uncertain range can still supply a genuine camera bearing,
+            # but MUST remain SIGHTING_ONLY without a fabricated distance.
+            # Do not look past an already confirmed physical wall after a
+            # contradictory long echo.
+            and (distance_cm is not None or previous_state != "WALL")
             and (
                 near_wall
                 or bool(config.target_survey_open_directions)
@@ -980,9 +1413,21 @@ def _scan_four_directions(
                     # ToF viewpoint: the low sign may only enter the image
                     # after the new camera pitch has settled.
                     survey_frame_epoch = time.monotonic()
-                    verified_targets, target_debug = target_detector.verify_latest(
-                        camera_service,
-                        not_before=survey_frame_epoch,
+                    # Keep the stationary view while independent camera frames
+                    # contain unverified signs. Do not turn the gimbal away
+                    # after seeing only one useful frame. The hold is bounded
+                    # and retains a separate evidence record for weak signs.
+                    verified_targets, pending_candidates, target_debug, survey_windows = (
+                        survey_targets_with_hold(
+                            target_detector, camera_service, config,
+                            not_before=survey_frame_epoch, stop_event=stop_event,
+                        )
+                    )
+                    print(
+                        "[TARGET_HOLD] {} windows={} confirmed={} pending={} (max {:.1f}s)".format(
+                            DIR_NAME[direction], survey_windows, len(verified_targets),
+                            len(pending_candidates), float(config.target_hold_max_sec),
+                        ), flush=True,
                     )
                     target_debug_holder[0] = target_debug
 
@@ -998,6 +1443,33 @@ def _scan_four_directions(
                             flush=True,
                         )
                         verified_targets = []
+                        pending_candidates = []
+
+                    # Record weaker but repeatedly observed colour/shape
+                    # separately. These are unverified bearings, not Round-2
+                    # physical coordinates or counted confirmed targets.
+                    for evidence in pending_candidates:
+                        pending = target_registry.add_pending(
+                            evidence, current_cell, direction, distance_cm,
+                        )
+                        if pending.get("status") != "PENDING_RECHECK":
+                            continue
+                        recorder.event(
+                            time.monotonic(), "TARGET_PENDING",
+                            "{} {} (unverified, {} independent frames)".format(
+                                evidence["detection"].color.upper(),
+                                evidence["detection"].shape.upper(), evidence["frames"],
+                            ), logical_node=current_cell,
+                            direction=DIR_NAME[direction],
+                            pending_id=pending["target_id"],
+                        )
+                        print(
+                            "[TARGET_PENDING] {} {} -> {} ({} frames; recheck later)".format(
+                                evidence["detection"].color.upper(),
+                                evidence["detection"].shape.upper(), pending["target_id"],
+                                evidence["frames"],
+                            ), flush=True,
+                        )
 
                     for verified in verified_targets:
                         saved_target = target_registry.add_verified(
@@ -1083,6 +1555,18 @@ def _scan_four_directions(
                 )
                 return None
 
+            # Camera-only offset views improve corner coverage. They are not
+            # additional ToF rays and cannot change logical WALL/OPEN edges.
+            # Failed restoration blocks mapping and all subsequent movement.
+            if camera_position_ok and config.target_camera_multi_angle_enabled:
+                if not _survey_side_camera_views(
+                    chassis, gimbal, sensors, gimbal_tracker, recorder, config,
+                    stop_event, current_cell, direction, selected_pitch,
+                    camera_service, target_detector, target_registry,
+                    target_debug_holder, survey_bridge,
+                ):
+                    return None
+
             live_preview_status = survey_bridge.latest_preview()
             recorder.event(
                 time.monotonic(),
@@ -1138,6 +1622,9 @@ def _scan_four_directions(
                 rel_y,
                 direction,
                 distance_cm,
+                mapped_until_m=_ray_limit_to_cell_face(
+                    config, current_cell, rel_x, rel_y, direction,
+                ),
             )
 
         edge_key = _canonical_edge(current_cell, direction)
@@ -1151,9 +1638,21 @@ def _scan_four_directions(
             if distance_cm >= config.tof_open_cm:
                 open_dirs.add(direction)
                 _set_edge_state(edge_states, current_cell, direction, "OPEN")
-                known_cells.add(_neighbor(current_cell, direction))
+                # A scan only shows a potential adjacent cell. Add it to
+                # the GUI as a known cell AFTER actual chassis traversal,
+                # not from an echo that may have looked over a foam wall.
             else:
                 _set_edge_state(edge_states, current_cell, direction, "WALL")
+        elif edge_states.get((current_cell[0], current_cell[1], direction)) == "OPEN":
+            # An earlier speculative OPEN is contradicted by a fresh uncertain
+            # reading. Retract it until another scan or actual chassis passage
+            # confirms an opening; otherwise the planner could follow a ghost.
+            _set_edge_state(edge_states, current_cell, direction, "UNKNOWN")
+            print(
+                "[SCAN_UNCERTAIN] Retracted untraversed OPEN at {} {}.".format(
+                    current_cell, DIR_NAME[direction]
+                ), flush=True,
+            )
 
         recorder.record_sample(
             time.monotonic(),
@@ -1167,6 +1666,29 @@ def _scan_four_directions(
             None,
             None,
             "GIMBAL_SCAN_{}".format(DIR_NAME[direction]),
+        )
+
+        scan_after_xy = pose.get_xy()
+        scan_after_yaw = _fresh_yaw_now(pose)
+        drift_m, drift_yaw, drift_warn = stationary_scan_motion(
+            scan_before_xy, scan_after_xy,
+            scan_before_yaw, scan_after_yaw,
+        )
+        if drift_warn:
+            print(
+                "[SCAN_CHASSIS_DRIFT] {} reported displacement={}m yaw_delta={}deg; "
+                "chassis motor command is zero during scanning.".format(
+                    DIR_NAME[direction],
+                    "---" if drift_m is None else "{:.4f}".format(drift_m),
+                    "---" if drift_yaw is None else "{:+.2f}".format(drift_yaw),
+                ), flush=True,
+            )
+        recorder.event(
+            time.monotonic(), "SCAN_CHASSIS_STABILITY",
+            "ODOM_DRIFT_WARNING" if drift_warn else "NO_REPORTED_DRIFT",
+            logical_node=current_cell, direction=DIR_NAME[direction],
+            chassis_displacement_m=drift_m,
+            chassis_yaw_delta_deg=drift_yaw,
         )
 
         publish_state(
@@ -1210,7 +1732,7 @@ def _midcell_wall_checkpoint(
         (int(direction) - 1) % 4,
         (int(direction) + 1) % 4,
     ):
-        if side not in wall_sides:
+        if side not in wall_sides and not config.wall_follow_recovery_enabled:
             continue
 
         if stop_event is not None and stop_event.is_set():
@@ -1254,6 +1776,13 @@ def _midcell_wall_checkpoint(
         baseline_cm=baseline_ranges,
         max_baseline_drop_cm=config.midcell_side_max_baseline_drop_cm,
         recenter_deadband_cm=config.midcell_side_recenter_deadband_cm,
+        allow_soft_recovery=(
+            bool(config.wall_follow_recovery_enabled) and len(wall_sides) == 1
+        ),
+        opposite_clearance_cm=(
+            ranges.get((next(iter(wall_sides)) + 2) % 4)
+            if len(wall_sides) == 1 else None
+        ),
     )
     if not can_continue:
         recorder.event(
@@ -1319,6 +1848,625 @@ def _midcell_wall_checkpoint(
     return True, label, float(bias)
 
 
+def _try_small_heading_alignment(
+    chassis,
+    gimbal,
+    pose: PoseTracker,
+    sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker,
+    recorder: RunRecorder,
+    config: Classwork8Config,
+    side: int,
+    current_cell: Tuple[int, int],
+    start_yaw_deg: float,
+    confirmed_side_cm: float,
+    stop_event: Optional[threading.Event],
+) -> Tuple[bool, str, Optional[float], bool]:
+    """Optional one-degree alignment, not arbitrary rotation in a tight cell.
+
+    Returns (clearance_confirmed, reason, side_cm, safe_to_try_old_recovery).
+    One central ToF ray per direction cannot certify chassis CORNER clearance;
+    this experimental feature is default OFF until swept-body clearance is
+    physically established. No motor motion if any stationary preflight fails.
+    """
+    stop_chassis(chassis)
+    if not config.side_start_heading_recovery_enabled:
+        return False, "HEADING_RECOVERY_DISABLED", confirmed_side_cm, True
+    heading_now = pose.get_yaw()
+    if heading_now is None:
+        return False, "HEADING_RECOVERY_NO_YAW", confirmed_side_cm, True
+    error = normalize_angle_deg(float(start_yaw_deg) - float(heading_now))
+    if abs(error) < float(config.side_start_heading_min_error_deg):
+        print("[HEADING_RECOVERY] Current yaw is already aligned; not turning.", flush=True)
+        return False, "HEADING_RECOVERY_ALREADY_ALIGNED", confirmed_side_cm, True
+
+    # Do not confuse recorded peak yaw error with the REAL angle at this stop.
+    # Scan all four independent directions, with stationary chassis and fresh
+    # ToF median pairs, rather than treating a cached topology as clearance.
+    current_gimbal_yaw = tracker.get_yaw()
+    order = [2, 1, 0, 3] if (
+        current_gimbal_yaw is not None and float(current_gimbal_yaw) > 45.0
+    ) else [3, 0, 1, 2]
+    rays = {}
+    for direction in order:
+        if stop_event is not None and stop_event.is_set():
+            return False, "USER_STOP", confirmed_side_cm, False
+        if not _point_gimbal(
+            gimbal, sensors, tracker, direction, config, stop_event
+        ):
+            return False, "HEADING_RECOVERY_SCAN_GIMBAL_FAILED", confirmed_side_cm, False
+        pair = []
+        for _ in range(2):
+            sensors.reset_filters()
+            value = _wait_for_fresh_tof(
+                sensors, config.tof_recovery_wait_sec, stop_event
+            )
+            pitch = tracker.get_pitch()
+            if (
+                pitch is None or abs(
+                    float(pitch) - float(config.gimbal_scan_pitch_deg)
+                ) > float(config.gimbal_pitch_tolerance_deg)
+            ):
+                value = None
+            pair.append(value)
+        if any(v is None for v in pair):
+            return False, "HEADING_RECOVERY_SCAN_TOF_MISSING", confirmed_side_cm, False
+        if abs(float(pair[0]) - float(pair[1])) > float(config.side_start_recheck_max_spread_cm):
+            return False, "HEADING_RECOVERY_SCAN_INCONSISTENT", confirmed_side_cm, False
+        rays[direction] = min(float(v) for v in pair)
+    # The fresh ray in the critical direction must not be silently overridden
+    # by a historical reading; use the conservative shorter reading.
+    critical_cm = min(float(confirmed_side_cm), float(rays[side]))
+    rays[side] = critical_cm
+    can_rotate, decision, step_deg = heading_alignment_preflight(
+        error, rays, side,
+        min_error_deg=config.side_start_heading_min_error_deg,
+        max_step_deg=config.side_start_heading_max_step_deg,
+        max_initial_error_deg=config.side_start_heading_max_initial_error_deg,
+        critical_side_min_cm=config.midcell_side_hard_stop_cm,
+        other_side_min_cm=max(
+            float(config.stop_front_cm),
+            float(config.side_start_heading_other_clearance_cm),
+        ),
+    )
+    recorder.event(
+        time.monotonic(), "HEADING_RECOVERY_PREFLIGHT", decision,
+        logical_node=current_cell,
+        yaw_error_deg=round(float(error), 2),
+        rays_cm={DIR_NAME[d]: round(v, 2) for d, v in rays.items()},
+        proposed_step_deg=round(float(step_deg), 2),
+    )
+    print(
+        "[HEADING_RECOVERY] live yaw error={:+.2f}deg, rays={} => {}".format(
+            error,
+            {DIR_NAME[d]: round(v, 1) for d, v in rays.items()},
+            decision,
+        ), flush=True,
+    )
+    if not can_rotate:
+        return False, decision, critical_cm, True
+
+    # The gimbal ToF has seen only its centreline; the operator must establish
+    # the real swept-body envelope before enabling. Rotate toward the mission
+    # heading by at most one degree, with no translation and odometry guards.
+    raw_start = pose.get_xy()
+    if raw_start[0] is None or raw_start[1] is None:
+        return False, "HEADING_RECOVERY_ODOMETRY_UNAVAILABLE", critical_cm, False
+    reference_x, reference_y = float(raw_start[0]), float(raw_start[1])
+    goal_improvement = abs(float(step_deg)) * 0.7
+    last_error = abs(error)
+    status = "HEADING_RECOVERY_TIMEOUT"
+    deadline = time.monotonic() + 1.4
+    try:
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                status = "USER_STOP"
+                break
+            yaw = pose.get_yaw()
+            raw_x, raw_y = pose.get_xy()
+            if yaw is None or raw_x is None or raw_y is None:
+                status = "HEADING_RECOVERY_FEEDBACK_LOST"
+                break
+            now_error = normalize_angle_deg(float(start_yaw_deg) - float(yaw))
+            if abs(now_error) > abs(error) + 0.6:
+                status = "HEADING_RECOVERY_WRONG_DIRECTION"
+                break
+            if math.hypot(float(raw_x) - reference_x, float(raw_y) - reference_y) > 0.012:
+                status = "HEADING_RECOVERY_ODOMETRY_DRIFT"
+                break
+            if abs(error) - abs(now_error) >= goal_improvement:
+                status = "HEADING_RECOVERY_STEP_DONE"
+                break
+            if abs(now_error) > last_error + 0.6:
+                status = "HEADING_RECOVERY_YAW_REGRESSED"
+                break
+            last_error = abs(now_error)
+            z = (
+                math.copysign(float(config.side_start_heading_speed_dps), now_error)
+                / float(config.heading_drive_sign)
+            )
+            chassis.drive_speed(
+                x=0.0, y=0.0, z=z, timeout=config.drive_timeout_sec,
+            )
+            time.sleep(min(0.04, float(config.loop_delay_sec)))
+    finally:
+        stop_chassis(chassis)
+    if status != "HEADING_RECOVERY_STEP_DONE":
+        recorder.event(
+            time.monotonic(), "HEADING_RECOVERY_STOP", status,
+            logical_node=current_cell,
+        )
+        return False, status, critical_cm, False
+
+    # Re-point and re-measure the ORIGINAL wall twice; a change in yaw is NOT
+    # proof that body clearance improved. Also recheck the opposite ray.
+    for direction in (side, (side + 2) % 4):
+        if not _point_gimbal(
+            gimbal, sensors, tracker, direction, config, stop_event
+        ):
+            return False, "HEADING_RECOVERY_RECHECK_GIMBAL_FAILED", critical_cm, False
+        pair = []
+        for _ in range(2):
+            sensors.reset_filters()
+            pair.append(_wait_for_fresh_tof(
+                sensors, config.tof_recovery_wait_sec, stop_event
+            ))
+        if any(v is None for v in pair):
+            return False, "HEADING_RECOVERY_RECHECK_TOF_MISSING", critical_cm, False
+        if abs(float(pair[0]) - float(pair[1])) > float(config.side_start_recheck_max_spread_cm):
+            return False, "HEADING_RECOVERY_RECHECK_INCONSISTENT", critical_cm, False
+        rays[direction] = min(float(v) for v in pair)
+    new_side_cm = float(rays[side])
+    release = (
+        new_side_cm >= float(config.midcell_side_hard_stop_cm) +
+            float(config.side_start_release_margin_cm)
+        and float(rays[(side + 2) % 4]) >=
+            float(config.side_start_heading_other_clearance_cm)
+        and new_side_cm >= critical_cm + 0.5
+    )
+    recorder.event(
+        time.monotonic(), "HEADING_RECOVERY_RESULT",
+        "HEADING_RECOVERY_CLEAR" if release else "HEADING_RECOVERY_NOT_CLEAR",
+        logical_node=current_cell,
+        before_cm=round(critical_cm, 2),
+        after_cm=round(new_side_cm, 2),
+        opposite_cm=round(float(rays[(side + 2) % 4]), 2),
+        yaw_after_deg=pose.get_yaw(),
+    )
+    print(
+        "[HEADING_RECOVERY] side {:.1f} -> {:.1f} cm, opposite {:.1f} cm, "
+        "cleared={}".format(
+            critical_cm, new_side_cm, rays[(side + 2) % 4], release
+        ), flush=True,
+    )
+    # If the tiny physical rotation did not solve the problem, stop rather
+    # than guessing additional rotation/translation on an altered footprint.
+    return (
+        release,
+        "HEADING_RECOVERY_CLEAR" if release else "HEADING_RECOVERY_NOT_CLEAR",
+        new_side_cm,
+        bool(release),
+    )
+
+
+def _recover_critical_start_side(
+    chassis,
+    gimbal,
+    pose: PoseTracker,
+    sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker,
+    recorder: RunRecorder,
+    config: Classwork8Config,
+    side: int,
+    travel_direction: int,
+    current_cell: Tuple[int, int],
+    start_x: float,
+    start_y: float,
+    start_yaw_deg: float,
+    confirmed_side_cm: float,
+    stop_event: Optional[threading.Event],
+) -> Tuple[bool, str, Optional[float]]:
+    """Short, measured clearance nudges AWAY from a confirmed starting side wall.
+
+    A single gimbal ToF cannot see both directions simultaneously. Therefore:
+    stop, confirm the opposite ray while stationary, face ToF in the actual
+    movement direction for each tiny pulse, stop and re-check the original
+    wall after every pulse. Never use an old scan as a permission to move.
+    Do not change logical cell/map topology based on these pulses.
+    """
+    stop_chassis(chassis)
+    if not config.side_start_auto_recovery_enabled:
+        return False, "SIDE_START_AUTORECOVERY_DISABLED", confirmed_side_cm
+
+    away = (int(side) + 2) % 4
+    current_side = float(confirmed_side_cm)
+    unit_x, unit_y = DIR_VEC_DRIVE[away]
+    map_dx, map_dy = DIR_VEC_MAP[away]
+    step = float(config.side_start_recovery_step_m)
+    max_offset = float(config.side_start_recovery_max_center_offset_m)
+    center_x = float(current_cell[0]) * float(config.cell_size_m)
+    center_y = float(current_cell[1]) * float(config.cell_size_m)
+
+    for attempt in range(1, int(config.side_start_recovery_max_attempts) + 1):
+        if stop_event is not None and stop_event.is_set():
+            return False, "USER_STOP", current_side
+        rel_x, rel_y = _relative_xy(
+            pose, start_x, start_y, start_yaw_deg, config
+        )
+        if rel_x is None or rel_y is None:
+            return False, "RECOVERY_ODOMETRY_UNAVAILABLE", current_side
+
+        # Do not step outside the current logical cell's safe centre region.
+        expected_x = float(rel_x) + map_dx * step
+        expected_y = float(rel_y) + map_dy * step
+        if (
+            abs(expected_x - center_x) > max_offset
+            or abs(expected_y - center_y) > max_offset
+        ):
+            return False, "RECOVERY_CELL_OFFSET_LIMIT", current_side
+
+        if not _point_gimbal(
+            gimbal, sensors, tracker, away, config, stop_event
+        ):
+            return False, "RECOVERY_OPPOSITE_GIMBAL_FAILED", current_side
+
+        opposite_values = []
+        for _ in range(2):
+            sensors.reset_filters()
+            opposite_values.append(
+                _wait_for_fresh_tof(sensors, config.tof_recovery_wait_sec, stop_event)
+            )
+        if any(value is None for value in opposite_values):
+            return False, "RECOVERY_OPPOSITE_TOF_STALE", current_side
+        if abs(float(opposite_values[0]) - float(opposite_values[1])) > float(
+            config.side_start_recheck_max_spread_cm
+        ):
+            return False, "RECOVERY_OPPOSITE_RANGE_INCONSISTENT", current_side
+
+        opposite_cm = min(float(value) for value in opposite_values)
+        can_nudge, label = side_start_recovery_preflight(
+            current_side,
+            opposite_cm,
+            hard_stop_cm=config.midcell_side_hard_stop_cm,
+            release_margin_cm=config.side_start_release_margin_cm,
+            opposite_min_cm=config.side_start_recovery_opposite_min_cm,
+            step_m=step,
+        )
+        recorder.event(
+            time.monotonic(), "CLEARANCE_PREFLIGHT", label,
+            logical_node=current_cell,
+            wall_direction=DIR_NAME[side],
+            escape_direction=DIR_NAME[away],
+            wall_cm=round(current_side, 2),
+            opposite_cm=round(opposite_cm, 2),
+            attempt=attempt,
+        )
+        if not can_nudge:
+            return False, label, current_side
+
+        # ToF is now facing the ACTUAL translation direction, not the wall
+        # behind the robot. Check its age and stop after the tiny odom step.
+        x0, y0 = pose.get_xy()
+        if x0 is None or y0 is None:
+            return False, "RECOVERY_ODOMETRY_UNAVAILABLE", current_side
+        x0, y0 = float(x0), float(y0)
+        speed = float(config.side_start_recovery_speed_mps)
+        travelled = 0.0
+        reason = "RECOVERY_PULSE_TIMEOUT"
+        heading_loss_error_deg = None
+
+        # A single yaw sample after a long gimbal scan was prematurely
+        # terminating real runs. Check THREE stopped readings, with at most
+        # one stationary retry. A consistent small heading offset permits ONLY
+        # a tiny z=0 translation AWAY from the confirmed wall. No rotation.
+        pre_pulse_reference = None
+        pre_pulse_label = "RECOVERY_HEADING_FEEDBACK_MISSING"
+        escape_offset_mode = False
+        for stationary_check in range(2):
+            if not _sleep_interruptible(0.12, stop_event):
+                return False, "USER_STOP", current_side
+            stopped_errors = _stationary_heading_errors(
+                pose, start_yaw_deg, stop_event,
+            )
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP", current_side
+            allowed, pre_pulse_label, pre_pulse_reference = (
+                stationary_escape_heading_preflight(
+                    stopped_errors,
+                    trigger_deg=config.heading_recover_trigger_deg,
+                    max_stable_offset_deg=config.side_start_escape_max_stable_yaw_deg,
+                    max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
+                )
+            )
+            recorder.event(
+                time.monotonic(), "CLEARANCE_HEADING", pre_pulse_label,
+                logical_node=current_cell, attempt=attempt,
+                stationary_check=stationary_check + 1,
+                yaw_errors_deg=[
+                    None if value is None else round(value, 3)
+                    for value in stopped_errors
+                ],
+            )
+            if allowed:
+                escape_offset_mode = (
+                    pre_pulse_label == "RECOVERY_STABLE_OFFSET_ESCAPE_ONLY"
+                )
+                break
+        else:
+            return False, pre_pulse_label, current_side
+        print(
+            "[CLEARANCE_HEADING] attempt={} {} stopped yaw={} deg; "
+            "escape only, no chassis turn.".format(
+                attempt, pre_pulse_label, round(pre_pulse_reference, 2),
+            ), flush=True,
+        )
+
+        # Stationary retries consume their own time budget: start the pulse
+        # timeout only AFTER fresh heading permission was granted.
+        pulse_deadline = time.monotonic() + min(1.5, 0.35 + 2.0 * step / speed)
+        try:
+            while time.monotonic() < pulse_deadline:
+                if stop_event is not None and stop_event.is_set():
+                    reason = "USER_STOP"
+                    break
+                live_cm = sensors.get_front_cm()
+                pitch, yaw = tracker.get_angles()
+                robot_yaw = _fresh_yaw_now(pose)
+                raw_x, raw_y = pose.get_xy()
+                if live_cm is None:
+                    reason = "RECOVERY_TOF_STALE_DURING_NUDGE"
+                    break
+                if float(live_cm) <= float(config.stop_front_cm):
+                    reason = "RECOVERY_OBSTACLE_IN_ESCAPE_DIRECTION"
+                    break
+                if (
+                    pitch is None or yaw is None
+                    or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
+                        > float(config.gimbal_pitch_unsafe_deg)
+                    or abs(float(yaw) - float(config.gimbal_yaw_for_direction(away)))
+                        > float(config.gimbal_tolerance_deg) + 2.0
+                ):
+                    reason = "RECOVERY_GIMBAL_DIRECTION_LOST"
+                    break
+                if robot_yaw is None:
+                    reason = "RECOVERY_HEADING_FEEDBACK_MISSING"
+                    break
+                heading_error_deg = normalize_angle_deg(
+                    float(robot_yaw) - float(start_yaw_deg)
+                )
+                if (
+                    not math.isfinite(heading_error_deg)
+                    or abs(heading_error_deg) > (
+                        float(config.side_start_escape_max_stable_yaw_deg)
+                        if escape_offset_mode
+                        else float(config.heading_recover_trigger_deg)
+                    )
+                    or (
+                        escape_offset_mode
+                        and abs(normalize_angle_deg(
+                            heading_error_deg - pre_pulse_reference
+                        )) > float(config.side_start_escape_max_in_pulse_drift_deg)
+                    )
+                ):
+                    heading_loss_error_deg = heading_error_deg
+                    reason = "RECOVERY_HEADING_LOST"
+                    break
+                if raw_x is None or raw_y is None:
+                    reason = "RECOVERY_ODOMETRY_LOST"
+                    break
+                new_x, new_y = _map_xy_from_raw(
+                    float(raw_x), float(raw_y), start_x, start_y, start_yaw_deg,
+                    config.odom_scale_x, config.odom_scale_y,
+                )
+                moved_x, moved_y = _map_xy_from_raw(
+                    x0, y0, start_x, start_y, start_yaw_deg,
+                    config.odom_scale_x, config.odom_scale_y,
+                )
+                travelled = (
+                    (float(new_x) - float(moved_x)) * map_dx
+                    + (float(new_y) - float(moved_y)) * map_dy
+                )
+                cross_error = abs(
+                    (float(new_x) - float(moved_x)) * map_dy
+                    - (float(new_y) - float(moved_y)) * map_dx
+                )
+                if (
+                    abs(float(new_x) - center_x) > max_offset + 0.005
+                    or abs(float(new_y) - center_y) > max_offset + 0.005
+                    or cross_error > 0.025
+                    or travelled < -0.01
+                ):
+                    reason = "RECOVERY_ODOMETRY_GUARD"
+                    break
+                if travelled >= step:
+                    reason = "RECOVERY_PULSE_COMPLETE"
+                    break
+                chassis.drive_speed(
+                    x=unit_x * speed, y=unit_y * speed, z=0.0,
+                    timeout=config.drive_timeout_sec,
+                )
+                time.sleep(min(0.04, float(config.loop_delay_sec)))
+        finally:
+            stop_chassis(chassis)
+
+        recorder.event(
+            time.monotonic(), "CLEARANCE_NUDGE", reason,
+            logical_node=current_cell,
+            escape_direction=DIR_NAME[away],
+            attempt=attempt, travelled_m=round(float(travelled), 4),
+        )
+        if reason == "RECOVERY_HEADING_LOST":
+            # One out-of-limit yaw sample must stop translation IMMEDIATELY.
+            # Once stopped, check whether it was a transient attitude spike.
+            # Do not issue yaw motor commands when the original wall is only
+            # a few centimetres from the chassis: the body corners can sweep
+            # into it even if a centreline ToF ray looks clear.
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP", current_side
+            if not _sleep_interruptible(0.15, stop_event):
+                return False, "USER_STOP", current_side
+            stopped_errors = _stationary_heading_errors(
+                pose, start_yaw_deg, stop_event,
+            )
+            if stop_event is not None and stop_event.is_set():
+                return False, "USER_STOP", current_side
+            allowed_stopped, stopped_label, stopped_reference = (
+                stationary_escape_heading_preflight(
+                    stopped_errors,
+                    trigger_deg=config.heading_recover_trigger_deg,
+                    max_stable_offset_deg=config.side_start_escape_max_stable_yaw_deg,
+                    max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
+                )
+            )
+            settled = (
+                allowed_stopped
+                and (
+                    (
+                        escape_offset_mode
+                        and stopped_reference is not None
+                        and abs(normalize_angle_deg(
+                            stopped_reference - pre_pulse_reference
+                        )) <= float(config.side_start_escape_max_in_pulse_drift_deg)
+                    )
+                    or (
+                        not escape_offset_mode
+                        and all(
+                            abs(value) <= float(config.heading_recover_release_deg)
+                            for value in stopped_errors
+                        )
+                    )
+                )
+            )
+            # Recheck physical odometry before an attempted restart. The next
+            # loop obtains two NEW opposite ToF returns and checks cell offset.
+            now_xy = pose.get_xy()
+            position_ok = False
+            if now_xy[0] is not None and now_xy[1] is not None:
+                px, py = _map_xy_from_raw(
+                    float(now_xy[0]), float(now_xy[1]), start_x, start_y,
+                    start_yaw_deg, config.odom_scale_x, config.odom_scale_y,
+                )
+                position_ok = (
+                    abs(px - center_x) <= max_offset + 0.005
+                    and abs(py - center_y) <= max_offset + 0.005
+                )
+            recorder.event(
+                time.monotonic(), "CLEARANCE_HEADING",
+                "RECOVERY_HEADING_SETTLED" if settled and position_ok
+                else "RECOVERY_HEADING_PERSISTENT",
+                logical_node=current_cell, attempt=attempt,
+                observed_yaw_error_deg=heading_loss_error_deg,
+                stopped_yaw_errors_deg=[
+                    None if value is None else round(value, 3)
+                    for value in stopped_errors
+                ],
+                position_ok=position_ok, progress_m=round(travelled, 4),
+            )
+            print(
+                "[CLEARANCE_HEADING] attempt={} moving error={}; stopped={} "
+                "settled={} position_ok={}".format(
+                    attempt,
+                    None if heading_loss_error_deg is None
+                    else round(heading_loss_error_deg, 2),
+                    [None if value is None else round(value, 2)
+                     for value in stopped_errors],
+                    settled, position_ok,
+                ), flush=True,
+            )
+            if not settled:
+                return False, "RECOVERY_HEADING_PERSISTENT", current_side
+            if not position_ok:
+                return False, "RECOVERY_HEADING_POSITION_UNSAFE", current_side
+            if attempt < int(config.side_start_recovery_max_attempts):
+                # Consumes the failed pulse attempt; no infinite retry and
+                # no tolerance relaxation. Next loop starts fully stopped.
+                print(
+                    "[CLEARANCE_HEADING] Retrying with fresh ToF and odometry "
+                    "(remaining attempts={}).".format(
+                        int(config.side_start_recovery_max_attempts) - attempt
+                    ), flush=True,
+                )
+                continue
+            return False, "RECOVERY_HEADING_RETRY_LIMIT", current_side
+
+        if reason != "RECOVERY_PULSE_COMPLETE":
+            return False, reason, current_side
+        if travelled < 0.012:
+            return False, "RECOVERY_NO_ODOMETRY_PROGRESS", current_side
+
+        # Reconfirm the original wall after the chassis has stopped. Never
+        # trust the pre-nudge wall reading as proof that clearance improved.
+        if not _point_gimbal(
+            gimbal, sensors, tracker, side, config, stop_event
+        ):
+            return False, "RECOVERY_WALL_GIMBAL_FAILED", current_side
+        side_values = []
+        for _ in range(2):
+            sensors.reset_filters()
+            side_values.append(
+                _wait_for_fresh_tof(sensors, config.tof_recovery_wait_sec, stop_event)
+            )
+        if any(value is None for value in side_values):
+            return False, "RECOVERY_WALL_TOF_STALE", current_side
+        if abs(float(side_values[0]) - float(side_values[1])) > float(
+            config.side_start_recheck_max_spread_cm
+        ):
+            return False, "RECOVERY_WALL_RANGE_INCONSISTENT", current_side
+
+        new_side = min(float(value) for value in side_values)
+        if new_side < current_side + 0.6:
+            return False, "RECOVERY_WALL_DISTANCE_NOT_INCREASING", new_side
+        current_side = new_side
+        released = all(
+            float(value) >= float(config.midcell_side_hard_stop_cm)
+                + float(config.side_start_release_margin_cm)
+            for value in side_values
+        )
+        print(
+            "[CLEARANCE_RECOVERY] {} away={} attempt={} range={:.1f}cm "
+            "moved={:.3f}m released={}".format(
+                DIR_NAME[side], DIR_NAME[away], attempt, current_side,
+                travelled, released,
+            ), flush=True,
+        )
+        if released:
+            # A 2.5 cm no-turn escape is NOT permission for normal full-cell
+            # travel. That controller may issue yaw correction, sweeping the
+            # corners toward the wall. Require stable near-start heading first.
+            aligned = False
+            final_errors = []
+            for _settle_attempt in range(2):
+                if not _sleep_interruptible(0.15, stop_event):
+                    return False, "USER_STOP", current_side
+                final_errors = _stationary_heading_errors(
+                    pose, start_yaw_deg, stop_event,
+                )
+                if stop_event is not None and stop_event.is_set():
+                    return False, "USER_STOP", current_side
+                aligned, _, _ = stationary_escape_heading_preflight(
+                    final_errors,
+                    trigger_deg=config.heading_recover_release_deg,
+                    max_stable_offset_deg=config.heading_recover_release_deg,
+                    max_spread_deg=config.side_start_escape_max_yaw_spread_deg,
+                )
+                if aligned:
+                    break
+            if not aligned:
+                recorder.event(
+                    time.monotonic(), "CLEARANCE_HEADING",
+                    "RECOVERY_CLEARANCE_RESTORED_HEADING_UNALIGNED",
+                    logical_node=current_cell,
+                    yaw_errors_deg=final_errors, side_cm=current_side,
+                )
+                return (
+                    False, "RECOVERY_CLEARANCE_RESTORED_HEADING_UNALIGNED",
+                    current_side,
+                )
+            return True, "RECOVERY_CLEARANCE_CONFIRMED", current_side
+
+    return False, "RECOVERY_ATTEMPT_LIMIT", current_side
+
+
 def _drive_one_cell(
     chassis,
     gimbal,
@@ -1365,11 +2513,42 @@ def _drive_one_cell(
 
     # The initial four-way scan can report an anomalously short side range.
     # Never blindly bypass it: stop and obtain TWO independent fresh returns
-    # at the side angle. A sustained 6.5 cm still blocks movement until the
-    # operator has physically checked the chassis/wall clearance.
+    # at the side angle. If persistent, optionally attempt measured, tiny
+    # moves AWAY from that wall after a fresh opposite-ray safety check.
+    # A failed or unsafe recovery still stops the robot.
     move_side_baselines = dict(scan_ranges or {})
+    recovered_start_side = False
     for side in sorted(wall_sides):
         baseline = move_side_baselines.get(side)
+        if baseline is None and config.side_start_auto_recovery_enabled:
+            # Cached visited-cell topology may say WALL without carrying a
+            # current sensor range. Acquire a fresh side range before driving;
+            # never silently skip a side-start safety check on relocation.
+            stop_chassis(chassis)
+            if not _point_gimbal(
+                gimbal, sensors, gimbal_tracker, side, config, stop_event
+            ):
+                return False, "SIDE_START_FRESH_GIMBAL_FAILED", 0.0
+            baseline = _wait_for_fresh_tof(
+                sensors, config.tof_recovery_wait_sec, stop_event
+            )
+            if baseline is None:
+                return False, "SIDE_START_FRESH_TOF_UNAVAILABLE", 0.0
+            move_side_baselines[side] = float(baseline)
+            print(
+                "[SIDE_START] Cached topology: fresh {} range={:.1f} cm.".format(
+                    DIR_NAME[side], float(baseline)
+                ), flush=True,
+            )
+            if not _point_gimbal(
+                gimbal, sensors, gimbal_tracker, direction, config, stop_event
+            ):
+                return False, "SIDE_START_FRESH_RETURN_FORWARD_FAILED", 0.0
+            initial_front_cm = _wait_for_move_tof_v03(
+                sensors, config, stop_event
+            )
+            if initial_front_cm is None:
+                return False, "SIDE_START_FRESH_FORWARD_TOF_STALE", 0.0
         if baseline is None or float(baseline) <= 0.0 or float(baseline) > float(
             config.midcell_side_hard_stop_cm
         ):
@@ -1416,6 +2595,38 @@ def _drive_one_cell(
             release_margin_cm=config.side_start_release_margin_cm,
             max_spread_cm=config.side_start_recheck_max_spread_cm,
         )
+        if diagnostic == "SIDE_START_RECHECK_INCONSISTENT":
+            # Two divergent echoes can be a single foam reflection. Check
+            # ONE more independent pair while fully stopped; still require
+            # stable release or confirmed critical before any movement.
+            retry_values = []
+            for _ in range(2):
+                if stop_event is not None and stop_event.is_set():
+                    return False, "USER_STOP", 0.0
+                sensors.reset_filters()
+                retry = _wait_for_fresh_tof(
+                    sensors, config.tof_recovery_wait_sec, stop_event
+                )
+                pitch = gimbal_tracker.get_pitch()
+                if (
+                    pitch is None
+                    or abs(float(pitch) - float(config.gimbal_scan_pitch_deg))
+                        > float(config.gimbal_pitch_tolerance_deg)
+                ):
+                    retry = None
+                retry_values.append(retry)
+            fresh_values = retry_values
+            cleared, diagnostic, confirmed = critical_start_side_recheck(
+                (fresh_values[0], fresh_values[1]),
+                hard_stop_cm=config.midcell_side_hard_stop_cm,
+                release_margin_cm=config.side_start_release_margin_cm,
+                max_spread_cm=config.side_start_recheck_max_spread_cm,
+            )
+            print(
+                "[SIDE_START] One bounded stationary recheck: {} -> {}".format(
+                    fresh_values, diagnostic,
+                ), flush=True,
+            )
         recorder.event(
             time.monotonic(),
             "SIDE_START_RECHECK",
@@ -1434,7 +2645,50 @@ def _drive_one_cell(
             flush=True,
         )
         if not cleared:
-            return False, "{}_{}".format(diagnostic, DIR_NAME[side]), 0.0
+            if (
+                diagnostic == "SIDE_START_CRITICAL_CONFIRMED"
+                and config.side_start_auto_recovery_enabled
+                and confirmed is not None
+            ):
+                heading_cleared = False
+                if config.side_start_heading_recovery_enabled:
+                    (
+                        heading_cleared, heading_reason, heading_cm,
+                        may_continue,
+                    ) = _try_small_heading_alignment(
+                        chassis, gimbal, pose, sensors, gimbal_tracker,
+                        recorder, config, side, current_cell,
+                        start_yaw_deg, float(confirmed), stop_event,
+                    )
+                    if not may_continue:
+                        return False, heading_reason + "_" + DIR_NAME[side], 0.0
+                    if heading_cm is not None:
+                        confirmed = float(heading_cm)
+                if heading_cleared:
+                    recovered = True
+                    recovery_reason = "HEADING_RECOVERY_CLEAR"
+                    recovered_cm = confirmed
+                else:
+                    recovered, recovery_reason, recovered_cm = (
+                        _recover_critical_start_side(
+                            chassis, gimbal, pose, sensors, gimbal_tracker,
+                            recorder, config, side, direction, current_cell,
+                            start_x, start_y, start_yaw_deg, float(confirmed),
+                            stop_event,
+                        )
+                    )
+                recorder.event(
+                    time.monotonic(), "SIDE_START_AUTORECOVERY", recovery_reason,
+                    logical_node=current_cell, destination=target_cell,
+                    direction=DIR_NAME[side], recovered=bool(recovered),
+                    final_side_cm=recovered_cm,
+                )
+                if not recovered:
+                    return False, recovery_reason + "_" + DIR_NAME[side], 0.0
+                confirmed = recovered_cm
+                recovered_start_side = True
+            else:
+                return False, "{}_{}".format(diagnostic, DIR_NAME[side]), 0.0
 
         move_side_baselines[side] = confirmed
         if not _point_gimbal(
@@ -1468,6 +2722,24 @@ def _drive_one_cell(
     # finish.  This prevents mecanum slip from accumulating cell after cell.
     target_map_x = float(target_cell[0]) * config.cell_size_m
     target_map_y = float(target_cell[1]) * config.cell_size_m
+    preserve_wall_offset = recovered_start_side or any(
+        move_side_baselines.get(side) is not None
+        and 0.0 < float(move_side_baselines[side]) <= float(config.midcell_side_soft_margin_cm)
+        for side in wall_sides
+    )
+    if preserve_wall_offset:
+        # A verified side distance is already short, or recovery has nudged
+        # us away. Do not let centreline control push BACK into that wall.
+        if direction in (0, 2):
+            target_map_y = float(start_map_y)
+        else:
+            target_map_x = float(start_map_x)
+        recorder.event(
+            time.monotonic(), "RECOVERY_LATERAL_GOAL",
+            "hold safer perpendicular offset for this one-cell leg",
+            logical_node=current_cell, destination=target_cell,
+            target_xy_m=[round(target_map_x, 4), round(target_map_y, 4)],
+        )
 
     checkpoint_enabled = bool(
         config.midcell_side_check_enabled and wall_sides
@@ -1646,6 +2918,15 @@ def _drive_one_cell(
                 rel_y,
                 direction,
                 front_cm,
+                mapped_until_m=_ray_limit_to_cell_face(
+                    # Do not paint a speculative target cell just because
+                    # ToF sees through/over a low boundary: the chassis must
+                    # physically cross that cell face first.
+                    config,
+                    target_cell if progress >= 0.5 * float(config.cell_size_m)
+                    else current_cell,
+                    rel_x, rel_y, direction,
+                ),
             )
 
         if (
@@ -2186,6 +3467,7 @@ def _closed_maze_completion_v04(
     edge_states: Dict[Tuple[int, int, int], str],
     blocked_edges: Set[Tuple[Tuple[int, int], int]],
     config: Classwork8Config,
+    safety_deferred_edges: Optional[Set[Tuple[Tuple[int, int], Tuple[int, int]]]] = None,
 ) -> dict:
     """Robust completion test for the closed rectangular classwork arena.
 
@@ -2207,6 +3489,7 @@ def _closed_maze_completion_v04(
         "bbox": None,
         "ratios": {},
         "threshold": float(config.closed_maze_perimeter_wall_ratio),
+        "boundary_open_edges": 0,
     }
 
     if not config.closed_maze_auto_stop or not visited:
@@ -2251,13 +3534,20 @@ def _closed_maze_completion_v04(
     }
 
     ratios: Dict[str, float] = {}
+    safety_deferred_edges = safety_deferred_edges or set()
+    boundary_open_edges = 0
 
     for name, checks in sides.items():
         confirmed = 0
 
         for cell, direction in checks:
             state = edge_states.get((cell[0], cell[1], direction))
-            blocked = (cell, direction) in blocked_edges
+            blocked = (
+                (cell, direction) in blocked_edges
+                and _canonical_edge(cell, direction) not in safety_deferred_edges
+            )
+            if state == "OPEN" and not blocked:
+                boundary_open_edges += 1
 
             if state == "WALL" or blocked:
                 confirmed += 1
@@ -2265,12 +3555,13 @@ def _closed_maze_completion_v04(
         ratios[name] = confirmed / float(max(1, len(checks)))
 
     result["ratios"] = ratios
+    result["boundary_open_edges"] = boundary_open_edges
 
     threshold = float(config.closed_maze_perimeter_wall_ratio)
 
-    result["complete"] = all(
-        ratio >= threshold
-        for ratio in ratios.values()
+    result["complete"] = (
+        boundary_open_edges == 0
+        and all(ratio >= threshold for ratio in ratios.values())
     )
 
     return result
@@ -2362,6 +3653,12 @@ def run(
     # can still export a useful partial run.
     visited: Set[Tuple[int, int]] = {current_cell}
     blocked_edges: Set[Tuple[Tuple[int, int], int]] = set()
+    # Non-wall edges deferred after a verified unsafe side-start recovery.
+    # Never count these as physical walls or silently report exploration done.
+    safety_deferred_edges: Set[
+        Tuple[Tuple[int, int], Tuple[int, int]]
+    ] = set()
+    uncertain_rescan_count: Dict[Tuple[int, int], int] = {}
     traversed_edges: Set[
         Tuple[Tuple[int, int], Tuple[int, int]]
     ] = set()
@@ -2371,6 +3668,9 @@ def run(
     # the cached wall topology is for planning; movement always samples fresh
     # travel-direction ToF before and throughout every cell.
     scanned_cells: Set[Tuple[int, int]] = set()
+    # One automatic revisit survey for any provisional sign in a cached cell.
+    # Do not force endless rescans when the sign cannot be reverified.
+    pending_rechecked_cells: Set[Tuple[int, int]] = set()
 
     raw_start_x = 0.0
     raw_start_y = 0.0
@@ -2470,6 +3770,12 @@ def run(
                 camera_active and target_detector is not None
             ),
             "target_count": len(target_registry.targets),
+            "target_pending_count": len(target_registry.pending_targets),
+            "target_side_view_count": len(target_registry.side_view_sightings),
+            "target_side_view_verified_count": sum(
+                item["status"] == "VERIFIED_BEARING_ONLY"
+                for item in target_registry.side_view_sightings
+            ),
             "target_sighting_count": sum(
                 1 for item in target_registry.targets
                 if item.get("localization_status") == "SIGHTING_ONLY"
@@ -2478,8 +3784,106 @@ def run(
                 1 for item in target_registry.targets
                 if item.get("localization_status") == "NEAR_WALL_ESTIMATE"
             ),
+            # GUI/map snapshots show verified signs only. Preserve tentative
+            # sightings in registry/targets.json for subsequent rechecks.
             "targets": target_registry.public_targets(),
         })
+
+    def await_supervised_recheck(reason: str) -> bool:
+        """Non-terminal mission hold; requires an explicit operator rescan.
+
+        Every motion hazard still stops chassis speed immediately. Do not
+        automatically drive with stale ToF or assume a manually LIFTED robot
+        retains the old logical map frame.
+        """
+        stop_chassis(chassis)
+        paused_x, paused_y = _relative_xy(
+            pose, raw_start_x, raw_start_y, raw_start_yaw, config,
+        )
+        paused_xy = (
+            (float(paused_x), float(paused_y))
+            if paused_x is not None and paused_y is not None else None
+        )
+        recorder.event(
+            time.monotonic(), "AWAITING_ASSISTANCE", reason,
+            logical_node=current_cell, moves=moves,
+            instruction="Clear obstacle without lifting robot, then press RESCAN CURRENT CELL",
+        )
+        print(
+            "[AWAITING_ASSISTANCE] {}. Motors stopped; mission remains open. "
+            "After clearing the obstacle, press RESCAN CURRENT CELL; "
+            "use STOP & SAVE / restart if robot was lifted.".format(reason),
+            flush=True,
+        )
+        while not stop_event.is_set():
+            publish_state(
+                status="AWAITING_ASSISTANCE: press RESCAN CURRENT CELL after checking clearance",
+                logical_cell=current_cell,
+                gimbal_direction=current_gimbal_direction,
+                tof_cm=sensors.get_front_cm(),
+                moves=moves, reason=reason,
+                force=True, finished=False,
+            )
+            if survey_bridge.consume_rescan():
+                rel_x, rel_y = _relative_xy(
+                    pose, raw_start_x, raw_start_y, raw_start_yaw, config,
+                )
+                current_xy = (
+                    (float(rel_x), float(rel_y))
+                    if rel_x is not None and rel_y is not None else None
+                )
+                yaw = pose.get_yaw()
+                yaw_error = (
+                    normalize_angle_deg(float(yaw) - float(raw_start_yaw))
+                    if yaw is not None else None
+                )
+                ok, result = supervised_recheck_pose_ok(
+                    paused_xy, current_xy, yaw_error,
+                    max_yaw_error_deg=float(config.heading_recover_release_deg),
+                )
+                if ok and current_xy is not None:
+                    # A partly completed cell / physically lifted robot has
+                    # unknown map alignment: never drive from its old cell ID.
+                    center_x = float(current_cell[0]) * float(config.cell_size_m)
+                    center_y = float(current_cell[1]) * float(config.cell_size_m)
+                    if (
+                        abs(current_xy[0] - center_x)
+                            > float(config.side_start_recovery_max_center_offset_m) + 0.005
+                        or abs(current_xy[1] - center_y)
+                            > float(config.side_start_recovery_max_center_offset_m) + 0.005
+                    ):
+                        ok, result = False, "RELOCALIZATION_REQUIRED"
+                recorder.event(
+                    time.monotonic(), "SUPERVISED_RESCAN", result,
+                    logical_node=current_cell,
+                    actual_xy_m=current_xy,
+                    yaw_error_deg=yaw_error,
+                )
+                if ok:
+                    # Remove only *temporarily deferred* route blocks, not
+                    # physical WALL evidence or permanent obstacle records.
+                    for first, second in tuple(safety_deferred_edges):
+                        for direction in range(4):
+                            if _neighbor(first, direction) == second:
+                                blocked_edges.discard((first, direction))
+                                blocked_edges.discard((second, (direction + 2) % 4))
+                                break
+                    safety_deferred_edges.clear()
+                    uncertain_rescan_count.pop(current_cell, None)
+                    scanned_cells.discard(current_cell)
+                    print(
+                        "[SUPERVISED_RESCAN] {}. Re-scanning the current cell; "
+                        "all motion gates will still apply.".format(result),
+                        flush=True,
+                    )
+                    return True
+                print(
+                    "[SUPERVISED_RESCAN] {}. Staying stationary. If the robot "
+                    "was lifted/moved, use STOP & SAVE and restart mapping.".format(result),
+                    flush=True,
+                )
+            stop_event.wait(0.25)
+        return False
 
     try:
         publish_state(
@@ -2672,6 +4076,23 @@ def run(
                 survey_bridge.rescan_requested(),
             )
 
+            # A previous camera view may have left provisional colour/shape
+            # evidence. Revisit it once rather than indefinitely reusing the
+            # cached 4-way scan; later visits can reuse topology as usual.
+            pending_here = any(
+                list(current_cell) in item.get("observation_cells", [])
+                for item in target_registry.pending_targets
+            )
+            if (cache_valid and pending_here
+                    and current_cell not in pending_rechecked_cells):
+                pending_rechecked_cells.add(current_cell)
+                cache_valid = False
+                print(
+                    "[TARGET_RECHECK] Revisiting {} once for pending camera signs.".format(
+                        current_cell
+                    ), flush=True,
+                )
+
             if cache_valid:
                 # Cache contains only confirmed topology, not a fresh ToF
                 # distance. Never feed old side distances to centering.
@@ -2707,6 +4128,7 @@ def run(
                 )
             else:
                 scan = _scan_four_directions(
+                    chassis,
                     gimbal,
                     pose,
                     sensors,
@@ -2731,6 +4153,12 @@ def run(
                     survey_bridge,
                 )
                 if scan is None:
+                    if (
+                        not stop_event.is_set()
+                        and config.supervised_hold_on_safety_dead_end
+                        and await_supervised_recheck("GIMBAL_SCAN_FAILED")
+                    ):
+                        continue
                     finish_reason = (
                         "USER_STOP"
                         if stop_event.is_set()
@@ -2780,9 +4208,10 @@ def run(
                 edge_states,
                 blocked_edges,
                 config,
+                safety_deferred_edges,
             )
 
-            if completion_status["complete"]:
+            if completion_status["complete"] and not safety_deferred_edges:
                 stop_chassis(chassis)
 
                 ratios_text = ", ".join(
@@ -2842,12 +4271,49 @@ def run(
             )
 
             if plan is None:
+                # One short repeat scan at the CURRENT cell can resolve a
+                # conflicted low-foam ray. Never claim completion solely from
+                # missing/ambiguous OPEN evidence or a deferred unsafe route.
+                unknown_here = any(
+                    edge_states.get((current_cell[0], current_cell[1], d))
+                        not in ("OPEN", "WALL")
+                    for d in range(4)
+                )
+                count = uncertain_rescan_count.get(current_cell, 0)
+                if unknown_here and count < 1 and not stop_event.is_set():
+                    uncertain_rescan_count[current_cell] = count + 1
+                    scanned_cells.discard(current_cell)
+                    print(
+                        "[SCAN_UNCERTAIN] Revisiting {} once before declaring no frontier.".format(
+                            current_cell
+                        ), flush=True,
+                    )
+                    continue
+                incomplete_scan = any(
+                    edge_states.get((cell[0], cell[1], d))
+                        not in ("OPEN", "WALL")
+                    for cell in visited for d in range(4)
+                )
                 planner_frontier_count = 0
                 planner_frontier_cell = None
                 planner_frontier_target = None
                 planner_route = []
 
-                finish_reason = "FRONTIER_EXPLORATION_COMPLETE"
+                finish_reason = (
+                    "FRONTIER_DEFERRED_SAFETY" if safety_deferred_edges
+                    else "FRONTIER_SCAN_UNCERTAIN" if incomplete_scan
+                    else "FRONTIER_EXPLORATION_COMPLETE"
+                )
+                if (
+                    config.supervised_hold_on_safety_dead_end
+                    and (safety_deferred_edges or incomplete_scan)
+                    and not stop_event.is_set()
+                ):
+                    if await_supervised_recheck(finish_reason):
+                        finish_reason = "UNKNOWN"
+                        continue
+                    finish_reason = "USER_STOP" if stop_event.is_set() else finish_reason
+                    break
                 recorder.event(
                     time.monotonic(),
                     "FINISH",
@@ -3007,6 +4473,79 @@ def run(
                 )
                 continue
 
+            # A failed but stationary START-side clearance attempt should
+            # not end the whole mission if another confirmed-open route exists.
+            # Defer this specific physical edge only; do not call it a WALL.
+            # Missing sensors, odometry/heading faults and mid-leg failures
+            # still stop immediately, not a blind attempt to move elsewhere.
+            reroutable_recovery = (
+                moved <= 0.005
+                and (
+                    reason.startswith("RECOVERY_OPPOSITE_TOO_CLOSE")
+                    or reason.startswith("RECOVERY_CELL_OFFSET_LIMIT")
+                    or reason.startswith("RECOVERY_ATTEMPT_LIMIT")
+                    or reason.startswith("RECOVERY_HEADING_RETRY_LIMIT")
+                )
+            )
+            if reroutable_recovery:
+                live_yaw = pose.get_yaw()
+                stable_heading = (
+                    live_yaw is not None
+                    and abs(normalize_angle_deg(
+                        float(live_yaw) - float(raw_start_yaw)
+                    )) <= float(config.heading_recover_release_deg)
+                )
+                rel_x, rel_y = _relative_xy(
+                    pose, float(raw_start_x), float(raw_start_y),
+                    float(raw_start_yaw), config
+                )
+                safe_pose = (
+                    stable_heading
+                    and rel_x is not None and rel_y is not None
+                    and abs(float(rel_x) - float(current_cell[0]) * float(config.cell_size_m))
+                        <= float(config.side_start_recovery_max_center_offset_m) + 0.005
+                    and abs(float(rel_y) - float(current_cell[1]) * float(config.cell_size_m))
+                        <= float(config.side_start_recovery_max_center_offset_m) + 0.005
+                )
+                if safe_pose:
+                    deferred = _canonical_edge(current_cell, move_direction)
+                    safety_deferred_edges.add(deferred)
+                    blocked_edges.add((current_cell, move_direction))
+                    blocked_edges.add((next_cell, (move_direction + 2) % 4))
+                    recorder.event(
+                        time.monotonic(), "DEFERRED_UNSAFE_EDGE",
+                        reason + " (try another reachable frontier, no fake WALL)",
+                        logical_node=current_cell,
+                        destination=next_cell,
+                        direction=DIR_NAME[move_direction],
+                    )
+                    print(
+                        "[ROUTE_DEFERRED] {} -> {}: {}. Trying an alternate OPEN edge.".format(
+                            current_cell, next_cell, reason
+                        ), flush=True,
+                    )
+                    continue
+
+            # This is NOT a reason to keep issuing blind speed commands.
+            # Keep the GUI/mapping session alive and permit a fresh operator
+            # rescan, while motors remain at zero after the rejected move.
+            # Manual Stop & Save and genuine completion still export normally.
+            recoverable_pause = (
+                reason != "USER_STOP"
+                and (
+                    reason.startswith("RECOVERY_")
+                    or reason.startswith("SIDE_START_")
+                    or reason.startswith("HEADING_RECOVERY_")
+                    or reason.startswith("GIMBAL_")
+                    or reason in ("TOF_STALE", "ODOMETRY_UNAVAILABLE")
+                )
+            )
+            if config.supervised_hold_on_safety_dead_end and recoverable_pause:
+                if await_supervised_recheck(reason):
+                    continue
+                if stop_event.is_set():
+                    finish_reason = "USER_STOP"
+                    break
             finish_reason = (
                 "FRONTIER_RELOCATE_{}".format(reason)
                 if not is_new

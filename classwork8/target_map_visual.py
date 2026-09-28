@@ -1,8 +1,9 @@
-"""Conservative target plotting for the Final Round-1 discovered GUI map.
+"""Conservative target geometry and confirmed-only Final Round-1 map filtering.
 
-A distant camera observation is a bearing, not a confirmed target location.
-Show its ToF-ray endpoint only as a hollow '?' hint with a line of sight from
-the observing cell. Never place it at the observing cell as a physical sign.
+Distant camera sightings are stored for later rechecks but are NOT displayed
+as map signs until a wall-range estimate establishes a provisional position.
+The geometric helper can still represent bearing-only observations for
+non-map analysis without treating them as physical positions.
 """
 
 from __future__ import annotations
@@ -45,19 +46,81 @@ def target_plot_geometry(target: dict, cell_size_m: float):
     )
     direction_list = target.get("view_directions") or [0]
     direction = int(direction_list[0]) % 4
-    # A distant wall's candidate cell is the last cell before its measured
-    # range plane. Show an OPEN circle at its centre (not as a confirmed target).
-    # Retain actual ToF ray end in targets.json for later geometric validation.
-    cell_hint = target.get("sighting_cell_hint")
-    if cell_hint is not None and len(cell_hint) == 2:
-        endpoint = (
-            float(cell_hint[0]) * float(cell_size_m),
-            float(cell_hint[1]) * float(cell_size_m),
-        )
-    else:
-        dx, dy = _DIR_VEC[direction]
-        endpoint = (
-            origin[0] + dx * float(cell_size_m),
-            origin[1] + dy * float(cell_size_m),
-        )
+    # A SIGHTING_ONLY bearing has NO physical position. Low foam walls can
+    # let ToF see far beyond the arena, so drawing its distant range-derived
+    # cell hint as a target creates a false exterior map marker. Keep the
+    # original hint in targets.json, but put a hollow '?' inside the observed
+    # cell at its visible edge. A real close-wall recheck can localize it later.
+    dx, dy = _DIR_VEC[direction]
+    endpoint = (
+        origin[0] + dx * float(cell_size_m) * 0.45,
+        origin[1] + dy * float(cell_size_m) * 0.45,
+    )
     return endpoint, origin, True
+
+
+def confirmed_map_targets(targets):
+    """Only render verified near-wall sign positions, not bearing-only sightings.
+
+    Retain all other target records in the registry and targets.json so the
+    robot can revisit them. A confirmed colour/shape alone does not establish
+    a map position. The allowed coordinate is still a *wall-surface estimate*,
+    not triangulated sign depth.
+    """
+    import math
+
+    visible = []
+    for target in targets or []:
+        if target.get("status") == "PENDING_RECHECK":
+            continue
+        if target.get("confirmed") is False:
+            continue
+        if target.get("localization_status") != "NEAR_WALL_ESTIMATE":
+            continue
+        if target.get("range_confirmed_wall") is not True:
+            continue
+        xy = target.get("estimated_target_xy_m")
+        if not isinstance(xy, (list, tuple)) or len(xy) != 2:
+            continue
+        try:
+            if not all(math.isfinite(float(value)) for value in xy):
+                continue
+        except (TypeError, ValueError):
+            continue
+        visible.append(target)
+    return visible
+
+
+def target_marker_offsets(targets, cell_size_m: float):
+    """Pure display-only offsets, in logical-cell widths, for shared ToF rays.
+
+    Multiple signs on the same wall can have exactly the same 2-D ToF range
+    estimate. Spread badges so none disappears. Never alter targets.json or
+    imply these badge offsets are triangulated physical coordinates.
+    """
+    import math
+
+    entries = list(targets or [])
+    offsets = [(0.0, 0.0) for _ in entries]
+    groups = {}
+    for index, target in enumerate(entries):
+        xy, _, _ = target_plot_geometry(target, cell_size_m)
+        if xy is None:
+            continue
+        # Only symbols at nearly identical physical plot positions collide.
+        key = (round(xy[0], 3), round(xy[1], 3))
+        groups.setdefault(key, []).append(index)
+
+    for indices in groups.values():
+        n = len(indices)
+        if n <= 1:
+            continue
+        columns = int(math.ceil(math.sqrt(n)))
+        rows = int(math.ceil(n / columns))
+        for slot, index in enumerate(indices):
+            col, row = slot % columns, slot // columns
+            offsets[index] = (
+                (col - (columns - 1) / 2.0) * 0.36,
+                (row - (rows - 1) / 2.0) * 0.36,
+            )
+    return offsets
