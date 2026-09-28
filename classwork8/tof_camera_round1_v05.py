@@ -1358,134 +1358,138 @@ def _maintain_wall_clearance_checkpoint(
     ranges: Dict[int, Optional[float]], direction: int, raw_start_x: float,
     raw_start_y: float, raw_start_yaw: float,
     stop_event: Optional[threading.Event],
+    *,
+    verified_retreat_direction: Optional[int] = None,
 ) -> Tuple[bool, Optional[str]]:
-    """Correct immediately when the SECOND side of an opposing pair is scanned.
+    """Adjust the CURRENT wall immediately, with no other Gimbal yaw aim.
 
-    Exactly four primary Gimbal directions are allowed per cell: the only
-    opposite-side reading accepted is from the SAME unmoved four-way sweep.
-    Missing opposite evidence means DEFER with NO extra Gimbal yaw motion.
-    While moving, monitor only the CURRENT direction's live ToF. A previous
-    close wall can be corrected when its opposite is naturally scanned, by
-    moving TOWARD the currently observed safe wall with a strict reserve.
+    The only approved space behind a requested movement is either:
+      1) the opposite range in this SAME unmoved scan, or
+      2) a <= 8 cm retrace of the robot's just-traversed cell edge.
+    Otherwise a single forward-facing ToF cannot rule out an obstacle
+    behind the robot: skip motion, never blind-drive or scan an extra side.
+
+    Preserve the current Gimbal yaw, continuously observe the current wall,
+    cap each translation segment to config.wall_clearance_max_step_cm,
+    and stop in verified wheel-zero mode between segments and at exit.
+    Caller then holds the SAME angle for a fresh camera-sign observation.
     """
-    _ = gimbal  # No gimbal command here: the caller already aimed this side.
+    _ = gimbal  # NEVER command Gimbal yaw inside clearance adjustment.
     if not config.wall_clearance_enabled or config.yaw_isolation_mode:
         return False, None
-    opposite = (int(direction) + 2) % 4
+    direction = int(direction) % 4
+    opposite = (direction + 2) % 4
     current_cm = ranges.get(direction)
-    opposing_cm = ranges.get(opposite)
     if current_cm is None or not math.isfinite(float(current_cm)):
         return False, None
-    if opposing_cm is None or not math.isfinite(float(opposing_cm)):
-        if float(current_cm) < clearance_target(config, direction):
-            print(
-                "[CLEARANCE_DEFERRED] {}={:.1f}cm, {} not scanned yet; "
-                "NO extra yaw sweep. Evaluate when the opposing side is reached.".format(
-                    DIR_NAME[direction], float(current_cm), DIR_NAME[opposite]
-                ), flush=True,
-            )
-        return False, None
-    # Evaluate BOTH sides of the pair, including a near wall seen earlier.
-    # Neither range may be reused after any physical correction; the caller
-    # clears its scan safety cache after movement.
-    plan = choose_clearance_plan(
-        {direction: float(current_cm), opposite: float(opposing_cm)}, config
-    )
-    if plan is None:
+    desired = clearance_target(config, direction)
+    tol = float(config.wall_clearance_deadband_cm)
+    if (float(current_cm) >= desired - tol
+            or float(current_cm) >= float(config.tof_open_cm)):
         return False, None
     if stop_event is not None and stop_event.is_set():
         return False, "USER_STOP"
-    initial_yaw = pose.get_yaw()
-    age = pose.attitude_age_sec()
-    if (initial_yaw is None or age is None or age > 0.3 or
-            abs(_heading_error(raw_start_yaw, initial_yaw)) > 2.0):
-        print("[CLEARANCE] SKIP: heading not aligned/fresh.", flush=True)
-        return False, None
-    observed_pitch, observed_yaw = tracker.get_angles()
-    if (observed_pitch is None or observed_yaw is None
-            or abs(float(observed_pitch) - float(config.gimbal_scan_pitch_deg))
-            > float(config.gimbal_pitch_tolerance_deg)
-            or abs(_heading_error(
-                config.gimbal_yaw_for_direction(direction), observed_yaw
-            )) > float(config.gimbal_tolerance_deg)):
-        print("[CLEARANCE] SKIP: current Gimbal scan direction not level.", flush=True)
+
+    opposite_cm = ranges.get(opposite)
+    known_opposite = (
+        opposite_cm is not None
+        and math.isfinite(float(opposite_cm))
+        and float(opposite_cm) >= float(config.mapping_min_cm)
+    )
+    retrace_verified = (
+        verified_retreat_direction is not None
+        and opposite == int(verified_retreat_direction) % 4
+    )
+    if not known_opposite and not retrace_verified:
+        print(
+            "[CLEARANCE_UNVERIFIED] {}={:.1f}cm target={:.1f}cm, no "
+            "opposite-wall measurement or just-traversed retreat route; "
+            "skip unsafe blind movement; keep this Gimbal direction for "
+            "camera survey.".format(DIR_NAME[direction], current_cm, desired),
+            flush=True,
+        )
         return False, None
 
-    # Never call _point_gimbal here. Stop all wheels, reset ToF's median,
-    # then confirm live feedback still corresponds to the current direction.
+    yaw = pose.get_yaw()
+    age = pose.attitude_age_sec()
+    observed_pitch, observed_yaw = tracker.get_angles()
+    if (yaw is None or age is None or age > 0.3
+            or abs(_heading_error(raw_start_yaw, yaw)) > 2.0
+            or observed_pitch is None or observed_yaw is None
+            or abs(float(observed_pitch) - config.gimbal_scan_pitch_deg)
+            > config.gimbal_pitch_tolerance_deg
+            or abs(_heading_error(
+                config.gimbal_yaw_for_direction(direction), observed_yaw
+            )) > config.gimbal_tolerance_deg):
+        print("[CLEARANCE] SKIP: chassis/Gimbal feedback not aligned or fresh.",
+              flush=True)
+        return False, None
+
     stop_chassis(chassis)
     sensors.reset_filters()
     fresh = _wait_for_fresh_tof(sensors, 1.0, stop_event)
-    if fresh is None or not math.isfinite(float(fresh)):
-        print("[CLEARANCE] SKIP: fresh current-side ToF unavailable.", flush=True)
+    if (fresh is None or not math.isfinite(float(fresh))
+            or abs(float(fresh) - float(current_cm)) > 8.0
+            or float(fresh) < float(config.mapping_min_cm)):
+        print("[CLEARANCE] SKIP: current-side ToF not fresh/consistent.", flush=True)
         return False, None
-    if abs(float(fresh) - float(current_cm)) > 8.0:
-        print("[CLEARANCE] SKIP: current-side scan and fresh ToF disagree.",
-              flush=True)
+    deficit_cm = desired - float(fresh)
+    if deficit_cm <= tol:
         return False, None
-    tol = float(config.wall_clearance_deadband_cm)
-    moving_toward_observed = plan.away_direction == direction
-    if moving_toward_observed:
-        # Earlier side is too close; current side is its opposing safe wall.
-        # Reserve the current wall target + tolerance + 0.5 cm margin.
-        reserve = clearance_target(config, direction) + tol + 0.5
-        limit_cm = min(
-            plan.target_cm - plan.measured_cm,
-            float(config.wall_clearance_max_step_cm),
-            float(fresh) - reserve,
-        )
-    else:
-        # Currently observed side is too close. Moving away increases its
-        # live ToF reading; opposing range budgets the maximum safe movement.
-        limit_cm = min(
-            plan.target_cm - float(fresh),
-            float(config.wall_clearance_max_step_cm),
-            float(opposing_cm) - clearance_target(config, opposite) - tol,
-        )
+    step_cm = float(config.wall_clearance_max_step_cm)
+    # At most TWO individually stopped bounded segments on this side.
+    # With a measured opposite range, leave its configured minimum plus
+    # tolerance and 1 cm uncertainty margin. With recent traversed-edge
+    # evidence, retrace no more than 2 * step_cm, not an unknown cell.
+    budget_cm = (min(
+        float(opposite_cm) - clearance_target(config, opposite) - tol - 1.0,
+        2.0 * step_cm,
+    ) if known_opposite else 2.0 * step_cm)
+    limit_cm = min(deficit_cm, 2.0 * step_cm, budget_cm)
     if limit_cm <= tol:
-        print("[CLEARANCE] SKIP: no safe room toward the opposite wall.", flush=True)
+        print("[CLEARANCE] SKIP: opposing wall/route leaves no safe room.",
+              flush=True)
         return False, None
 
     xy = pose.get_xy()
     if xy[0] is None or xy[1] is None:
         return False, "CLEARANCE_ODOMETRY_MISSING"
     initial_map = _map_xy_from_raw(
-        float(xy[0]), float(xy[1]),
-        raw_start_x, raw_start_y, raw_start_yaw,
-        config.odom_scale_x, config.odom_scale_y,
+        float(xy[0]), float(xy[1]), raw_start_x, raw_start_y,
+        raw_start_yaw, config.odom_scale_x, config.odom_scale_y,
     )
-    unit_map = DIR_VEC_MAP[plan.away_direction]
-    unit_body = DIR_VEC_DRIVE[plan.away_direction]
+    unit_map = DIR_VEC_MAP[opposite]
+    unit_body = DIR_VEC_DRIVE[opposite]
     speed = float(config.wall_clearance_speed_mps)
     started = time.monotonic()
-    timeout = limit_cm / 100.0 / speed + 1.0
+    deadline = started + limit_cm / 100.0 / speed + 1.5
+    segment_origin = 0.0
     last_progress = 0.0
+    last_live = float(fresh)
     sent_motion = False
     print(
-        "[CLEARANCE_DURING_SCAN] observed={} wall={} near={:.1f}cm "
-        "opposite={:.1f}cm away={} max={:.1f}cm "
-        "live_monitor={} speed={:.3f} z=0".format(
-            DIR_NAME[direction], DIR_NAME[plan.wall_direction],
-            plan.measured_cm, plan.opposite_cm,
-            DIR_NAME[plan.away_direction], limit_cm,
-            "APPROACH" if moving_toward_observed else "RETREAT", speed,
+        "[CLEARANCE_NOW] observed={} range={:.1f}cm target={:.1f}cm "
+        "move={} limit={:.1f}cm verified_by={} speed={:.3f} z=0".format(
+            DIR_NAME[direction], fresh, desired, DIR_NAME[opposite],
+            limit_cm, "SAME_SCAN_OPPOSITE" if known_opposite
+            else "JUST_TRAVERSED_ROUTE", speed,
         ), flush=True,
     )
     try:
-        while time.monotonic() - started <= timeout:
+        while time.monotonic() <= deadline:
             if stop_event is not None and stop_event.is_set():
                 return sent_motion, "USER_STOP"
             yaw = pose.get_yaw()
             yaw_age = pose.attitude_age_sec()
-            if (yaw is None or yaw_age is None or yaw_age > 0.3 or
-                    abs(_heading_error(raw_start_yaw, yaw)) > 2.0):
+            pitch, camera_yaw = tracker.get_angles()
+            if (yaw is None or yaw_age is None or yaw_age > 0.3
+                    or abs(_heading_error(raw_start_yaw, yaw)) > 2.0):
                 return sent_motion, "CLEARANCE_HEADING_GUARD"
-            observed_pitch, observed_yaw = tracker.get_angles()
-            if (observed_pitch is None or observed_yaw is None or
-                    abs(float(observed_pitch) - config.gimbal_scan_pitch_deg)
-                    > config.gimbal_pitch_tolerance_deg or
-                    abs(_heading_error(
-                        config.gimbal_yaw_for_direction(direction), observed_yaw,
+            if (pitch is None or camera_yaw is None
+                    or abs(float(pitch) - config.gimbal_scan_pitch_deg)
+                    > config.gimbal_pitch_tolerance_deg
+                    or abs(_heading_error(
+                        config.gimbal_yaw_for_direction(direction), camera_yaw
                     )) > config.gimbal_tolerance_deg):
                 return sent_motion, "CLEARANCE_GIMBAL_MOVED"
             stamp = sensors.tof_last_update
@@ -1495,20 +1499,15 @@ def _maintain_wall_clearance_checkpoint(
             live = sensors.get_front_cm()
             if live is None or not math.isfinite(float(live)):
                 return sent_motion, "CLEARANCE_TOF_STALE"
-            if moving_toward_observed:
-                if float(live) > float(fresh) + 2.0:
-                    return sent_motion, "CLEARANCE_RANGE_DIRECTION"
-                if float(live) < clearance_target(config, direction) + tol:
-                    return sent_motion, "CLEARANCE_OPPOSITE_RANGE_UNSAFE"
-            elif float(live) < float(fresh) - 2.0:
-                return sent_motion, "CLEARANCE_RANGE_UNSAFE"
+            # Retreat from current wall MUST increase its observed distance.
+            if float(live) < last_live - 2.0:
+                return sent_motion, "CLEARANCE_RANGE_DIRECTION"
             xy = pose.get_xy()
             if xy[0] is None or xy[1] is None:
                 return sent_motion, "CLEARANCE_ODOMETRY_LOST"
             map_xy = _map_xy_from_raw(
-                float(xy[0]), float(xy[1]),
-                raw_start_x, raw_start_y, raw_start_yaw,
-                config.odom_scale_x, config.odom_scale_y,
+                float(xy[0]), float(xy[1]), raw_start_x, raw_start_y,
+                raw_start_yaw, config.odom_scale_x, config.odom_scale_y,
             )
             progress = (
                 (map_xy[0] - initial_map[0]) * unit_map[0]
@@ -1517,32 +1516,38 @@ def _maintain_wall_clearance_checkpoint(
             if progress < -0.005 or progress > limit_cm / 100.0 + 0.012:
                 return sent_motion, "CLEARANCE_ODOMETRY_DIRECTION"
             last_progress = max(0.0, progress)
-            reached = (
-                float(live) <= clearance_target(config, direction) + tol + 0.5
-                if moving_toward_observed else
-                float(live) >= plan.target_cm - tol
-            )
-            if reached or progress >= limit_cm / 100.0:
+            last_live = float(live)
+            if float(live) >= desired - tol or progress >= limit_cm / 100.0:
                 print(
-                    "[CLEARANCE] STOP wall={} observed={} live={:.1f}cm "
-                    "shifted={:.3f}m".format(
-                        DIR_NAME[plan.wall_direction], DIR_NAME[direction],
-                        live, progress,
+                    "[CLEARANCE] STOP {} live={:.1f}cm shifted={:.3f}m "
+                    "target={:.1f}cm".format(
+                        DIR_NAME[direction], live, progress, desired,
                     ), flush=True,
                 )
                 return sent_motion, None
+            # The second segment is not a second scan: stop all wheels
+            # and re-evaluate the current ToF/yaw, without any Gimbal aim.
+            if progress - segment_origin >= step_cm / 100.0:
+                stop_chassis(chassis)
+                segment_origin = progress
+                print(
+                    "[CLEARANCE_SEGMENT] {} {:.3f}m / {:.3f}m; same-angle "
+                    "live ToF {:.1f}cm".format(
+                        DIR_NAME[direction], progress, limit_cm / 100.0, live
+                    ), flush=True,
+                )
+                if not _sleep_interruptible(0.06, stop_event):
+                    return sent_motion, "USER_STOP"
+                continue
             sent_motion = True
             chassis.drive_speed(
-                x=unit_body[0] * speed,
-                y=unit_body[1] * speed,
-                z=0.0,
-                timeout=config.drive_timeout_sec,
+                x=unit_body[0] * speed, y=unit_body[1] * speed,
+                z=0.0, timeout=config.drive_timeout_sec,
             )
             if not _sleep_interruptible(0.04, stop_event):
                 return sent_motion, "USER_STOP"
         return sent_motion, "CLEARANCE_MOTION_TIMEOUT"
     finally:
-        # Retain the experimentally stable ACK-checked zero-wheel stop.
         stop_chassis(chassis)
 
 
