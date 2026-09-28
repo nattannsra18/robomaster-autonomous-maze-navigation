@@ -21,8 +21,15 @@ class WheelZeroGimbalTests(unittest.TestCase):
             self.assertEqual(call.func.value.id, "chassis")
             kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
             self.assertEqual(kwargs, {"w1": 0, "w2": 0, "w3": 0, "w4": 0})
-        self.assertNotIn("chassis.drive_speed", SOURCE)
-        self.assertNotIn("chassis.move(", SOURCE)
+        chassis_calls = [
+            node.func.attr for node in ast.walk(TREE)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "chassis"
+        ]
+        self.assertNotIn("drive_speed", chassis_calls)
+        self.assertNotIn("move", chassis_calls)
         self.assertNotIn("drive_wheels(", SOURCE.split("def _wheel_zero(chassis):", 1)[0])
 
     def test_gimbal_is_bounded_and_feedback_guarded(self):
