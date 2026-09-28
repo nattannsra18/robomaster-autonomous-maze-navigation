@@ -22,6 +22,7 @@ from robomaster_mission.mission import (
 from .camera_service import CameraService
 from .live_survey import LiveSurveyBridge
 from .motion_safety_v05 import adjacent_wall_sides
+from .wall_clearance_v05 import choose_clearance_plan, clearance_target
 from .config import Classwork8Config
 from .occupancy_grid import OccupancyGrid
 from .reporting import RunRecorder
@@ -1243,6 +1244,159 @@ def _moving_heading_over_limit(
     ):
         return False
     return abs(_heading_error(target_yaw_deg, actual_yaw_deg)) > V05_MOVING_YAW_ABORT_DEG
+
+
+def _maintain_wall_clearance_checkpoint(
+    chassis, gimbal, pose: PoseTracker, sensors: ToFOnlySensorManager,
+    tracker: GimbalTracker, config: Classwork8Config,
+    ranges: Dict[int, Optional[float]], raw_start_x: float,
+    raw_start_y: float, raw_start_yaw: float,
+    stop_event: Optional[threading.Event],
+) -> Tuple[bool, Optional[str]]:
+    """One small, physically verified, zero-yaw move AWAY from a near wall.
+
+    The initial four-side ToF ranges are fresh from this cell's full scan.
+    One gimbal ToF cannot monitor four sides at once: point it at the near
+    wall and continuously observe that wall while adjusting. The opposite
+    scan range budgets how far we can go; never invent missing clearance.
+    Return (physically_moved, fatal_reason). Caller rescans ALL FOUR sides
+    after any move before committing current-cell scan results.
+    """
+    if not config.wall_clearance_enabled or config.yaw_isolation_mode:
+        return False, None
+    plan = choose_clearance_plan(ranges, config)
+    if plan is None:
+        print("[CLEARANCE] No safe correction required/possible in this cell.",
+              flush=True)
+        return False, None
+    if stop_event is not None and stop_event.is_set():
+        return False, "USER_STOP"
+    initial_yaw = pose.get_yaw()
+    age = pose.attitude_age_sec()
+    if (initial_yaw is None or age is None or age > 0.3 or
+            abs(_heading_error(raw_start_yaw, initial_yaw)) > 2.0):
+        print("[CLEARANCE] SKIP: heading not aligned/fresh for a body-frame shift.",
+              flush=True)
+        return False, None
+
+    stop_chassis(chassis)
+    if not _point_gimbal(
+        gimbal, sensors, tracker, plan.wall_direction, config, stop_event
+    ):
+        return False, "CLEARANCE_GIMBAL_UNAVAILABLE"
+    # A stopped yaw sweep changes which wall the ToF measures. Reset the
+    # median filter and require fresh data on the chosen wall before moving.
+    sensors.reset_filters()
+    fresh = _wait_for_fresh_tof(sensors, 1.0, stop_event)
+    if fresh is None:
+        print("[CLEARANCE] SKIP: fresh wall-distance feedback unavailable.",
+              flush=True)
+        return False, None
+    target = clearance_target(config, plan.wall_direction)
+    tol = float(config.wall_clearance_deadband_cm)
+    if fresh >= target - tol:
+        print("[CLEARANCE] SKIP: fresh {} range {:.1f} cm already acceptable.".format(
+            DIR_NAME[plan.wall_direction], fresh), flush=True)
+        return False, None
+    if (abs(float(fresh) - plan.measured_cm) > 8.0 or
+            float(fresh) < float(config.mapping_min_cm)):
+        print("[CLEARANCE] SKIP: scanned and fresh wall ranges disagree.",
+              flush=True)
+        return False, None
+    opposite_budget = (
+        plan.opposite_cm
+        - clearance_target(config, plan.away_direction) - tol
+    )
+    limit_cm = min(
+        target - float(fresh),
+        float(config.wall_clearance_max_step_cm),
+        opposite_budget,
+    )
+    if limit_cm <= tol:
+        print("[CLEARANCE] SKIP: opposing wall leaves no safe room.", flush=True)
+        return False, None
+
+    xy = pose.get_xy()
+    if xy[0] is None or xy[1] is None:
+        return False, "CLEARANCE_ODOMETRY_MISSING"
+    initial_map = _map_xy_from_raw(
+        float(xy[0]), float(xy[1]),
+        raw_start_x, raw_start_y, raw_start_yaw,
+        config.odom_scale_x, config.odom_scale_y,
+    )
+    unit_map = DIR_VEC_MAP[plan.away_direction]
+    unit_body = DIR_VEC_DRIVE[plan.away_direction]
+    speed = float(config.wall_clearance_speed_mps)
+    started = time.monotonic()
+    timeout = limit_cm / 100.0 / speed + 1.0
+    last_progress = 0.0
+    print(
+        "[CLEARANCE] wall={} range={:.1f} target={:.1f} opposite={:.1f} "
+        "away={} limit={:.1f}cm speed={:.3f} z=0".format(
+            DIR_NAME[plan.wall_direction], fresh, target, plan.opposite_cm,
+            DIR_NAME[plan.away_direction], limit_cm, speed,
+        ), flush=True,
+    )
+    try:
+        while time.monotonic() - started <= timeout:
+            if stop_event is not None and stop_event.is_set():
+                return last_progress >= 0.003, "USER_STOP"
+            yaw = pose.get_yaw()
+            yaw_age = pose.attitude_age_sec()
+            if (yaw is None or yaw_age is None or yaw_age > 0.3 or
+                    abs(_heading_error(raw_start_yaw, yaw)) > 2.0):
+                return last_progress >= 0.003, "CLEARANCE_HEADING_GUARD"
+            observed_pitch, observed_yaw = tracker.get_angles()
+            if (observed_pitch is None or observed_yaw is None or
+                    abs(float(observed_pitch) - config.gimbal_scan_pitch_deg)
+                    > config.gimbal_pitch_tolerance_deg or
+                    abs(_heading_error(
+                        config.gimbal_yaw_for_direction(plan.wall_direction),
+                        observed_yaw,
+                    )) > config.gimbal_tolerance_deg):
+                return last_progress >= 0.003, "CLEARANCE_GIMBAL_MOVED"
+            stamp = sensors.tof_last_update
+            now = time.monotonic()
+            if stamp is None or now - stamp > 0.35:
+                return last_progress >= 0.003, "CLEARANCE_TOF_STALE"
+            live = sensors.get_front_cm()
+            if live is None or float(live) < float(fresh) - 2.0:
+                return last_progress >= 0.003, "CLEARANCE_RANGE_UNSAFE"
+            xy = pose.get_xy()
+            if xy[0] is None or xy[1] is None:
+                return last_progress >= 0.003, "CLEARANCE_ODOMETRY_LOST"
+            map_xy = _map_xy_from_raw(
+                float(xy[0]), float(xy[1]),
+                raw_start_x, raw_start_y, raw_start_yaw,
+                config.odom_scale_x, config.odom_scale_y,
+            )
+            progress = (
+                (map_xy[0] - initial_map[0]) * unit_map[0]
+                + (map_xy[1] - initial_map[1]) * unit_map[1]
+            )
+            if progress < -0.005 or progress > limit_cm / 100.0 + 0.012:
+                return progress >= 0.003, "CLEARANCE_ODOMETRY_DIRECTION"
+            last_progress = max(0.0, progress)
+            if live >= target - tol or progress >= limit_cm / 100.0:
+                print(
+                    "[CLEARANCE] STOP wall={} live={:.1f}cm shifted={:.3f}m "
+                    "(bounded checkpoint adjustment)".format(
+                        DIR_NAME[plan.wall_direction], live, progress,
+                    ), flush=True,
+                )
+                return progress >= 0.003, None
+            chassis.drive_speed(
+                x=unit_body[0] * speed,
+                y=unit_body[1] * speed,
+                z=0.0,
+                timeout=config.drive_timeout_sec,
+            )
+            if not _sleep_interruptible(0.04, stop_event):
+                return last_progress >= 0.003, "USER_STOP"
+        return last_progress >= 0.003, "CLEARANCE_MOTION_TIMEOUT"
+    finally:
+        # Cancel any pending SDK auto-zero speed timer before direct wheel stop.
+        stop_chassis(chassis)
 
 
 def _basic_motion_command(
