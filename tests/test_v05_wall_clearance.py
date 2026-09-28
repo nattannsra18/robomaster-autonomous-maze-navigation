@@ -71,6 +71,7 @@ class WallClearancePlannerTests(unittest.TestCase):
         for side in ("front", "right", "back", "left"):
             self.assertIn("wall_clearance_{}_cm".format(side), first)
         self.assertIn('"wall_clearance_enabled": False', source)
+        self.assertIn('"wall_clearance_camera_dwell_sec": 0.70', source)
 
     def test_each_scan_direction_adjusts_before_next_and_only_remeasures_itself(self):
         source = inspect.getsource(v05._scan_four_directions)
@@ -110,9 +111,29 @@ class WallClearancePlannerTests(unittest.TestCase):
         self.assertGreater(cfg.gimbal_pitch_max_speed_dps, 24.0)
         self.assertLess(cfg.gimbal_settle_sec, 0.2)
 
+    def test_current_side_camera_hold_occurs_after_retreat_before_next_yaw(self):
+        source = inspect.getsource(v05._scan_four_directions)
+        self.assertLess(
+            source.index("_maintain_wall_clearance_checkpoint("),
+            source.index("[CLEARANCE_CAMERA_HOLD]")
+        )
+        self.assertLess(
+            source.index("[CLEARANCE_CAMERA_HOLD]"),
+            source.index("verified_targets, target_debug = target_detector.verify_latest(")
+        )
+        self.assertIn("not_before=survey_frame_epoch", source)
+        self.assertIn("verified_retreat_direction=verified_retreat_direction", source)
+        self.assertIn("[CLEARANCE_UNVERIFIED]", inspect.getsource(
+            v05._maintain_wall_clearance_checkpoint
+        ))
+        self.assertNotIn("_point_gimbal(", inspect.getsource(
+            v05._maintain_wall_clearance_checkpoint
+        ).split('"""', 2)[-1])
+
     def test_defaults_are_fifteen_cm_in_all_directions(self):
         defaults = Classwork8Config()
         self.assertFalse(defaults.wall_clearance_enabled)
+        self.assertEqual(defaults.wall_clearance_camera_dwell_sec, 0.70)
         for side in ("front", "right", "back", "left"):
             self.assertEqual(getattr(defaults, "wall_clearance_{}_cm".format(side)), 15.0)
 
@@ -186,13 +207,23 @@ class WallClearanceMotionTests(unittest.TestCase):
         self.assertEqual((moved, reason), (False, None))
         yaw.assert_not_called()
 
-    def test_earlier_close_left_corrects_at_natural_right_scan_no_extra_yaw(self):
+    def test_only_current_side_is_corrected_not_an_earlier_side(self):
+        cfg = enabled_config()
+        # A previously scanned close LEFT must NOT trigger a late move while
+        # the Gimbal is now pointing RIGHT. This is the user's key ordering.
+        moved, reason = v05._maintain_wall_clearance_checkpoint(
+            None, None, None, None, None, cfg,
+            {3: 10.0, 1: 30.0}, 1, 0.0, 0.0, 0.0, threading.Event(),
+        )
+        self.assertEqual((moved, reason), (False, None))
+
+    def test_front_close_retreats_now_along_just_traversed_back_route(self):
         cfg = enabled_config()
         cfg.odom_scale_x = cfg.odom_scale_y = 1.0
         class Pose:
-            y = 0.0
+            x = 0.0
             def get_xy(self):
-                return 0.0, self.y
+                return self.x, 0.0
             def get_yaw(self):
                 return 0.0
             def attitude_age_sec(self):
@@ -205,25 +236,25 @@ class WallClearanceMotionTests(unittest.TestCase):
             def tof_last_update(self):
                 return time.monotonic()
             def get_front_cm(self):
-                # RIGHT wall is observed, and moving RIGHT approaches it.
-                return 30.0 - self.pose.y * 100.0
+                return 8.0 - self.pose.x * 100.0
         class Tracker:
             def get_angles(self):
-                return 0.0, 90.0
+                return 0.0, 0.0
         class Chassis:
             def __init__(self, pose):
                 self.pose = pose
-                self.moves = []
+                self.commands = []
                 self.stops = 0
             def stop(self):
                 pass
             def drive_wheels(self, w1=0, w2=0, w3=0, w4=0):
                 assert (w1, w2, w3, w4) == (0, 0, 0, 0)
                 self.stops += 1
+                self.commands.append(("stop", w1, w2, w3, w4))
                 return True
             def drive_speed(self, x, y, z, timeout):
-                self.moves.append((x, y, z))
-                self.pose.y += y * 0.1
+                self.commands.append(("move", x, y, z))
+                self.pose.x += x * 0.10
                 return None
         pose = Pose()
         sensors = Sensors()
@@ -232,17 +263,20 @@ class WallClearanceMotionTests(unittest.TestCase):
         with patch.object(v05, "_point_gimbal") as yaw:
             moved, reason = v05._maintain_wall_clearance_checkpoint(
                 chassis, object(), pose, sensors, Tracker(), cfg,
-                {3: 12.0, 1: 30.0}, 1, 0.0, 0.0, 0.0, threading.Event(),
+                {0: 8.0}, 0, 0.0, 0.0, 0.0, threading.Event(),
+                verified_retreat_direction=2,
             )
         yaw.assert_not_called()
         self.assertTrue(moved)
         self.assertIsNone(reason)
-        self.assertTrue(chassis.moves)
-        self.assertTrue(all(x == z == 0.0 and y > 0.0
-                            for x, y, z in chassis.moves))
-        self.assertEqual(chassis.stops, 2)
-        self.assertLessEqual(pose.y, 0.052)
-        self.assertGreaterEqual(sensors.get_front_cm(), cfg.wall_clearance_right_cm)
+        motion = [c for c in chassis.commands if c[0] == "move"]
+        self.assertGreater(len(motion), 1)
+        self.assertTrue(all(x < 0.0 and y == z == 0.0
+                            for _, x, y, z in motion))
+        self.assertGreaterEqual(sensors.get_front_cm(), 14.5)
+        self.assertLessEqual(abs(pose.x), 0.092)
+        self.assertGreaterEqual(chassis.stops, 2)
+        self.assertEqual(chassis.commands[-1], ("stop", 0, 0, 0, 0))
 
     def test_feature_disabled_does_not_command_chassis(self):
         cfg = Classwork8Config()
