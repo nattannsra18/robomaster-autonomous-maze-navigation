@@ -32,8 +32,8 @@ Legacy fields remain in `config.py` for serialized config compatibility but
 are absent from the V05 GUI. The standalone historical helpers in
 `motion_safety_v05.py` are not consulted by BASIC motion; only its
 `adjacent_wall_sides()` pure topology helper remains imported.
-ToF observations still update the grid and logs; missing or close ToF never
-changes chassis commands. Cross-track is logged and never gates completion.
+ToF observations still update logs; grid rays update only when gimbal
+pitch/yaw is aligned. Missing/close/tilted ToF never changes chassis commands. Cross-track is logged and never gates completion.
 
 **Unchanged:** camera stream, target detector, image processing, target scan
 pauses, GimbalTracker and gimbal control, sensor collection, odometry,
