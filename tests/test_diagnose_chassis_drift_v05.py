@@ -28,12 +28,25 @@ class DriftDiagnosticTests(unittest.TestCase):
         self.assertNotIn("drive_wheels(", SOURCE)
         self.assertNotIn("chassis.move(", SOURCE)
 
-    def test_gimbal_motion_is_opt_in_and_short(self):
+    def test_gimbal_motion_is_opt_in_inward_and_feedback_verified(self):
         self.assertIn('"--with-gimbal"', SOURCE)
         self.assertIn('if stop.is_set() or not args.with_gimbal:', SOURCE)
-        self.assertIn('("GIMBAL_LEFT_PULSE", -12.0)', SOURCE)
-        self.assertIn('("GIMBAL_RIGHT_PULSE", +12.0)', SOURCE)
-        self.assertIn('_stage(name, 0.6, telem, started, stop, True)', SOURCE)
+        self.assertIn("gimbal.resume()", SOURCE)
+        self.assertIn('speed = +30.0 if initial < -5.0', SOURCE)
+        self.assertIn('_stage("GIMBAL_INWARD_PULSE", 1.2', SOURCE)
+        self.assertIn('delta * speed <= 3.0', SOURCE)
+        self.assertIn('"[GIMBAL_FAIL] no verified inward gimbal motion', SOURCE)
+        self.assertNotIn('GIMBAL_LEFT_PULSE', SOURCE)
+        self.assertNotIn('GIMBAL_RIGHT_PULSE', SOURCE)
+
+    def test_extreme_negative_angle_commands_inward_positive_yaw(self):
+        # Actual previous run reported -269 deg. Positive command moves
+        # inward, not farther into the negative limit.
+        for initial in (-269.0, -250.0, -90.0):
+            speed = +30.0 if initial < -5.0 else -30.0 if initial > 5.0 else +30.0
+            self.assertGreater(speed, 0.0)
+        self.assertIn('if not gimbal_ready:', SOURCE)
+        self.assertIn('if not command_ok:', SOURCE)
 
     def test_esc_mode_and_imu_are_logged(self):
         for token in ('sub_esc(', 'sub_imu(', 'sub_mode(', 'stick_overlay(0)',
