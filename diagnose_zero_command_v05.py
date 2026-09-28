@@ -11,8 +11,8 @@ import sys
 import threading
 import time
 
-from robomaster import robot
 from diagnose_chassis_drift_v05 import Telemetry, _fmt
+from robomaster import robot
 
 
 def angle_change(initial, current):
