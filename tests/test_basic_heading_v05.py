@@ -98,6 +98,44 @@ class HeadingTests(unittest.TestCase):
         self.assertAlmostEqual(config.gimbal_yaw_speed_dps, 140.0)
         self.assertAlmostEqual(config.gimbal_min_yaw_speed_dps, 7.0)
 
+    def test_yaw_isolation_preserves_translation_and_forces_zero_z(self):
+        from classwork8.tof_camera_round1_v05 import _basic_motion_command, DIR_VEC_DRIVE
+        config = Classwork8Config()
+        config.yaw_isolation_mode = True
+        config.heading_hold_enabled = True  # Hard zero even if misconfigured.
+        for direction in range(4):
+            for actual_yaw in (-8.0, 0.0, 8.0):
+                with self.subTest(direction=direction, yaw=actual_yaw):
+                    x, y, z, _error = _basic_motion_command(
+                        config, direction, 0.0, actual_yaw
+                    )
+                    ux, uy = DIR_VEC_DRIVE[direction]
+                    self.assertAlmostEqual(x * ux + y * uy, 0.30)
+                    self.assertEqual(z, 0.0)
+
+    def test_yaw_isolation_disables_stationary_auto_alignment(self):
+        config = Classwork8Config()
+        config.yaw_isolation_mode = True
+        pose = FakePose(-5.0)
+        chassis = FakeChassis(pose)
+        ok, reason = _align_chassis_after_scan(chassis, pose, config, 0.0, None)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "YAW_ISOLATION")
+        self.assertTrue(all(x == y == z == 0.0 for x, y, z in chassis.commands))
+
+    def test_scan_checks_free_mode_and_sends_explicit_zero(self):
+        from classwork8.tof_camera_round1_v05 import run
+        source = inspect.getsource(run)
+        self.assertIn("FREE_MODE_FAILED", source)
+        self.assertIn("SCAN_STOP_SENT_", source)
+        self.assertIn("stop_chassis(chassis)", source)
+
+    def test_each_gimbal_direction_captures_chassis_attitude(self):
+        from classwork8.tof_camera_round1_v05 import _scan_four_directions
+        source = inspect.getsource(_scan_four_directions)
+        self.assertIn("PRE_GIMBAL_", source)
+        self.assertIn("POST_GIMBAL_", source)
+
     def test_heading_steering_does_not_reduce_forward_speed(self):
         config = Classwork8Config()
         x, y, z, _mode, _error = _fixed_heading_control_v02(
