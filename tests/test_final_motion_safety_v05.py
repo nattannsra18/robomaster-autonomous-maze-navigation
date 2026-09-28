@@ -21,6 +21,15 @@ from classwork8 import tof_camera_round1_v05 as mission
 
 
 class BasicMotionTests(unittest.TestCase):
+    def test_v05_entrypoint_keeps_requested_config_speed(self):
+        from final_round1_tof_camera_01 import _defaults
+        config = Classwork8Config()
+        for speed in (0.10, 0.20, 0.30):
+            with self.subTest(speed=speed):
+                config.travel_speed_mps = speed
+                _defaults(config)
+                self.assertAlmostEqual(config.travel_speed_mps, speed)
+
     def test_requested_speed_along_all_cardinal_directions(self):
         config = Classwork8Config()
         for speed in (0.10, 0.20, 0.30):
