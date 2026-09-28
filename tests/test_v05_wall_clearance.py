@@ -14,10 +14,10 @@ from pathlib import Path
 def enabled_config():
     config = Classwork8Config()
     config.wall_clearance_enabled = True
-    config.wall_clearance_front_cm = 18.0
-    config.wall_clearance_right_cm = 18.0
-    config.wall_clearance_back_cm = 18.0
-    config.wall_clearance_left_cm = 18.0
+    config.wall_clearance_front_cm = 15.0
+    config.wall_clearance_right_cm = 15.0
+    config.wall_clearance_back_cm = 15.0
+    config.wall_clearance_left_cm = 15.0
     return config
 
 
@@ -27,7 +27,7 @@ class WallClearancePlannerTests(unittest.TestCase):
         for wall in range(4):
             with self.subTest(wall=wall):
                 readings = {0: 100.0, 1: 100.0, 2: 100.0, 3: 100.0}
-                readings[wall] = 12.0
+                readings[wall] = 10.0
                 plan = choose_clearance_plan(readings, cfg)
                 self.assertIsNotNone(plan)
                 self.assertEqual(plan.wall_direction, wall)
@@ -37,11 +37,11 @@ class WallClearancePlannerTests(unittest.TestCase):
     def test_opposite_wall_budget_and_unsatisfiable_narrow_pair(self):
         cfg = enabled_config()
         # RIGHT too close, LEFT has only 3.5 cm room above its own target.
-        readings = {0: 100.0, 1: 12.0, 2: 100.0, 3: 23.0}
+        readings = {0: 100.0, 1: 10.0, 2: 100.0, 3: 19.0}
         plan = choose_clearance_plan(readings, cfg)
         self.assertEqual(plan.wall_direction, 1)
         self.assertAlmostEqual(plan.shift_cm, 3.5)
-        readings[3] = 17.0
+        readings[3] = 14.0
         self.assertIsNone(choose_clearance_plan(readings, cfg))
 
     def test_missing_stale_or_nonwall_readings_do_not_drive(self):
@@ -57,7 +57,7 @@ class WallClearancePlannerTests(unittest.TestCase):
         cfg.wall_clearance_front_cm = 100.0
         with self.assertRaisesRegex(ValueError, "wall_clearance_front_cm"):
             cfg.validate()
-        cfg.wall_clearance_front_cm = 18.0
+        cfg.wall_clearance_front_cm = 15.0
         cfg.wall_clearance_max_step_cm = 10.0
         with self.assertRaisesRegex(ValueError, "wall_clearance_max_step_cm"):
             cfg.validate()
@@ -72,12 +72,27 @@ class WallClearancePlannerTests(unittest.TestCase):
             self.assertIn("wall_clearance_{}_cm".format(side), first)
         self.assertIn('"wall_clearance_enabled": False', source)
 
-    def test_checkpoint_is_opt_in_and_rescans_after_movement(self):
-        source = inspect.getsource(v05.run)
+    def test_each_scan_direction_adjusts_before_next_and_only_remeasures_itself(self):
+        source = inspect.getsource(v05._scan_four_directions)
+        self.assertIn("safety_ranges[direction] = distance_cm", source)
         self.assertIn("_maintain_wall_clearance_checkpoint(", source)
-        self.assertIn("if corrected:", source)
-        self.assertIn("rescanned = _scan_four_directions(", source)
-        self.assertIn("not config.wall_clearance_enabled", source)
+        self.assertIn("if adjusted:", source)
+        self.assertIn("safety_ranges.clear()", source)
+        self.assertIn("distance_cm = _sample_tof(", source)
+        self.assertNotIn("rescanned = _scan_four_directions(", source)
+        self.assertLess(
+            source.index("_maintain_wall_clearance_checkpoint("),
+            source.index("ranges[direction] = distance_cm")
+        )
+        run_source = inspect.getsource(v05.run)
+        self.assertNotIn("_maintain_wall_clearance_checkpoint(", run_source)
+        self.assertIn("not config.wall_clearance_enabled", run_source)
+
+    def test_defaults_are_fifteen_cm_in_all_directions(self):
+        defaults = Classwork8Config()
+        self.assertFalse(defaults.wall_clearance_enabled)
+        for side in ("front", "right", "back", "left"):
+            self.assertEqual(getattr(defaults, "wall_clearance_{}_cm".format(side)), 15.0)
 
 
 class WallClearanceMotionTests(unittest.TestCase):
@@ -128,7 +143,7 @@ class WallClearanceMotionTests(unittest.TestCase):
         with patch.object(v05, "_point_gimbal", return_value=True):
             moved, reason = v05._maintain_wall_clearance_checkpoint(
                 chassis, object(), pose, sensors, Tracker(), cfg, ranges,
-                0.0, 0.0, 0.0, threading.Event(),
+                1, 0.0, 0.0, 0.0, threading.Event(),
             )
         self.assertTrue(moved)
         self.assertIsNone(reason)
@@ -143,7 +158,7 @@ class WallClearanceMotionTests(unittest.TestCase):
         cfg = Classwork8Config()
         moved, reason = v05._maintain_wall_clearance_checkpoint(
             None, None, None, None, None, cfg,
-            {0: 12.0, 2: 100.0}, 0.0, 0.0, 0.0, None,
+            {0: 12.0, 2: 100.0}, 0, 0.0, 0.0, 0.0, None,
         )
         self.assertEqual((moved, reason), (False, None))
 
