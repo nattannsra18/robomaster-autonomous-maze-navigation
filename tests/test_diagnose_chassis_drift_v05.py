@@ -46,7 +46,9 @@ class DriftDiagnosticTests(unittest.TestCase):
             speed = +30.0 if initial < -5.0 else -30.0 if initial > 5.0 else +30.0
             self.assertGreater(speed, 0.0)
         self.assertIn('if not gimbal_ready:', SOURCE)
-        self.assertIn('if not command_ok:', SOURCE)
+        self.assertIn('if command_ok is False:', SOURCE)
+        self.assertNotIn('if not command_ok:', SOURCE)
+        self.assertIn('None is normal for SDK async send', SOURCE)
 
     def test_esc_mode_and_imu_are_logged(self):
         for token in ('sub_esc(', 'sub_imu(', 'sub_mode(', 'stick_overlay(0)',
