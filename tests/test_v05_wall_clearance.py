@@ -95,6 +95,21 @@ class WallClearancePlannerTests(unittest.TestCase):
             v05._maintain_wall_clearance_checkpoint
         ))
 
+    def test_pitch_restore_never_adds_a_yaw_scan(self):
+        source = inspect.getsource(v05._scan_four_directions)
+        self.assertEqual(source.count("if not _point_gimbal("), 1)
+        self.assertIn("restore_ok = _set_camera_observation_pitch(", source)
+        self.assertIn("clamp_camera_limits=False", source)
+        self.assertIn("_allow_endpoint_retry=False", source)
+        self.assertNotIn("[CLEARANCE_PROBE]", source)
+        controller = inspect.getsource(v05._maintain_wall_clearance_checkpoint)
+        self.assertNotIn("_point_gimbal(", controller.split('"""', 2)[-1])
+        self.assertNotIn("gimbal.drive_speed(", controller)
+        cfg = Classwork8Config()
+        self.assertGreater(cfg.gimbal_yaw_speed_dps, 140.0)
+        self.assertGreater(cfg.gimbal_pitch_max_speed_dps, 24.0)
+        self.assertLess(cfg.gimbal_settle_sec, 0.2)
+
     def test_defaults_are_fifteen_cm_in_all_directions(self):
         defaults = Classwork8Config()
         self.assertFalse(defaults.wall_clearance_enabled)
