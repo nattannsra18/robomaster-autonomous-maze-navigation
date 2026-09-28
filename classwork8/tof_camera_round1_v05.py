@@ -541,11 +541,21 @@ def _set_camera_observation_pitch(
     config: Classwork8Config,
     target_pitch: float,
     stop_event: Optional[threading.Event],
+    *,
+    tolerance_deg: Optional[float] = None,
+    clamp_camera_limits: bool = True,
 ) -> bool:
-    """Change pitch while chassis is stopped, never commanding yaw at once."""
-    desired = max(
-        float(config.target_camera_pitch_min_deg),
-        min(float(config.target_camera_pitch_max_deg), float(target_pitch)),
+    """Adjust pitch only: never spend another yaw sweep to restore scan pitch."""
+    desired = (
+        max(
+            float(config.target_camera_pitch_min_deg),
+            min(float(config.target_camera_pitch_max_deg), float(target_pitch)),
+        )
+        if clamp_camera_limits else float(target_pitch)
+    )
+    tolerance = (
+        float(config.target_camera_pitch_tolerance_deg)
+        if tolerance_deg is None else float(tolerance_deg)
     )
     deadline = time.monotonic() + float(config.target_camera_pitch_timeout_sec)
     stable = 0
@@ -561,7 +571,7 @@ def _set_camera_observation_pitch(
                 continue
 
             error = desired - float(pitch)
-            if abs(error) <= float(config.target_camera_pitch_tolerance_deg):
+            if abs(error) <= tolerance:
                 gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
                 stable += 1
                 if stable >= int(config.gimbal_stable_samples):
@@ -573,7 +583,7 @@ def _set_camera_observation_pitch(
                     return (
                         final is not None
                         and abs(desired - float(final))
-                        <= float(config.target_camera_pitch_tolerance_deg)
+                        <= tolerance
                     )
             else:
                 stable = 0
