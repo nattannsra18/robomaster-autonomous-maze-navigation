@@ -1315,14 +1315,14 @@ def _maintain_wall_clearance_checkpoint(
     raw_start_y: float, raw_start_yaw: float,
     stop_event: Optional[threading.Event],
 ) -> Tuple[bool, Optional[str]]:
-    """One small, physically verified, zero-yaw move AWAY from a near wall.
+    """Adjust NOW, inside the currently sampled Gimbal scan direction.
 
-    The initial four-side ToF ranges are fresh from this cell's full scan.
-    One gimbal ToF cannot monitor four sides at once: point it at the near
-    wall and continuously observe that wall while adjusting. The opposite
-    scan range budgets how far we can go; never invent missing clearance.
-    Return (physically_moved, fatal_reason). Caller rescans ALL FOUR sides
-    after any move before committing current-cell scan results.
+    If the opposite wall has not yet been observed at this pose, briefly
+    point the single ToF there for a safety measurement, return to the
+    current wall, and only then translate AWAY while observing live ToF.
+    Never wait for the complete four-way scan or request a repeat sweep.
+    Return (motion_was_commanded, fatal_reason); caller re-reads ONLY the
+    current direction at the new actual pose before continuing the sweep.
     """
     if not config.wall_clearance_enabled or config.yaw_isolation_mode:
         return False, None
