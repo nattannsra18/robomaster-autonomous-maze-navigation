@@ -684,8 +684,10 @@ class RealtimeMapGUI:
             self.vision_var.set("Camera: unavailable; ToF mapping continues")
 
         self.target_var.set(
-            "Wall-position signs on map: {} | other sightings saved separately".format(
+            "Wall-position signs on map: {} | corner/side views: {} verified "
+            "(bearing-only; not counted as unique targets)".format(
                 len(confirmed_map_targets(snapshot.get("targets"))),
+                snapshot.get("target_side_view_verified_count", 0),
             )
         )
 
