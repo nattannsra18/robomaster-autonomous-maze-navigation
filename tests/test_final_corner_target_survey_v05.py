@@ -144,10 +144,10 @@ class SideSurveyTests(unittest.TestCase):
             tracker.pitch = config.gimbal_scan_pitch_deg
             tracker.yaw = config.gimbal_yaw_for_direction(direction)
             return True
-        with patch("classwork8.tof_camera_round1_v05.stop_chassis"), \\
-             patch("classwork8.tof_camera_round1_v05._set_camera_observation_yaw", side_effect=yaw_move), \\
-             patch("classwork8.tof_camera_round1_v05._set_camera_observation_pitch", side_effect=pitch_move), \\
-             patch("classwork8.tof_camera_round1_v05._point_gimbal", side_effect=restore) as restore_mock, \\
+        with patch("classwork8.tof_camera_round1_v05.stop_chassis"), \
+             patch("classwork8.tof_camera_round1_v05._set_camera_observation_yaw", side_effect=yaw_move), \
+             patch("classwork8.tof_camera_round1_v05._set_camera_observation_pitch", side_effect=pitch_move), \
+             patch("classwork8.tof_camera_round1_v05._point_gimbal", side_effect=restore) as restore_mock, \
              patch("classwork8.tof_camera_round1_v05.survey_targets_with_hold",
                    return_value=([verified], [], None, 1)):
             self.assertTrue(_survey_side_camera_views(
@@ -165,8 +165,8 @@ class SideSurveyTests(unittest.TestCase):
 
     def test_restore_failure_returns_false_and_does_not_try_next_view(self):
         registry = TargetRegistry(self.cfg)
-        with patch("classwork8.tof_camera_round1_v05.stop_chassis"), \\
-             patch("classwork8.tof_camera_round1_v05._set_camera_observation_yaw", return_value=False), \\
+        with patch("classwork8.tof_camera_round1_v05.stop_chassis"), \
+             patch("classwork8.tof_camera_round1_v05._set_camera_observation_yaw", return_value=False), \
              patch("classwork8.tof_camera_round1_v05._point_gimbal", return_value=False) as restore:
             ok = _survey_side_camera_views(
                 FakeChassis(), self.gimbal, FakeSensors(), self.tracker,
