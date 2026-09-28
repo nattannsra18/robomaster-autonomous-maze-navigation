@@ -23,4 +23,4 @@ jobs:
           python -m compileall -q classwork8 final_round1_tof_camera_01.py diagnose_chassis_drift_v05.py diagnose_zero_command_v05.py diagnose_wheel_zero_v05.py diagnose_wheel_zero_gimbal_v05.py tests
       - name: Offline regressions (no robot connected)
         run: |
-          python -m unittest tests.test_basic_heading_v05 tests.test_final_gimbal_pitch_v05 tests.test_final_motion_safety_v05 tests.test_basic_gui_config_v05 tests.test_final_target_detection tests.test_diagnose_chassis_drift_v05 tests.test_diagnose_zero_command_v05 tests.test_diagnose_wheel_zero_v05 tests.test_diagnose_wheel_zero_gimbal_v05 tests.test_v05_wheel_stop -v
+          python -m unittest tests.test_basic_heading_v05 tests.test_final_gimbal_pitch_v05 tests.test_final_motion_safety_v05 tests.test_basic_gui_config_v05 tests.test_final_target_detection tests.test_diagnose_chassis_drift_v05 tests.test_diagnose_zero_command_v05 tests.test_diagnose_wheel_zero_v05 tests.test_diagnose_wheel_zero_gimbal_v05 tests.test_v05_wheel_stop tests.test_v05_heading_guard -v
