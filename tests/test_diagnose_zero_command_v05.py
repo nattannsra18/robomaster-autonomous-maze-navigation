@@ -41,6 +41,18 @@ class ZeroCommandDiagnosticTests(unittest.TestCase):
         self.assertIn('timeout=0.2', SOURCE)
         self.assertIn("abs(overall_delta) > 2.0", SOURCE)
 
+    def test_false_single_ack_is_recorded_without_skipping_remaining_stages(self):
+        self.assertIn("sdk_logger.setLevel(logging.WARNING)", SOURCE)
+        self.assertIn("[ZERO_ACK_FAILURE] no_timeout", SOURCE)
+        self.assertIn("[ZERO_ACK_FAILURE] timeout_0.2", SOURCE)
+        self.assertIn('"_ACK_FALSE" if ok is False else "_ACK_OK"', SOURCE)
+        self.assertIn("[ZERO_TEST] Final chassis zero result", SOURCE)
+        main_source = SOURCE.split("def main():", 1)[1]
+        for stage in ("FREE_SINGLE_ZERO_NO_TIMEOUT", "FREE_SINGLE_ZERO_WITH_TIMEOUT"):
+            before = main_source.split('sample_stage("' + stage, 1)[0]
+            preceding = before.rsplit("if ok is False:", 1)[1]
+            self.assertNotIn("return", preceding)
+
     def test_yaw_wrap(self):
         from diagnose_zero_command_v05 import angle_change
         self.assertAlmostEqual(angle_change(179.0, -179.0), 2.0)
