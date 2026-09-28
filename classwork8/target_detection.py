@@ -727,6 +727,10 @@ class TargetRegistry:
         self.targets: List[dict] = []
         self.pending_targets: List[dict] = []
         self.observations: List[dict] = []
+        # An off-axis sighting has no calibrated 2D target coordinate. Store
+        # separately instead of inflating the confirmed unique target count.
+        self.side_view_sightings: List[dict] = []
+        self._next_side_view_id = 1
         self._next_id = 1
         self._next_pending_id = 1
 
@@ -965,6 +969,83 @@ class TargetRegistry:
 
         return match
 
+    def add_side_view_sighting(
+        self,
+        detection: TargetDetection,
+        approach_cell: Tuple[int, int],
+        direction: int,
+        *,
+        camera_yaw_deg: float,
+        camera_pitch_deg: float,
+        side_yaw_offset_deg: float,
+        confidence: float,
+        verified_frames: int,
+        verified: bool,
+    ) -> dict:
+        """Preserve a corner/offset camera observation WITHOUT inventing XY.
+
+        One target may appear at several yaw angles or from several cells.
+        Without calibrated camera intrinsics and cross-view association these
+        are *sightings*, not extra unique targets or firing coordinates.
+        Same-view near-identical observations can be updated conservatively.
+        """
+        approach = [int(approach_cell[0]), int(approach_cell[1])]
+        view_direction = int(direction) % 4
+        yaw = float(camera_yaw_deg)
+        offset = float(side_yaw_offset_deg)
+        centroid = [int(detection.centroid[0]), int(detection.centroid[1])]
+        match = None
+        for item in self.side_view_sightings:
+            if (
+                item["color"] == detection.color
+                and item["shape"] == detection.shape
+                and item["approach_cell"] == approach
+                and item["view_direction"] == view_direction
+                and abs(item["camera_yaw_offset_deg"] - offset) <= 2.0
+                and math.hypot(
+                    item["centroid_px"][0] - centroid[0],
+                    item["centroid_px"][1] - centroid[1],
+                ) <= float(self.config.target_merge_centroid_px)
+            ):
+                match = item
+                break
+        if match is not None:
+            match["verified_frames"] = max(match["verified_frames"], int(verified_frames))
+            match["confidence"] = max(match["confidence"], float(confidence))
+            if verified:
+                match["status"] = "VERIFIED_BEARING_ONLY"
+            return match
+
+        possible_duplicates = [item["target_id"] for item in self.targets if (
+            item["color"] == detection.color
+            and item["shape"] == detection.shape
+            and approach in item.get("observation_cells", [])
+            and view_direction in item.get("view_directions", [])
+        )]
+        item = {
+            "sighting_id": "V{:02d}".format(self._next_side_view_id),
+            "status": "VERIFIED_BEARING_ONLY" if verified else "PENDING_RECHECK",
+            "color": detection.color,
+            "shape": detection.shape,
+            "confidence": float(confidence),
+            "verified_frames": int(verified_frames),
+            "approach_cell": approach,
+            "view_direction": view_direction,
+            "view_direction_name": DIR_NAME[view_direction],
+            "camera_yaw_deg": yaw,
+            "camera_yaw_offset_deg": offset,
+            "camera_pitch_deg": float(camera_pitch_deg),
+            "centroid_px": centroid,
+            "bbox_px": [int(v) for v in detection.bbox],
+            "estimated_target_xy_m": None,
+            "localization_status": "SIGHTING_ONLY",
+            "round2_position_ready": False,
+            "possible_duplicate_of_target_ids": possible_duplicates,
+        }
+        self._next_side_view_id += 1
+        self.side_view_sightings.append(item)
+        return item
+
     def add_pending(self, evidence: dict, approach_cell: Tuple[int, int],
                     direction: int, tof_cm: Optional[float]) -> dict:
         """Save an unverified colour/shape sighting; never offer Round-2 XY."""
@@ -1027,11 +1108,19 @@ class TargetRegistry:
             "version": 2,
             "target_count": len(self.targets),
             "pending_count": len(self.pending_targets),
+            "side_view_sighting_count": len(self.side_view_sightings),
+            "side_view_verified_count": sum(
+                item["status"] == "VERIFIED_BEARING_ONLY"
+                for item in self.side_view_sightings
+            ),
+            "side_view_sightings": self.side_view_sightings,
             "pending_targets": self.pending_targets,
             "localization_note": (
                 "SIGHTING_ONLY is a camera bearing, not a target coordinate. "
                 "NEAR_WALL_ESTIMATE is a tentative ToF wall-surface projection; "
-                "Round 2 must revalidate position from a close observation."
+                "Round 2 must revalidate position from a close observation. "
+                "side_view_sightings may include repeated views of one sign "
+                "and are deliberately excluded from unique target_count."
             ),
             "targets": self.targets,
             "observations": self.observations,
