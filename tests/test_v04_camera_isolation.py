@@ -83,6 +83,94 @@ class CameraIsolationTests(unittest.TestCase):
         self.assertNotIn('text="Skip 4-way scan at fully scanned visited cells"', ui)
         self.assertIn('V04 SLAM + V05 Camera', ui)
 
+    def test_side_pitch_change_yaw_drift_is_corrected_camera_only(self):
+        # Simulate physical yaw kick after the first camera look-down.
+        import threading
+        from types import SimpleNamespace
+        from classwork8.v04_target_survey import V04TargetSurvey
+
+        tracker = SimpleNamespace(pitch=0.0, yaw=20.0)
+        tracker.get_angles = lambda: (tracker.pitch, tracker.yaw)
+        stop = threading.Event()
+        survey = object.__new__(V04TargetSurvey)
+        survey.config = SimpleNamespace(
+            gimbal_scan_pitch_deg=0.0,
+            gimbal_tolerance_deg=2.5,
+            target_camera_pitch_tolerance_deg=1.5,
+        )
+        pitches, yaws = [], []
+
+        def pitch(_gimbal, _tracker, value, _stop):
+            pitches.append(float(value))
+            tracker.pitch = float(value)
+            if abs(value + 20.0) < 0.01 and pitches.count(-20.0) == 1:
+                tracker.yaw = 24.0  # outside accepted 20 +/- 2.5 deg
+            return True
+
+        def yaw(_gimbal, _tracker, value, _stop):
+            yaws.append(float(value))
+            tracker.yaw = float(value)
+            return True
+
+        survey._pitch = pitch
+        survey._camera_yaw = yaw
+        self.assertTrue(survey._align_camera_view(None, tracker, 20.0, -20.0, stop))
+        self.assertEqual(yaws, [20.0])
+        self.assertEqual(tracker.get_angles(), (-20.0, 20.0))
+        self.assertLessEqual(pitches.count(-20.0), 3)
+
+    def test_unstable_side_view_skips_instead_of_aborting_v04(self):
+        import threading
+        from unittest.mock import MagicMock, patch
+        from classwork8.config import Classwork8Config
+        from classwork8.v04_target_survey import V04TargetSurvey
+        survey = object.__new__(V04TargetSurvey)
+        survey.config = Classwork8Config()
+        survey.bridge = MagicMock()
+        survey.bridge.get_pitch.return_value = -20.0
+        survey.detector = MagicMock()
+        survey.camera = MagicMock()
+        survey.registry = MagicMock()
+        survey._align_camera_view = lambda *args: False
+        survey._pitch = lambda *args: True  # horizontal ToF restored
+        with patch("classwork8.v04_target_survey.stop_chassis"), patch(
+            "classwork8.v04_target_survey.survey_targets_with_hold"
+        ) as capture:
+            result = survey._view(
+                MagicMock(), MagicMock(), MagicMock(), threading.Event(),
+                (0, 0), 0, 33.8, side_offset=20.0,
+            )
+        self.assertEqual(result, 0)
+        capture.assert_not_called()
+        survey.registry.add_side_view_sighting.assert_not_called()
+
+    def test_unstable_image_bearing_is_discarded_after_capture(self):
+        import threading
+        from unittest.mock import MagicMock, patch
+        from classwork8.config import Classwork8Config
+        from classwork8.v04_target_survey import V04TargetSurvey
+        survey = object.__new__(V04TargetSurvey)
+        survey.config = Classwork8Config()
+        survey.bridge = MagicMock()
+        survey.bridge.get_pitch.return_value = -20.0
+        survey.detector = MagicMock()
+        survey.camera = MagicMock()
+        survey.registry = MagicMock()
+        survey._align_camera_view = lambda *args: True
+        survey._pitch = lambda *args: True
+        tracker = MagicMock()
+        tracker.get_angles.return_value = (-20.0, 28.0)
+        with patch("classwork8.v04_target_survey.stop_chassis"), patch(
+            "classwork8.v04_target_survey.survey_targets_with_hold",
+            return_value=([MagicMock()], [], None, 1),
+        ):
+            result = survey._view(
+                MagicMock(), MagicMock(), tracker, threading.Event(),
+                (0, 0), 0, 33.8, side_offset=20.0,
+            )
+        self.assertEqual(result, 0)
+        survey.registry.add_side_view_sighting.assert_not_called()
+
     def test_camera_and_v04_scan_are_separate(self):
         core = HYBRID.read_text(encoding="utf-8")
         self.assertIn("ranges, open_dirs = scan", core)
