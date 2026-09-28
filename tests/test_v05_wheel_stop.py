@@ -88,7 +88,8 @@ class V05WheelStopTests(unittest.TestCase):
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "chassis"
         ]
-        self.assertEqual(calls, ["stop", "drive_wheels"])
+        self.assertCountEqual(calls, ["stop", "drive_wheels"])
+        self.assertLess(func.index("chassis.stop()"), func.index("chassis.drive_wheels("))
         tree = ast.parse(SOURCE)
         from_imports = [
             alias.name for node in ast.walk(tree)
